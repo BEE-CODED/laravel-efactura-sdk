@@ -2,7 +2,7 @@
     "name": "bee-coded/laravel-efactura-sdk",
     "description": "Laravel SDK for Romania's ANAF e-Factura electronic invoicing system",
     "type": "library",
-    "license": "MIT",
+    "license": "Apache-2.0",
     "keywords": [
         "laravel",
         "efactura",
