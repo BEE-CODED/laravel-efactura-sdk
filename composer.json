@@ -1,5 +1,5 @@
 {
-    "name": "beecoded/laravel-efactura-sdk",
+    "name": "bee-coded/laravel-efactura-sdk",
     "description": "Laravel SDK for Romania's ANAF e-Factura electronic invoicing system",
     "type": "library",
     "license": "MIT",
