@@ -1,0 +1,70 @@
+{
+    "name": "beecoded/laravel-efactura-sdk",
+    "description": "Laravel SDK for Romania's ANAF e-Factura electronic invoicing system",
+    "type": "library",
+    "license": "MIT",
+    "keywords": [
+        "laravel",
+        "efactura",
+        "anaf",
+        "romania",
+        "invoice",
+        "ubl",
+        "electronic-invoicing"
+    ],
+    "authors": [
+        {
+            "name": "Dragos Burciu",
+            "email": "dragos.burciu@gmail.com",
+            "homepage": "https://www.beecoded.io/",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.4",
+        "illuminate/contracts": "^11.0|^12.0",
+        "illuminate/support": "^11.0|^12.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.0",
+        "orchestra/testbench": "^9.0|^10.0",
+        "pestphp/pest": "^3.0",
+        "phpstan/phpstan": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Beecoded\\EFactura\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Beecoded\\EFactura\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "pest",
+        "test-coverage": "pest --coverage",
+        "format": "pint",
+        "analyse": "phpstan analyse"
+    },
+    "config": {
+        "sort-packages": true,
+        "preferred-install": "dist",
+        "optimize-autoloader": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Beecoded\\EFactura\\EFacturaServiceProvider"
+            ],
+            "aliases": {
+                "EFactura": "Beecoded\\EFactura\\Facades\\EFactura"
+            }
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
