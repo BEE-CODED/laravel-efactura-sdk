@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
-use BeeCoded\EFactura\Data\Invoice\ListMessagesParamsData;
-use BeeCoded\EFactura\Data\Invoice\PaginatedMessagesParamsData;
-use BeeCoded\EFactura\Data\Invoice\UploadOptionsData;
-use BeeCoded\EFactura\Enums\DocumentStandardType;
-use BeeCoded\EFactura\Exceptions\ValidationException;
-use BeeCoded\EFactura\Services\ApiClients\EFacturaClient;
-use BeeCoded\EFactura\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Data\Invoice\ListMessagesParamsData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
+use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
+use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
+use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Http;
 
@@ -291,7 +291,7 @@ describe('EFacturaClient', function () {
 
     describe('validateXml validation', function () {
         it('throws ValidationException for missing validation endpoint config', function () {
-            config()->set('efactura.endpoints.services.validate', null);
+            config()->set('efactura-sdk.endpoints.services.validate', null);
 
             $client = new EFacturaClient(
                 vatNumber: '12345678',
@@ -306,7 +306,7 @@ describe('EFacturaClient', function () {
 
     describe('verifySignature validation', function () {
         it('throws ValidationException for missing verify_signature endpoint config', function () {
-            config()->set('efactura.endpoints.services.verify_signature', null);
+            config()->set('efactura-sdk.endpoints.services.verify_signature', null);
 
             $client = new EFacturaClient(
                 vatNumber: '12345678',
@@ -321,7 +321,7 @@ describe('EFacturaClient', function () {
 
     describe('convertXmlToPdf validation', function () {
         it('throws ValidationException for missing transform endpoint config', function () {
-            config()->set('efactura.endpoints.services.transform', null);
+            config()->set('efactura-sdk.endpoints.services.transform', null);
 
             $client = new EFacturaClient(
                 vatNumber: '12345678',

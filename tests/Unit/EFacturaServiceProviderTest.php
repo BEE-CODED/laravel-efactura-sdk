@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Builders\InvoiceBuilder;
-use BeeCoded\EFactura\Contracts\AnafDetailsClientInterface;
-use BeeCoded\EFactura\Contracts\UblBuilderInterface;
-use BeeCoded\EFactura\Services\ApiClients\AnafDetailsClient;
-use BeeCoded\EFactura\Services\RateLimiter;
-use BeeCoded\EFactura\Services\UblBuilder;
+use BeeCoded\EFacturaSdk\Builders\InvoiceBuilder;
+use BeeCoded\EFacturaSdk\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFacturaSdk\Contracts\UblBuilderInterface;
+use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
+use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Services\UblBuilder;
 
 it('registers the anaf details client singleton', function () {
     $client = app(AnafDetailsClientInterface::class);
@@ -15,8 +15,8 @@ it('registers the anaf details client singleton', function () {
     expect($client)->toBeInstanceOf(AnafDetailsClient::class);
 });
 
-it('provides the anaf-details alias', function () {
-    $client = app('anaf-details');
+it('provides the efactura-sdk.anaf-details alias', function () {
+    $client = app('efactura-sdk.anaf-details');
 
     expect($client)->toBeInstanceOf(AnafDetailsClient::class);
 });
@@ -27,8 +27,8 @@ it('registers the ubl builder singleton', function () {
     expect($builder)->toBeInstanceOf(UblBuilder::class);
 });
 
-it('provides the efactura.ubl alias', function () {
-    $builder = app('efactura.ubl');
+it('provides the efactura-sdk.ubl alias', function () {
+    $builder = app('efactura-sdk.ubl');
 
     expect($builder)->toBeInstanceOf(UblBuilder::class);
 });
@@ -46,14 +46,14 @@ it('registers the rate limiter singleton', function () {
 });
 
 it('merges package config', function () {
-    expect(config('efactura.sandbox'))->toBeTrue();
-    expect(config('efactura.oauth'))->toBeArray();
-    expect(config('efactura.http.timeout'))->toBe(30);
+    expect(config('efactura-sdk.sandbox'))->toBeTrue();
+    expect(config('efactura-sdk.oauth'))->toBeArray();
+    expect(config('efactura-sdk.http.timeout'))->toBe(30);
 });
 
 it('does not register efactura client as singleton (stateless design)', function () {
     // EFacturaClient is intentionally NOT registered as a singleton
     // because it requires tokens per instantiation.
     // Users should create instances directly with their tokens.
-    expect(app()->bound('efactura'))->toBeFalse();
+    expect(app()->bound('efactura-sdk'))->toBeFalse();
 });

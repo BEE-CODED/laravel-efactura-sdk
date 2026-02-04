@@ -2,22 +2,22 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Contracts;
+namespace BeeCoded\EFacturaSdk\Contracts;
 
-use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
-use BeeCoded\EFactura\Data\Invoice\ListMessagesParamsData;
-use BeeCoded\EFactura\Data\Invoice\PaginatedMessagesParamsData;
-use BeeCoded\EFactura\Data\Invoice\UploadOptionsData;
-use BeeCoded\EFactura\Data\Response\DownloadResponseData;
-use BeeCoded\EFactura\Data\Response\ListMessagesResponseData;
-use BeeCoded\EFactura\Data\Response\PaginatedMessagesResponseData;
-use BeeCoded\EFactura\Data\Response\StatusResponseData;
-use BeeCoded\EFactura\Data\Response\UploadResponseData;
-use BeeCoded\EFactura\Data\Response\ValidationResultData;
-use BeeCoded\EFactura\Enums\DocumentStandardType;
-use BeeCoded\EFactura\Exceptions\ApiException;
-use BeeCoded\EFactura\Exceptions\AuthenticationException;
-use BeeCoded\EFactura\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Data\Invoice\ListMessagesParamsData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
+use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
+use BeeCoded\EFacturaSdk\Data\Response\DownloadResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\ListMessagesResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\PaginatedMessagesResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\StatusResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\UploadResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\ValidationResultData;
+use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 
 /**
  * Interface for ANAF e-Factura API client.

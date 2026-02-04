@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Support\AddressSanitizer;
+use BeeCoded\EFacturaSdk\Support\AddressSanitizer;
 
 describe('normalizeDiacritics', function () {
     it('converts lowercase Romanian diacritics', function () {

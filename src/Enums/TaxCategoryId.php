@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Enums;
+namespace BeeCoded\EFacturaSdk\Enums;
 
 /**
  * Tax Category identifiers for VAT classification.

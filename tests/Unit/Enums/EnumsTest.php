@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Enums\DocumentStandardType;
-use BeeCoded\EFactura\Enums\ExecutionStatus;
-use BeeCoded\EFactura\Enums\InvoiceTypeCode;
-use BeeCoded\EFactura\Enums\MessageFilter;
-use BeeCoded\EFactura\Enums\StandardType;
-use BeeCoded\EFactura\Enums\TaxCategoryId;
-use BeeCoded\EFactura\Enums\UploadStatusValue;
+use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
+use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Enums\MessageFilter;
+use BeeCoded\EFacturaSdk\Enums\StandardType;
+use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
+use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
 
 describe('ExecutionStatus', function () {
     it('has Success case with value 0', function () {

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Data\Response;
+namespace BeeCoded\EFacturaSdk\Data\Response;
 
 use Spatie\LaravelData\Attributes\DataCollectionOf;
 use Spatie\LaravelData\Attributes\MapInputName;

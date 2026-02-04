@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Enums;
+namespace BeeCoded\EFacturaSdk\Enums;
 
 /**
  * Standard document types supported by ANAF e-Factura.

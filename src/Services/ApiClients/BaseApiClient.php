@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Services\ApiClients;
+namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 
-use BeeCoded\EFactura\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use Closure;
 use Exception;
 use Illuminate\Http\Client\ConnectionException;

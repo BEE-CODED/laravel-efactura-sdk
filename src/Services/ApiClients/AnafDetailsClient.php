@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Services\ApiClients;
+namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 
-use BeeCoded\EFactura\Contracts\AnafDetailsClientInterface;
-use BeeCoded\EFactura\Data\Company\CompanyData;
-use BeeCoded\EFactura\Data\Company\CompanyLookupResultData;
-use BeeCoded\EFactura\Exceptions\ApiException;
-use BeeCoded\EFactura\Support\DateHelper;
-use BeeCoded\EFactura\Support\Validators\VatNumberValidator;
+use BeeCoded\EFacturaSdk\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFacturaSdk\Data\Company\CompanyData;
+use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Support\DateHelper;
+use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use Illuminate\Support\Facades\Log;
 use Psr\Log\LoggerInterface;
 
@@ -39,7 +39,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
      */
     public static function getBaseUrl(): string
     {
-        return config('efactura.endpoints.company_lookup', 'https://webservicesp.anaf.ro/api/PlatitorTvaRest/v9/tva');
+        return config('efactura-sdk.endpoints.company_lookup', 'https://webservicesp.anaf.ro/api/PlatitorTvaRest/v9/tva');
     }
 
     /**
@@ -47,7 +47,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
      */
     public static function getTimeoutDuration(): float|int
     {
-        return config('efactura.http.timeout', 30);
+        return config('efactura-sdk.http.timeout', 30);
     }
 
     /**
@@ -55,7 +55,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
      */
     public static function getLogger(): LoggerInterface
     {
-        return Log::channel(config('efactura.logging.channel', 'efactura'));
+        return Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'));
     }
 
     /**

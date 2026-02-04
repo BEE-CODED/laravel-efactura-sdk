@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Support;
+namespace BeeCoded\EFacturaSdk\Support;
 
-use BeeCoded\EFactura\Enums\ExecutionStatus;
-use BeeCoded\EFactura\Enums\UploadStatusValue;
-use BeeCoded\EFactura\Exceptions\XmlParsingException;
+use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
+use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
+use BeeCoded\EFacturaSdk\Exceptions\XmlParsingException;
 use Sabre\Xml\Reader;
 
 /**

@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Facades;
+namespace BeeCoded\EFacturaSdk\Facades;
 
-use BeeCoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use BeeCoded\EFactura\Data\Auth\AuthUrlSettingsData;
-use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
 use Illuminate\Support\Facades\Facade;
 
 /**
@@ -21,7 +21,7 @@ use Illuminate\Support\Facades\Facade;
  * For API operations, create an EFacturaClient with your stored tokens:
  *
  * ```php
- * use BeeCoded\EFactura\Services\ApiClients\EFacturaClient;
+ * use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
  *
  * $client = EFacturaClient::fromTokens('12345678', $storedTokens);
  * $result = $client->uploadDocument($xml);
@@ -32,7 +32,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static OAuthTokensData refreshAccessToken(string $refreshToken) Refresh an expired token
  * @method static array decodeState(string $encodedState) Decode state parameter for CSRF validation
  *
- * @see \BeeCoded\EFactura\Services\AnafAuthenticator
+ * @see \BeeCoded\EFacturaSdk\Services\AnafAuthenticator
  */
 final class EFactura extends Facade
 {

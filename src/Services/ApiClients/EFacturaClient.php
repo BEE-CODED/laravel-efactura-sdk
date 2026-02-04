@@ -2,28 +2,28 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Services\ApiClients;
+namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 
-use BeeCoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use BeeCoded\EFactura\Contracts\EFacturaClientInterface;
-use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
-use BeeCoded\EFactura\Data\Invoice\ListMessagesParamsData;
-use BeeCoded\EFactura\Data\Invoice\PaginatedMessagesParamsData;
-use BeeCoded\EFactura\Data\Invoice\UploadOptionsData;
-use BeeCoded\EFactura\Data\Response\DownloadResponseData;
-use BeeCoded\EFactura\Data\Response\ListMessagesResponseData;
-use BeeCoded\EFactura\Data\Response\PaginatedMessagesResponseData;
-use BeeCoded\EFactura\Data\Response\StatusResponseData;
-use BeeCoded\EFactura\Data\Response\UploadResponseData;
-use BeeCoded\EFactura\Data\Response\ValidationResultData;
-use BeeCoded\EFactura\Enums\DocumentStandardType;
-use BeeCoded\EFactura\Enums\StandardType;
-use BeeCoded\EFactura\Exceptions\ApiException;
-use BeeCoded\EFactura\Exceptions\AuthenticationException;
-use BeeCoded\EFactura\Exceptions\RateLimitExceededException;
-use BeeCoded\EFactura\Exceptions\ValidationException;
-use BeeCoded\EFactura\Services\RateLimiter;
-use BeeCoded\EFactura\Support\XmlParser;
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFacturaSdk\Contracts\EFacturaClientInterface;
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Data\Invoice\ListMessagesParamsData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
+use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
+use BeeCoded\EFacturaSdk\Data\Response\DownloadResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\ListMessagesResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\PaginatedMessagesResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\StatusResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\UploadResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\ValidationResultData;
+use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\StandardType;
+use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Carbon\Carbon;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
@@ -160,9 +160,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public static function getBaseUrl(): string
     {
-        return config('efactura.sandbox', true)
-            ? config('efactura.endpoints.api.test')
-            : config('efactura.endpoints.api.production');
+        return config('efactura-sdk.sandbox', true)
+            ? config('efactura-sdk.endpoints.api.test')
+            : config('efactura-sdk.endpoints.api.production');
     }
 
     /**
@@ -170,7 +170,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public static function getTimeoutDuration(): float|int
     {
-        return config('efactura.http.timeout', 30);
+        return config('efactura-sdk.http.timeout', 30);
     }
 
     /**
@@ -178,7 +178,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public static function getLogger(): LoggerInterface
     {
-        return Log::channel(config('efactura.logging.channel', 'efactura'));
+        return Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'));
     }
 
     /**
@@ -197,7 +197,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     protected function getRetryDelay(): int
     {
-        return (int) config('efactura.http.retry_delay', 5);
+        return (int) config('efactura-sdk.http.retry_delay', 5);
     }
 
     /**
@@ -205,7 +205,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     protected function getMaxTryCount(): int
     {
-        return (int) config('efactura.http.retry_times', 3);
+        return (int) config('efactura-sdk.http.retry_times', 3);
     }
 
     /**
@@ -372,7 +372,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->rateLimiter->checkGlobal();
         $this->validateXmlContent($xml);
 
-        $validateUrl = config('efactura.endpoints.services.validate');
+        $validateUrl = config('efactura-sdk.endpoints.services.validate');
         if (empty($validateUrl)) {
             throw new ValidationException('Missing configuration: efactura.endpoints.services.validate');
         }
@@ -394,7 +394,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->rateLimiter->checkGlobal();
         $this->validateXmlContent($xml);
 
-        $verifyUrl = config('efactura.endpoints.services.verify_signature');
+        $verifyUrl = config('efactura-sdk.endpoints.services.verify_signature');
         if (empty($verifyUrl)) {
             throw new ValidationException('Missing configuration: efactura.endpoints.services.verify_signature');
         }
@@ -414,7 +414,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->rateLimiter->checkGlobal();
         $this->validateXmlContent($xml);
 
-        $transformUrl = config('efactura.endpoints.services.transform');
+        $transformUrl = config('efactura-sdk.endpoints.services.transform');
         if (empty($transformUrl)) {
             throw new ValidationException('Missing configuration: efactura.endpoints.services.transform');
         }

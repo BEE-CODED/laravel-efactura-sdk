@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Data\Invoice;
+namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
-use BeeCoded\EFactura\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use Carbon\Carbon;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
 use Spatie\LaravelData\Data;

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Support;
+namespace BeeCoded\EFacturaSdk\Support;
 
 /**
  * Address sanitizer for Romanian e-Factura system.

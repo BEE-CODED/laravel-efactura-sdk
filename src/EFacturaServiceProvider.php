@@ -2,16 +2,16 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura;
+namespace BeeCoded\EFacturaSdk;
 
-use BeeCoded\EFactura\Builders\InvoiceBuilder;
-use BeeCoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use BeeCoded\EFactura\Contracts\AnafDetailsClientInterface;
-use BeeCoded\EFactura\Contracts\UblBuilderInterface;
-use BeeCoded\EFactura\Services\AnafAuthenticator;
-use BeeCoded\EFactura\Services\ApiClients\AnafDetailsClient;
-use BeeCoded\EFactura\Services\RateLimiter;
-use BeeCoded\EFactura\Services\UblBuilder;
+use BeeCoded\EFacturaSdk\Builders\InvoiceBuilder;
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFacturaSdk\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFacturaSdk\Contracts\UblBuilderInterface;
+use BeeCoded\EFacturaSdk\Services\AnafAuthenticator;
+use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
+use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Services\UblBuilder;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 
@@ -31,7 +31,7 @@ use Illuminate\Support\ServiceProvider;
  * tokens per instantiation. Create it directly:
  *
  * ```php
- * use BeeCoded\EFactura\Services\ApiClients\EFacturaClient;
+ * use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
  *
  * $client = new EFacturaClient(
  *     vatNumber: '12345678',
@@ -50,19 +50,19 @@ final class EFacturaServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(
-            __DIR__.'/../config/efactura.php',
-            'efactura'
+            __DIR__.'/../config/efactura-sdk.php',
+            'efactura-sdk'
         );
 
         // Authenticator for OAuth flow (stateless - returns tokens to caller)
         // Note: This will throw AuthenticationException if OAuth credentials are not configured.
         // Only resolve this service when you need OAuth functionality.
         $this->app->singleton(AnafAuthenticatorInterface::class, function ($app) {
-            $config = $app['config']['efactura'];
+            $config = $app['config']['efactura-sdk'];
 
             // Check if OAuth is configured before attempting to create authenticator
             if (empty($config['oauth']['client_id'] ?? null)) {
-                throw new \BeeCoded\EFactura\Exceptions\AuthenticationException(
+                throw new \BeeCoded\EFacturaSdk\Exceptions\AuthenticationException(
                     'OAuth credentials not configured. Set EFACTURA_CLIENT_ID, EFACTURA_CLIENT_SECRET, and EFACTURA_REDIRECT_URI in your environment, or resolve this service only when OAuth is needed.'
                 );
             }
@@ -96,9 +96,9 @@ final class EFacturaServiceProvider extends ServiceProvider
         });
 
         // Aliases for convenience
-        $this->app->alias(AnafAuthenticatorInterface::class, 'efactura.auth');
-        $this->app->alias(AnafDetailsClientInterface::class, 'anaf-details');
-        $this->app->alias(UblBuilderInterface::class, 'efactura.ubl');
+        $this->app->alias(AnafAuthenticatorInterface::class, 'efactura-sdk.auth');
+        $this->app->alias(AnafDetailsClientInterface::class, 'efactura-sdk.anaf-details');
+        $this->app->alias(UblBuilderInterface::class, 'efactura-sdk.ubl');
     }
 
     /**
@@ -108,8 +108,8 @@ final class EFacturaServiceProvider extends ServiceProvider
     {
         if ($this->app->runningInConsole()) {
             $this->publishes([
-                __DIR__.'/../config/efactura.php' => config_path('efactura.php'),
-            ], 'efactura-config');
+                __DIR__.'/../config/efactura-sdk.php' => config_path('efactura-sdk.php'),
+            ], 'efactura-sdk-config');
         }
     }
 }

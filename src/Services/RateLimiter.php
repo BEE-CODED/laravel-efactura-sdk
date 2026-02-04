@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Services;
+namespace BeeCoded\EFacturaSdk\Services;
 
-use BeeCoded\EFactura\Exceptions\RateLimitExceededException;
-use BeeCoded\EFactura\Services\ApiClients\RateLimitStore;
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
+use BeeCoded\EFacturaSdk\Services\ApiClients\RateLimitStore;
 
 /**
  * Rate limiter for ANAF e-Factura API.
@@ -43,12 +43,12 @@ class RateLimiter
         $this->dailyStore = new RateLimitStore('daily', 86400); // 24 hours
 
         // Load from config with conservative defaults (50% of ANAF limits)
-        $this->globalPerMinute = (int) config('efactura.rate_limits.global_per_minute', 500);
-        $this->raspUploadPerDayCui = (int) config('efactura.rate_limits.rasp_upload_per_day_cui', 500);
-        $this->statusPerDayMessage = (int) config('efactura.rate_limits.status_per_day_message', 50);
-        $this->simpleListPerDayCui = (int) config('efactura.rate_limits.simple_list_per_day_cui', 750);
-        $this->paginatedListPerDayCui = (int) config('efactura.rate_limits.paginated_list_per_day_cui', 50000);
-        $this->downloadPerDayMessage = (int) config('efactura.rate_limits.download_per_day_message', 5);
+        $this->globalPerMinute = (int) config('efactura-sdk.rate_limits.global_per_minute', 500);
+        $this->raspUploadPerDayCui = (int) config('efactura-sdk.rate_limits.rasp_upload_per_day_cui', 500);
+        $this->statusPerDayMessage = (int) config('efactura-sdk.rate_limits.status_per_day_message', 50);
+        $this->simpleListPerDayCui = (int) config('efactura-sdk.rate_limits.simple_list_per_day_cui', 750);
+        $this->paginatedListPerDayCui = (int) config('efactura-sdk.rate_limits.paginated_list_per_day_cui', 50000);
+        $this->downloadPerDayMessage = (int) config('efactura-sdk.rate_limits.download_per_day_message', 5);
     }
 
     /**
@@ -56,7 +56,7 @@ class RateLimiter
      */
     public function isEnabled(): bool
     {
-        return (bool) config('efactura.rate_limits.enabled', true);
+        return (bool) config('efactura-sdk.rate_limits.enabled', true);
     }
 
     /**

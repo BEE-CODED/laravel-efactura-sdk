@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Tests;
+namespace BeeCoded\EFacturaSdk\Tests;
 
-use BeeCoded\EFactura\EFacturaServiceProvider;
+use BeeCoded\EFacturaSdk\EFacturaServiceProvider;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 
 abstract class TestCase extends BaseTestCase
@@ -19,7 +19,7 @@ abstract class TestCase extends BaseTestCase
     protected function getPackageAliases($app): array
     {
         return [
-            'EFactura' => \BeeCoded\EFactura\Facades\EFactura::class,
+            'EFactura' => \BeeCoded\EFacturaSdk\Facades\EFactura::class,
         ];
     }
 

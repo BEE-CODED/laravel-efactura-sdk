@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Enums;
+namespace BeeCoded\EFacturaSdk\Enums;
 
 /**
  * Execution status for upload operations.

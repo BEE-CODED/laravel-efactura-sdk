@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Data\Invoice\AddressData;
-use BeeCoded\EFactura\Data\Invoice\PartyData;
+use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 
 describe('PartyData construction', function () {
     it('creates party with required fields', function () {

@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Services;
+namespace BeeCoded\EFacturaSdk\Services;
 
-use BeeCoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use BeeCoded\EFactura\Data\Auth\AuthUrlSettingsData;
-use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
-use BeeCoded\EFactura\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Log;
@@ -244,7 +244,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
             return $response;
         } catch (\Throwable $e) {
-            Log::channel(config('efactura.logging.channel', 'efactura'))->error(
+            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
                 'ANAF OAuth token request failed',
                 [
                     'error' => $e->getMessage(),
@@ -273,7 +273,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         if ($response->failed()) {
             $errorMessage = $this->extractErrorMessage($data, $response->status());
 
-            Log::channel(config('efactura.logging.channel', 'efactura'))->error(
+            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
                 $errorPrefix,
                 [
                     'status' => $response->status(),
@@ -286,7 +286,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
         // Validate required token fields
         if (empty($data['access_token'])) {
-            Log::channel(config('efactura.logging.channel', 'efactura'))->error(
+            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
                 $errorPrefix.': Missing access token in response'
             );
 
@@ -296,7 +296,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         }
 
         if (empty($data['refresh_token'])) {
-            Log::channel(config('efactura.logging.channel', 'efactura'))->error(
+            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
                 $errorPrefix.': Missing refresh token in response'
             );
 

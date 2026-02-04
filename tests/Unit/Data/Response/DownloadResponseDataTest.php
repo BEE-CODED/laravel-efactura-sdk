@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Data\Response\DownloadResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\DownloadResponseData;
 
 describe('DownloadResponseData', function () {
     it('creates with required fields', function () {

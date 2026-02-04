@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Data\Invoice;
+namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
-use BeeCoded\EFactura\Enums\MessageFilter;
+use BeeCoded\EFacturaSdk\Enums\MessageFilter;
 use Spatie\LaravelData\Attributes\Validation\Between;
 use Spatie\LaravelData\Data;
 

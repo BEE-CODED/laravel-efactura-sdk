@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Contracts;
+namespace BeeCoded\EFacturaSdk\Contracts;
 
-use BeeCoded\EFactura\Data\Auth\AuthUrlSettingsData;
-use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
-use BeeCoded\EFactura\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 
 /**
  * Interface for ANAF OAuth 2.0 authentication.

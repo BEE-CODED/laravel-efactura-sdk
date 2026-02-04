@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Support\Validators;
+namespace BeeCoded\EFacturaSdk\Support\Validators;
 
 /**
  * Validator for Romanian Personal Numeric Code (CNP).

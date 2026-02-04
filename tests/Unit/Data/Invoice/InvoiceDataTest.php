@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Data\Invoice\AddressData;
-use BeeCoded\EFactura\Data\Invoice\InvoiceData;
-use BeeCoded\EFactura\Data\Invoice\InvoiceLineData;
-use BeeCoded\EFactura\Data\Invoice\PartyData;
-use BeeCoded\EFactura\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
+use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
+use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
+use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use Carbon\Carbon;
 
 function createTestInvoice(array $lines = [], array $overrides = []): InvoiceData

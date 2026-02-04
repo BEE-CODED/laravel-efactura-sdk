@@ -2,18 +2,18 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Exceptions\RateLimitExceededException;
-use BeeCoded\EFactura\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
+use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Illuminate\Support\Facades\RateLimiter as LaravelRateLimiter;
 
 beforeEach(function () {
     // Clear any existing rate limits before each test
-    LaravelRateLimiter::clear('efactura:minute:global');
-    LaravelRateLimiter::clear('efactura:daily:rasp_upload:12345678');
-    LaravelRateLimiter::clear('efactura:daily:status:MSG123');
-    LaravelRateLimiter::clear('efactura:daily:list_simple:12345678');
-    LaravelRateLimiter::clear('efactura:daily:list_paginated:12345678');
-    LaravelRateLimiter::clear('efactura:daily:download:MSG123');
+    LaravelRateLimiter::clear('efactura-sdk:minute:global');
+    LaravelRateLimiter::clear('efactura-sdk:daily:rasp_upload:12345678');
+    LaravelRateLimiter::clear('efactura-sdk:daily:status:MSG123');
+    LaravelRateLimiter::clear('efactura-sdk:daily:list_simple:12345678');
+    LaravelRateLimiter::clear('efactura-sdk:daily:list_paginated:12345678');
+    LaravelRateLimiter::clear('efactura-sdk:daily:download:MSG123');
 });
 
 describe('isEnabled', function () {
@@ -24,12 +24,12 @@ describe('isEnabled', function () {
     });
 
     it('returns false when disabled in config', function () {
-        config(['efactura.rate_limits.enabled' => false]);
+        config(['efactura-sdk.rate_limits.enabled' => false]);
         $limiter = new RateLimiter;
 
         expect($limiter->isEnabled())->toBeFalse();
 
-        config(['efactura.rate_limits.enabled' => true]);
+        config(['efactura-sdk.rate_limits.enabled' => true]);
     });
 });
 
@@ -41,7 +41,7 @@ describe('checkGlobal', function () {
     });
 
     it('throws exception when limit exceeded', function () {
-        config(['efactura.rate_limits.global_per_minute' => 1]);
+        config(['efactura-sdk.rate_limits.global_per_minute' => 1]);
         $limiter = new RateLimiter;
 
         // First request should pass
@@ -52,14 +52,14 @@ describe('checkGlobal', function () {
     })->throws(RateLimitExceededException::class, 'Global rate limit exceeded');
 
     it('does not check when rate limiting is disabled', function () {
-        config(['efactura.rate_limits.enabled' => false, 'efactura.rate_limits.global_per_minute' => 1]);
+        config(['efactura-sdk.rate_limits.enabled' => false, 'efactura.rate_limits.global_per_minute' => 1]);
         $limiter = new RateLimiter;
 
         // Should not throw even if we exceed limit
         $limiter->checkGlobal();
         $limiter->checkGlobal();
 
-        config(['efactura.rate_limits.enabled' => true]);
+        config(['efactura-sdk.rate_limits.enabled' => true]);
 
         expect(true)->toBeTrue(); // If we reach here, test passes
     });
@@ -73,7 +73,7 @@ describe('checkRaspUpload', function () {
     });
 
     it('throws exception when CUI limit exceeded', function () {
-        config(['efactura.rate_limits.rasp_upload_per_day_cui' => 1]);
+        config(['efactura-sdk.rate_limits.rasp_upload_per_day_cui' => 1]);
         $limiter = new RateLimiter;
 
         $limiter->checkRaspUpload('12345678');
@@ -81,7 +81,7 @@ describe('checkRaspUpload', function () {
     })->throws(RateLimitExceededException::class, 'RASP upload limit exceeded');
 
     it('tracks per CUI independently', function () {
-        config(['efactura.rate_limits.rasp_upload_per_day_cui' => 1]);
+        config(['efactura-sdk.rate_limits.rasp_upload_per_day_cui' => 1]);
         $limiter = new RateLimiter;
 
         // Different CUIs should have separate limits
@@ -100,7 +100,7 @@ describe('checkStatusQuery', function () {
     });
 
     it('throws exception when message limit exceeded', function () {
-        config(['efactura.rate_limits.status_per_day_message' => 1]);
+        config(['efactura-sdk.rate_limits.status_per_day_message' => 1]);
         $limiter = new RateLimiter;
 
         $limiter->checkStatusQuery('MSG123');
@@ -116,7 +116,7 @@ describe('checkSimpleList', function () {
     });
 
     it('throws exception when CUI limit exceeded', function () {
-        config(['efactura.rate_limits.simple_list_per_day_cui' => 1]);
+        config(['efactura-sdk.rate_limits.simple_list_per_day_cui' => 1]);
         $limiter = new RateLimiter;
 
         $limiter->checkSimpleList('12345678');
@@ -132,7 +132,7 @@ describe('checkPaginatedList', function () {
     });
 
     it('throws exception when CUI limit exceeded', function () {
-        config(['efactura.rate_limits.paginated_list_per_day_cui' => 1]);
+        config(['efactura-sdk.rate_limits.paginated_list_per_day_cui' => 1]);
         $limiter = new RateLimiter;
 
         $limiter->checkPaginatedList('12345678');
@@ -148,7 +148,7 @@ describe('checkDownload', function () {
     });
 
     it('throws exception when message limit exceeded', function () {
-        config(['efactura.rate_limits.download_per_day_message' => 1]);
+        config(['efactura-sdk.rate_limits.download_per_day_message' => 1]);
         $limiter = new RateLimiter;
 
         $limiter->checkDownload('MSG123');

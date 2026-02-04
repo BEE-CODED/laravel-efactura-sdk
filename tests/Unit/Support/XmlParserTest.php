@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Enums\ExecutionStatus;
-use BeeCoded\EFactura\Exceptions\XmlParsingException;
-use BeeCoded\EFactura\Support\XmlParser;
+use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
+use BeeCoded\EFacturaSdk\Exceptions\XmlParsingException;
+use BeeCoded\EFacturaSdk\Support\XmlParser;
 
 describe('parseUploadResponse', function () {
     it('throws exception for empty XML', function () {

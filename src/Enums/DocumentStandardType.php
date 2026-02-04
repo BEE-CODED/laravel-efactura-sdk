@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Enums;
+namespace BeeCoded\EFacturaSdk\Enums;
 
 /**
  * Document standards for validation and PDF conversion.

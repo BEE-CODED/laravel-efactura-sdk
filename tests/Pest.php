@@ -2,6 +2,6 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Tests\TestCase;
+use BeeCoded\EFacturaSdk\Tests\TestCase;
 
 uses(TestCase::class)->in('Feature', 'Unit');

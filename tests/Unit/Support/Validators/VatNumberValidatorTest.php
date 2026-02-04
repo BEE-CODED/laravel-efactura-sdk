@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Support\Validators\VatNumberValidator;
+use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 
 describe('isValid', function () {
     it('validates CUI with correct checksum', function () {

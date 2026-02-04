@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Exceptions;
+namespace BeeCoded\EFacturaSdk\Exceptions;
 
 /**
  * Exception for validation failures.

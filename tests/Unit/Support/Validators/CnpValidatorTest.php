@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Support\Validators\CnpValidator;
+use BeeCoded\EFacturaSdk\Support\Validators\CnpValidator;
 
 describe('isValidFormat', function () {
     it('returns true for 13-digit strings', function () {

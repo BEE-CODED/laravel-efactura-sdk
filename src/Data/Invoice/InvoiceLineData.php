@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Data\Invoice;
+namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use Spatie\LaravelData\Data;
 

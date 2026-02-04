@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Data\Response\DownloadResponseData;
-use BeeCoded\EFactura\Data\Response\ListMessagesResponseData;
-use BeeCoded\EFactura\Data\Response\MessageDetailsData;
-use BeeCoded\EFactura\Data\Response\PaginatedMessagesResponseData;
-use BeeCoded\EFactura\Data\Response\StatusResponseData;
-use BeeCoded\EFactura\Data\Response\UploadResponseData;
-use BeeCoded\EFactura\Data\Response\ValidationResultData;
-use BeeCoded\EFactura\Enums\ExecutionStatus;
-use BeeCoded\EFactura\Enums\UploadStatusValue;
+use BeeCoded\EFacturaSdk\Data\Response\DownloadResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\ListMessagesResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\MessageDetailsData;
+use BeeCoded\EFacturaSdk\Data\Response\PaginatedMessagesResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\StatusResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\UploadResponseData;
+use BeeCoded\EFacturaSdk\Data\Response\ValidationResultData;
+use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
+use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
 
 describe('UploadResponseData', function () {
     it('creates from successful ANAF response', function () {

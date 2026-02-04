@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFactura\Data\Company\CompanyData;
-use BeeCoded\EFactura\Data\Company\CompanyLookupResultData;
-use BeeCoded\EFactura\Data\Company\SplitVatData;
-use BeeCoded\EFactura\Data\Company\VatRegistrationData;
+use BeeCoded\EFacturaSdk\Data\Company\CompanyData;
+use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFacturaSdk\Data\Company\SplitVatData;
+use BeeCoded\EFacturaSdk\Data\Company\VatRegistrationData;
 use Carbon\Carbon;
 
 describe('CompanyData', function () {

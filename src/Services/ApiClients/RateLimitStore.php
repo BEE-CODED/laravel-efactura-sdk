@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace BeeCoded\EFactura\Services\ApiClients;
+namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 
 use Illuminate\Support\Facades\RateLimiter;
 
@@ -70,6 +70,6 @@ class RateLimitStore
 
     private function buildKey(string $key): string
     {
-        return "efactura:{$this->prefix}:{$key}";
+        return "efactura-sdk:{$this->prefix}:{$key}";
     }
 }
