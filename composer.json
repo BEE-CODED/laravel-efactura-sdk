@@ -14,10 +14,9 @@
     ],
     "authors": [
         {
-            "name": "Dragos Burciu",
-            "email": "dragos.burciu@gmail.com",
-            "homepage": "https://www.beecoded.io/",
-            "role": "Developer"
+            "name": "BEE CODED",
+            "email": "dev.ttl@beecoded.ro",
+            "homepage": "https://beecoded.ro"
         }
     ],
     "require": {
