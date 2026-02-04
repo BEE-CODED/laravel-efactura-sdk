@@ -4,10 +4,44 @@ declare(strict_types=1);
 
 namespace Beecoded\EFactura;
 
-use Beecoded\EFactura\Contracts\EFacturaClientInterface;
-use Beecoded\EFactura\Services\EFacturaClient;
+use Beecoded\EFactura\Builders\InvoiceBuilder;
+use Beecoded\EFactura\Contracts\AnafAuthenticatorInterface;
+use Beecoded\EFactura\Contracts\AnafDetailsClientInterface;
+use Beecoded\EFactura\Contracts\UblBuilderInterface;
+use Beecoded\EFactura\Services\AnafAuthenticator;
+use Beecoded\EFactura\Services\ApiClients\AnafDetailsClient;
+use Beecoded\EFactura\Services\RateLimiter;
+use Beecoded\EFactura\Services\UblBuilder;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 
+/**
+ * Laravel e-Factura SDK Service Provider.
+ *
+ * This is a STATELESS SDK - no database storage is included.
+ * OAuth tokens are managed by the consuming application.
+ *
+ * Registered Services:
+ * - AnafAuthenticatorInterface: For OAuth flow (get auth URL, exchange code, refresh tokens)
+ * - AnafDetailsClientInterface: For company lookup (no auth required)
+ * - UblBuilderInterface: For generating UBL 2.1 XML invoices
+ * - InvoiceBuilder: Low-level invoice XML builder
+ *
+ * NOTE: EFacturaClient is NOT registered as a singleton because it requires
+ * tokens per instantiation. Create it directly:
+ *
+ * ```php
+ * use Beecoded\EFactura\Services\ApiClients\EFacturaClient;
+ *
+ * $client = new EFacturaClient(
+ *     vatNumber: '12345678',
+ *     accessToken: $tokens->accessToken,
+ *     refreshToken: $tokens->refreshToken,
+ *     expiresAt: $tokens->expiresAt,
+ *     authenticator: app(AnafAuthenticatorInterface::class)
+ * );
+ * ```
+ */
 final class EFacturaServiceProvider extends ServiceProvider
 {
     /**
@@ -20,13 +54,51 @@ final class EFacturaServiceProvider extends ServiceProvider
             'efactura'
         );
 
-        $this->app->singleton(EFacturaClientInterface::class, function ($app) {
-            return new EFacturaClient(
-                config: $app['config']['efactura']
+        // Authenticator for OAuth flow (stateless - returns tokens to caller)
+        // Note: This will throw AuthenticationException if OAuth credentials are not configured.
+        // Only resolve this service when you need OAuth functionality.
+        $this->app->singleton(AnafAuthenticatorInterface::class, function ($app) {
+            $config = $app['config']['efactura'];
+
+            // Check if OAuth is configured before attempting to create authenticator
+            if (empty($config['oauth']['client_id'] ?? null)) {
+                throw new \Beecoded\EFactura\Exceptions\AuthenticationException(
+                    'OAuth credentials not configured. Set EFACTURA_CLIENT_ID, EFACTURA_CLIENT_SECRET, and EFACTURA_REDIRECT_URI in your environment, or resolve this service only when OAuth is needed.'
+                );
+            }
+
+            return new AnafAuthenticator(
+                http: $app->make(HttpFactory::class),
+                config: $config
             );
         });
 
-        $this->app->alias(EFacturaClientInterface::class, 'efactura');
+        // Company lookup client (no auth required - public API)
+        $this->app->singleton(AnafDetailsClientInterface::class, function () {
+            return new AnafDetailsClient;
+        });
+
+        // Invoice XML builder
+        $this->app->singleton(InvoiceBuilder::class, function () {
+            return new InvoiceBuilder;
+        });
+
+        // UBL Builder wrapper
+        $this->app->singleton(UblBuilderInterface::class, function ($app) {
+            return new UblBuilder(
+                invoiceBuilder: $app->make(InvoiceBuilder::class)
+            );
+        });
+
+        // Rate limiter for API call throttling
+        $this->app->singleton(RateLimiter::class, function () {
+            return new RateLimiter;
+        });
+
+        // Aliases for convenience
+        $this->app->alias(AnafAuthenticatorInterface::class, 'efactura.auth');
+        $this->app->alias(AnafDetailsClientInterface::class, 'anaf-details');
+        $this->app->alias(UblBuilderInterface::class, 'efactura.ubl');
     }
 
     /**
@@ -38,10 +110,6 @@ final class EFacturaServiceProvider extends ServiceProvider
             $this->publishes([
                 __DIR__.'/../config/efactura.php' => config_path('efactura.php'),
             ], 'efactura-config');
-
-            $this->publishesMigrations([
-                __DIR__.'/../database/migrations' => database_path('migrations'),
-            ], 'efactura-migrations');
         }
     }
 }

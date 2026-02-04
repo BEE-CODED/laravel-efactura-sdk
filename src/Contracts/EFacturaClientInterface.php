@@ -4,39 +4,182 @@ declare(strict_types=1);
 
 namespace Beecoded\EFactura\Contracts;
 
+use Beecoded\EFactura\Data\Auth\OAuthTokensData;
+use Beecoded\EFactura\Data\Invoice\ListMessagesParamsData;
+use Beecoded\EFactura\Data\Invoice\PaginatedMessagesParamsData;
+use Beecoded\EFactura\Data\Invoice\UploadOptionsData;
+use Beecoded\EFactura\Data\Response\DownloadResponseData;
+use Beecoded\EFactura\Data\Response\ListMessagesResponseData;
+use Beecoded\EFactura\Data\Response\PaginatedMessagesResponseData;
+use Beecoded\EFactura\Data\Response\StatusResponseData;
+use Beecoded\EFactura\Data\Response\UploadResponseData;
+use Beecoded\EFactura\Data\Response\ValidationResultData;
+use Beecoded\EFactura\Enums\DocumentStandardType;
+use Beecoded\EFactura\Exceptions\ApiException;
+use Beecoded\EFactura\Exceptions\AuthenticationException;
+use Beecoded\EFactura\Exceptions\ValidationException;
+
+/**
+ * Interface for ANAF e-Factura API client.
+ *
+ * This interface defines all operations available for interacting with the
+ * ANAF e-Factura (electronic invoicing) system. The client is stateless
+ * and requires tokens to be passed in at construction time.
+ *
+ * Token Management:
+ * - Tokens are passed in via constructor (stateless design)
+ * - Auto-refresh occurs when tokens are expired (with 30-second buffer)
+ * - Use wasTokenRefreshed() to check if tokens were refreshed
+ * - Use getTokens() to get the current (potentially refreshed) tokens
+ */
 interface EFacturaClientInterface
 {
     /**
-     * Upload an invoice to the e-Factura system.
+     * Upload a B2B document to ANAF e-Factura system.
      *
      * @param  string  $xml  The UBL 2.1 XML invoice content
-     * @param  string  $cif  The fiscal identification code (CIF) of the issuer
-     * @return array<string, mixed>
+     * @param  UploadOptionsData|null  $options  Optional upload options (standard, extern, selfBilled, executare)
+     * @return UploadResponseData Contains upload ID on success
+     *
+     * @throws ValidationException When XML content is empty or invalid
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
      */
-    public function uploadInvoice(string $xml, string $cif): array;
+    public function uploadDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData;
 
     /**
-     * Get the status of an uploaded invoice.
+     * Upload a B2C document to ANAF e-Factura system.
      *
-     * @param  string  $uploadIndex  The upload index returned from uploadInvoice
-     * @return array<string, mixed>
+     * Used for invoices to consumers (not registered businesses).
+     *
+     * @param  string  $xml  The UBL 2.1 XML invoice content
+     * @param  UploadOptionsData|null  $options  Optional upload options
+     * @return UploadResponseData Contains upload ID on success
+     *
+     * @throws ValidationException When XML content is empty or invalid
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
      */
-    public function getInvoiceStatus(string $uploadIndex): array;
+    public function uploadB2CDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData;
 
     /**
-     * Download an invoice response/message from ANAF.
+     * Get the processing status of an uploaded document.
      *
-     * @param  string  $downloadId  The download ID from the message list
-     * @return array<string, mixed>
+     * After uploading, documents are processed asynchronously. Use this method
+     * to check if processing is complete and get the download ID.
+     *
+     * @param  string  $uploadId  The upload index returned from uploadDocument/uploadB2CDocument
+     * @return StatusResponseData Contains processing status and download ID when ready
+     *
+     * @throws ValidationException When upload ID is empty or invalid
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
      */
-    public function downloadInvoice(string $downloadId): array;
+    public function getStatusMessage(string $uploadId): StatusResponseData;
 
     /**
-     * Get the list of messages (invoices) from ANAF.
+     * Download a document from ANAF.
      *
-     * @param  string  $cif  The fiscal identification code
-     * @param  int  $days  Number of days to look back (max 60)
-     * @return array<string, mixed>
+     * Downloads the ZIP archive containing the processed invoice or error response.
+     *
+     * @param  string  $downloadId  The download ID from status response or message list
+     * @return DownloadResponseData Contains binary ZIP content
+     *
+     * @throws ValidationException When download ID is empty or invalid
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
      */
-    public function getMessages(string $cif, int $days = 60): array;
+    public function downloadDocument(string $downloadId): DownloadResponseData;
+
+    /**
+     * Get list of messages (invoices) from ANAF.
+     *
+     * Retrieves messages for the specified CIF within the given number of days.
+     * Maximum 60 days lookback.
+     *
+     * @param  ListMessagesParamsData  $params  Parameters including CIF, days, and optional filter
+     * @return ListMessagesResponseData Contains array of message details
+     *
+     * @throws ValidationException When parameters are invalid
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
+     */
+    public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData;
+
+    /**
+     * Get paginated list of messages from ANAF.
+     *
+     * Retrieves messages for the specified CIF within a time range with pagination.
+     *
+     * @param  PaginatedMessagesParamsData  $params  Parameters including CIF, time range, page, and optional filter
+     * @return PaginatedMessagesResponseData Contains paginated array of message details
+     *
+     * @throws ValidationException When parameters are invalid
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
+     */
+    public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData;
+
+    /**
+     * Validate XML document against ANAF schema.
+     *
+     * Validates the XML structure without uploading to the system.
+     *
+     * @param  string  $xml  The XML content to validate
+     * @param  DocumentStandardType  $standard  Document standard (FACT1 for invoice, FCN for credit note)
+     * @return ValidationResultData Contains validation result and any errors
+     *
+     * @throws ValidationException When XML content is empty
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
+     */
+    public function validateXml(string $xml, DocumentStandardType $standard): ValidationResultData;
+
+    /**
+     * Verify the digital signature of an XML document.
+     *
+     * @param  string  $xml  The signed XML content to verify
+     * @return ValidationResultData Contains signature verification result
+     *
+     * @throws ValidationException When XML content is empty
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
+     */
+    public function verifySignature(string $xml): ValidationResultData;
+
+    /**
+     * Convert XML invoice to PDF format.
+     *
+     * Transforms the UBL XML invoice into a human-readable PDF document.
+     * Includes validation before conversion.
+     *
+     * @param  string  $xml  The XML content to convert
+     * @param  DocumentStandardType  $standard  Document standard (FACT1 for invoice, FCN for credit note)
+     * @param  bool  $validate  Whether to validate before conversion (default: false)
+     * @return string Binary PDF content
+     *
+     * @throws ValidationException When XML content is empty or validation fails
+     * @throws AuthenticationException When authentication fails
+     * @throws ApiException When API call fails
+     */
+    public function convertXmlToPdf(string $xml, DocumentStandardType $standard, bool $validate = false): string;
+
+    /**
+     * Check if the access token was refreshed during API operations.
+     *
+     * Use this after API calls to determine if tokens need to be persisted.
+     */
+    public function wasTokenRefreshed(): bool;
+
+    /**
+     * Get the current OAuth tokens (may be refreshed from original).
+     *
+     * Call this after API operations to get potentially updated tokens.
+     */
+    public function getTokens(): OAuthTokensData;
+
+    /**
+     * Get the VAT number (CIF) associated with this client instance.
+     */
+    public function getVatNumber(): string;
 }
