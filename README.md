@@ -14,20 +14,20 @@ A Laravel package for integrating with Romania's ANAF e-Factura (electronic invo
 
 ## Requirements
 
-- PHP 8.2+
+- PHP 8.4+
 - Laravel 11.0+
 - Valid ANAF OAuth credentials
 
 ## Installation
 
 ```bash
-composer require beecoded/laravel-efactura-sdk
+composer require bee-coded/laravel-efactura-sdk
 ```
 
 Publish the configuration file:
 
 ```bash
-php artisan vendor:publish --tag=efactura-config
+php artisan vendor:publish --tag=efactura-sdk-config
 ```
 
 ## Configuration
@@ -44,7 +44,7 @@ EFACTURA_REDIRECT_URI=https://your-app.com/efactura/callback
 ### Configuration Options
 
 ```php
-// config/efactura.php
+// config/efactura-sdk.php
 return [
     'sandbox' => env('EFACTURA_SANDBOX', true),
 
@@ -61,7 +61,7 @@ return [
     ],
 
     'logging' => [
-        'channel' => env('EFACTURA_LOG_CHANNEL', 'efactura'),
+        'channel' => env('EFACTURA_LOG_CHANNEL', 'efactura-sdk'),
     ],
 ];
 ```
@@ -71,9 +71,9 @@ return [
 Add a dedicated logging channel in `config/logging.php`:
 
 ```php
-'efactura' => [
+'efactura-sdk' => [
     'driver' => 'daily',
-    'path' => storage_path('logs/efactura.log'),
+    'path' => storage_path('logs/efactura-sdk.log'),
     'level' => 'debug',
     'days' => 30,
 ],
@@ -126,7 +126,7 @@ The SDK provides a stateless OAuth implementation. **You are responsible for sto
 #### Step 1: Redirect User to ANAF Authorization
 
 ```php
-use Beecoded\EFactura\Facades\EFactura;
+use BeeCoded\EFacturaSdk\Facades\EFactura;
 
 // Generate authorization URL
 $authUrl = EFactura::getAuthorizationUrl();
@@ -143,7 +143,7 @@ return redirect($authUrl);
 #### Step 2: Handle OAuth Callback
 
 ```php
-use Beecoded\EFactura\Facades\EFactura;
+use BeeCoded\EFacturaSdk\Facades\EFactura;
 
 public function handleCallback(Request $request)
 {
@@ -165,7 +165,7 @@ public function handleCallback(Request $request)
 #### Manual Token Refresh
 
 ```php
-use Beecoded\EFactura\Facades\EFactura;
+use BeeCoded\EFacturaSdk\Facades\EFactura;
 
 $newTokens = EFactura::refreshAccessToken($storedRefreshToken);
 
@@ -182,8 +182,8 @@ $tokenModel->update([
 #### Creating the Client
 
 ```php
-use Beecoded\EFactura\Services\ApiClients\EFacturaClient;
-use Beecoded\EFactura\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
 
 // Retrieve your stored tokens
 $storedTokens = YourTokenModel::where('company_id', $companyId)->first();
@@ -202,8 +202,8 @@ $client = EFacturaClient::fromTokens($vatNumber, $tokens);
 #### Upload Invoice
 
 ```php
-use Beecoded\EFactura\Data\Invoice\UploadOptionsData;
-use Beecoded\EFactura\Enums\StandardType;
+use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
+use BeeCoded\EFacturaSdk\Enums\StandardType;
 
 // Basic upload
 $result = $client->uploadDocument($xmlContent);
@@ -257,8 +257,8 @@ $contentType = $download->contentType;
 #### List Messages
 
 ```php
-use Beecoded\EFactura\Data\Invoice\ListMessagesParamsData;
-use Beecoded\EFactura\Enums\MessageFilter;
+use BeeCoded\EFacturaSdk\Data\Invoice\ListMessagesParamsData;
+use BeeCoded\EFacturaSdk\Enums\MessageFilter;
 
 // List messages from last 30 days
 $messages = $client->getMessages(new ListMessagesParamsData(
@@ -277,7 +277,7 @@ foreach ($messages->mesaje as $message) {
 #### Paginated Messages
 
 ```php
-use Beecoded\EFactura\Data\Invoice\PaginatedMessagesParamsData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
 
 // Using timestamps (milliseconds)
 $messages = $client->getMessagesPaginated(new PaginatedMessagesParamsData(
@@ -308,7 +308,7 @@ $messages->hasNextPage();
 #### Validate XML
 
 ```php
-use Beecoded\EFactura\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
 
 $validation = $client->validateXml($xmlContent, DocumentStandardType::FACT1);
 
@@ -324,7 +324,7 @@ if ($validation->valid) {
 #### Convert to PDF
 
 ```php
-use Beecoded\EFactura\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
 
 // Convert without validation
 $pdfContent = $client->convertXmlToPdf($xmlContent, DocumentStandardType::FACT1);
@@ -397,7 +397,7 @@ public function uploadInvoice(string $xml, Company $company): UploadResponseData
 The SDK automatically enforces rate limits before each API call. When a limit is exceeded, a `RateLimitExceededException` is thrown.
 
 ```php
-use Beecoded\EFactura\Exceptions\RateLimitExceededException;
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 
 try {
     $result = $client->uploadDocument($xml);
@@ -446,7 +446,7 @@ EFACTURA_RATE_LIMIT_ENABLED=false
 Or check status in code:
 
 ```php
-$rateLimiter = app(\Beecoded\EFactura\Services\RateLimiter::class);
+$rateLimiter = app(\BeeCoded\EFacturaSdk\Services\RateLimiter::class);
 
 if ($rateLimiter->isEnabled()) {
     // Rate limiting is active
@@ -458,11 +458,11 @@ if ($rateLimiter->isEnabled()) {
 #### Using the UBL Builder
 
 ```php
-use Beecoded\EFactura\Facades\UblBuilder;
-use Beecoded\EFactura\Data\Invoice\InvoiceData;
-use Beecoded\EFactura\Data\Invoice\PartyData;
-use Beecoded\EFactura\Data\Invoice\AddressData;
-use Beecoded\EFactura\Data\Invoice\InvoiceLineData;
+use BeeCoded\EFacturaSdk\Facades\UblBuilder;
+use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
+use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
+use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 
 $invoice = new InvoiceData(
     invoiceNumber: 'INV-2024-001',
@@ -564,7 +564,7 @@ Romanian addresses are automatically sanitized to ISO 3166-2:RO format:
 Query ANAF for company information (no authentication required):
 
 ```php
-use Beecoded\EFactura\Facades\AnafDetails;
+use BeeCoded\EFacturaSdk\Facades\AnafDetails;
 
 // Single company lookup
 $result = AnafDetails::getCompanyData('RO12345678');
@@ -623,7 +623,7 @@ $isValid = AnafDetails::isValidVatCode('RO12345678'); // true
 #### VAT Number Validation
 
 ```php
-use Beecoded\EFactura\Support\Validators\VatNumberValidator;
+use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 
 VatNumberValidator::isValid('RO12345678');  // true
 VatNumberValidator::isValid('12345678');    // true (2-10 digits)
@@ -636,7 +636,7 @@ VatNumberValidator::stripPrefix('RO12345678'); // '12345678'
 #### CNP Validation
 
 ```php
-use Beecoded\EFactura\Support\Validators\CnpValidator;
+use BeeCoded\EFacturaSdk\Support\Validators\CnpValidator;
 
 CnpValidator::isValid('1234567890123'); // Validates checksum
 CnpValidator::isValid('0000000000000'); // true (special ANAF case)
@@ -645,7 +645,7 @@ CnpValidator::isValid('0000000000000'); // true (special ANAF case)
 ### Date Helpers
 
 ```php
-use Beecoded\EFactura\Support\DateHelper;
+use BeeCoded\EFacturaSdk\Support\DateHelper;
 
 // Format for ANAF API
 DateHelper::formatForAnaf(now());           // '2024-01-15'
@@ -698,11 +698,11 @@ InvoiceTypeCode::DebitNote  // '383' - Debit note
 ## Exception Handling
 
 ```php
-use Beecoded\EFactura\Exceptions\AuthenticationException;
-use Beecoded\EFactura\Exceptions\ValidationException;
-use Beecoded\EFactura\Exceptions\ApiException;
-use Beecoded\EFactura\Exceptions\RateLimitExceededException;
-use Beecoded\EFactura\Exceptions\XmlParsingException;
+use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
+use BeeCoded\EFacturaSdk\Exceptions\XmlParsingException;
 
 try {
     $result = $client->uploadDocument($xml);
@@ -730,8 +730,8 @@ try {
 When testing your application, you can mock the SDK services:
 
 ```php
-use Beecoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use Beecoded\EFactura\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFacturaSdk\Contracts\AnafDetailsClientInterface;
 
 // In your test
 $this->mock(AnafAuthenticatorInterface::class, function ($mock) {

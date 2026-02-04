@@ -51,16 +51,16 @@ return [
     | Configure the logging channel for API calls.
     | You should add this channel to your config/logging.php:
     |
-    | 'efactura' => [
+    | 'efactura-sdk' => [
     |     'driver' => 'daily',
-    |     'path' => storage_path('logs/efactura.log'),
+    |     'path' => storage_path('logs/efactura-sdk.log'),
     |     'level' => 'debug',
     |     'days' => 30,
     | ],
     |
     */
     'logging' => [
-        'channel' => env('EFACTURA_LOG_CHANNEL', 'efactura'),
+        'channel' => env('EFACTURA_LOG_CHANNEL', 'efactura-sdk'),
     ],
 
     /*
