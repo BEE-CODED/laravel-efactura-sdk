@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Services;
+namespace BeeCoded\EFactura\Services;
 
-use Beecoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use Beecoded\EFactura\Data\Auth\AuthUrlSettingsData;
-use Beecoded\EFactura\Data\Auth\OAuthTokensData;
-use Beecoded\EFactura\Exceptions\AuthenticationException;
+use BeeCoded\EFactura\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFactura\Data\Auth\AuthUrlSettingsData;
+use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
+use BeeCoded\EFactura\Exceptions\AuthenticationException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Log;

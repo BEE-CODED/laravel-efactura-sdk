@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Enums;
+namespace BeeCoded\EFactura\Enums;
 
 /**
  * Status values for upload processing (stare field).

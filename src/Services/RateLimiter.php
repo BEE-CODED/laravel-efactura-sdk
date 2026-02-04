@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Services;
+namespace BeeCoded\EFactura\Services;
 
-use Beecoded\EFactura\Exceptions\RateLimitExceededException;
-use Beecoded\EFactura\Services\ApiClients\RateLimitStore;
+use BeeCoded\EFactura\Exceptions\RateLimitExceededException;
+use BeeCoded\EFactura\Services\ApiClients\RateLimitStore;
 
 /**
  * Rate limiter for ANAF e-Factura API.

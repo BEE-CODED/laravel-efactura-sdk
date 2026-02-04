@@ -2,16 +2,16 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura;
+namespace BeeCoded\EFactura;
 
-use Beecoded\EFactura\Builders\InvoiceBuilder;
-use Beecoded\EFactura\Contracts\AnafAuthenticatorInterface;
-use Beecoded\EFactura\Contracts\AnafDetailsClientInterface;
-use Beecoded\EFactura\Contracts\UblBuilderInterface;
-use Beecoded\EFactura\Services\AnafAuthenticator;
-use Beecoded\EFactura\Services\ApiClients\AnafDetailsClient;
-use Beecoded\EFactura\Services\RateLimiter;
-use Beecoded\EFactura\Services\UblBuilder;
+use BeeCoded\EFactura\Builders\InvoiceBuilder;
+use BeeCoded\EFactura\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFactura\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFactura\Contracts\UblBuilderInterface;
+use BeeCoded\EFactura\Services\AnafAuthenticator;
+use BeeCoded\EFactura\Services\ApiClients\AnafDetailsClient;
+use BeeCoded\EFactura\Services\RateLimiter;
+use BeeCoded\EFactura\Services\UblBuilder;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 
@@ -31,7 +31,7 @@ use Illuminate\Support\ServiceProvider;
  * tokens per instantiation. Create it directly:
  *
  * ```php
- * use Beecoded\EFactura\Services\ApiClients\EFacturaClient;
+ * use BeeCoded\EFactura\Services\ApiClients\EFacturaClient;
  *
  * $client = new EFacturaClient(
  *     vatNumber: '12345678',
@@ -62,7 +62,7 @@ final class EFacturaServiceProvider extends ServiceProvider
 
             // Check if OAuth is configured before attempting to create authenticator
             if (empty($config['oauth']['client_id'] ?? null)) {
-                throw new \Beecoded\EFactura\Exceptions\AuthenticationException(
+                throw new \BeeCoded\EFactura\Exceptions\AuthenticationException(
                     'OAuth credentials not configured. Set EFACTURA_CLIENT_ID, EFACTURA_CLIENT_SECRET, and EFACTURA_REDIRECT_URI in your environment, or resolve this service only when OAuth is needed.'
                 );
             }

@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Support\DateHelper;
+use BeeCoded\EFactura\Support\DateHelper;
 use Carbon\Carbon;
 
 beforeEach(function () {

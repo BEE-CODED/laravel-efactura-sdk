@@ -36,12 +36,12 @@
     },
     "autoload": {
         "psr-4": {
-            "Beecoded\\EFactura\\": "src/"
+            "BeeCoded\\EFactura\\": "src/"
         }
     },
     "autoload-dev": {
         "psr-4": {
-            "Beecoded\\EFactura\\Tests\\": "tests/"
+            "BeeCoded\\EFactura\\Tests\\": "tests/"
         }
     },
     "scripts": {
@@ -61,10 +61,10 @@
     "extra": {
         "laravel": {
             "providers": [
-                "Beecoded\\EFactura\\EFacturaServiceProvider"
+                "BeeCoded\\EFactura\\EFacturaServiceProvider"
             ],
             "aliases": {
-                "EFactura": "Beecoded\\EFactura\\Facades\\EFactura"
+                "EFactura": "BeeCoded\\EFactura\\Facades\\EFactura"
             }
         }
     },

@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Builders\InvoiceBuilder;
-use Beecoded\EFactura\Contracts\AnafDetailsClientInterface;
-use Beecoded\EFactura\Contracts\UblBuilderInterface;
-use Beecoded\EFactura\Services\ApiClients\AnafDetailsClient;
-use Beecoded\EFactura\Services\RateLimiter;
-use Beecoded\EFactura\Services\UblBuilder;
+use BeeCoded\EFactura\Builders\InvoiceBuilder;
+use BeeCoded\EFactura\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFactura\Contracts\UblBuilderInterface;
+use BeeCoded\EFactura\Services\ApiClients\AnafDetailsClient;
+use BeeCoded\EFactura\Services\RateLimiter;
+use BeeCoded\EFactura\Services\UblBuilder;
 
 it('registers the anaf details client singleton', function () {
     $client = app(AnafDetailsClientInterface::class);

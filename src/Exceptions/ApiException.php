@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Exceptions;
+namespace BeeCoded\EFactura\Exceptions;
 
 /**
  * Exception for API call failures.

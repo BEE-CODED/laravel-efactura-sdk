@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Facades;
+namespace BeeCoded\EFactura\Facades;
 
-use Beecoded\EFactura\Contracts\AnafDetailsClientInterface;
-use Beecoded\EFactura\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFactura\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFactura\Data\Company\CompanyLookupResultData;
 use Illuminate\Support\Facades\Facade;
 
 /**
@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static CompanyLookupResultData batchGetCompanyData(array $vatCodes) Get company data for multiple VAT codes
  * @method static bool isValidVatCode(string $vatCode) Check if VAT code format is valid
  *
- * @see \Beecoded\EFactura\Services\ApiClients\AnafDetailsClient
+ * @see \BeeCoded\EFactura\Services\ApiClients\AnafDetailsClient
  */
 final class AnafDetails extends Facade
 {

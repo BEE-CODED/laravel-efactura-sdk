@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Support\Validators;
+namespace BeeCoded\EFactura\Support\Validators;
 
 use InvalidArgumentException;
 

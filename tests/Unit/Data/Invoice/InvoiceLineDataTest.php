@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Data\Invoice\InvoiceLineData;
+use BeeCoded\EFactura\Data\Invoice\InvoiceLineData;
 
 describe('InvoiceLineData construction', function () {
     it('creates line with required fields', function () {

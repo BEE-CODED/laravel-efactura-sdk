@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Builders\InvoiceBuilder;
-use Beecoded\EFactura\Data\Invoice\AddressData;
-use Beecoded\EFactura\Data\Invoice\InvoiceData;
-use Beecoded\EFactura\Data\Invoice\InvoiceLineData;
-use Beecoded\EFactura\Data\Invoice\PartyData;
-use Beecoded\EFactura\Exceptions\ValidationException;
-use Beecoded\EFactura\Services\UblBuilder;
+use BeeCoded\EFactura\Builders\InvoiceBuilder;
+use BeeCoded\EFactura\Data\Invoice\AddressData;
+use BeeCoded\EFactura\Data\Invoice\InvoiceData;
+use BeeCoded\EFactura\Data\Invoice\InvoiceLineData;
+use BeeCoded\EFactura\Data\Invoice\PartyData;
+use BeeCoded\EFactura\Exceptions\ValidationException;
+use BeeCoded\EFactura\Services\UblBuilder;
 
 describe('UblBuilder', function () {
     it('generates invoice XML from invoice data', function () {

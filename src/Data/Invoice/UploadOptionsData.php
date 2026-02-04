@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Data\Invoice;
+namespace BeeCoded\EFactura\Data\Invoice;
 
-use Beecoded\EFactura\Enums\StandardType;
+use BeeCoded\EFactura\Enums\StandardType;
 use Spatie\LaravelData\Data;
 
 /**

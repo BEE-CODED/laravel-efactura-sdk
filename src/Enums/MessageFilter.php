@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Enums;
+namespace BeeCoded\EFactura\Enums;
 
 /**
  * Message filters for listing operations.

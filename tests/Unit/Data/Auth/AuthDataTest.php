@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Data\Auth\AuthUrlSettingsData;
-use Beecoded\EFactura\Data\Auth\OAuthTokensData;
+use BeeCoded\EFactura\Data\Auth\AuthUrlSettingsData;
+use BeeCoded\EFactura\Data\Auth\OAuthTokensData;
 use Carbon\Carbon;
 
 describe('OAuthTokensData', function () {

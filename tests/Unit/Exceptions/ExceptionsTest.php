@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Exceptions\ApiException;
-use Beecoded\EFactura\Exceptions\AuthenticationException;
-use Beecoded\EFactura\Exceptions\EFacturaException;
-use Beecoded\EFactura\Exceptions\NotFoundException;
-use Beecoded\EFactura\Exceptions\RateLimitExceededException;
-use Beecoded\EFactura\Exceptions\ValidationException;
-use Beecoded\EFactura\Exceptions\XmlParsingException;
+use BeeCoded\EFactura\Exceptions\ApiException;
+use BeeCoded\EFactura\Exceptions\AuthenticationException;
+use BeeCoded\EFactura\Exceptions\EFacturaException;
+use BeeCoded\EFactura\Exceptions\NotFoundException;
+use BeeCoded\EFactura\Exceptions\RateLimitExceededException;
+use BeeCoded\EFactura\Exceptions\ValidationException;
+use BeeCoded\EFactura\Exceptions\XmlParsingException;
 
 describe('EFacturaException', function () {
     it('can be instantiated with message', function () {

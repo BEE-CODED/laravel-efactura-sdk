@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Data\Response;
+namespace BeeCoded\EFactura\Data\Response;
 
-use Beecoded\EFactura\Enums\UploadStatusValue;
+use BeeCoded\EFactura\Enums\UploadStatusValue;
 use Spatie\LaravelData\Data;
 
 /**

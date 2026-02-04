@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Contracts;
+namespace BeeCoded\EFactura\Contracts;
 
-use Beecoded\EFactura\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFactura\Data\Company\CompanyLookupResultData;
 
 /**
  * Interface for ANAF company details lookup.

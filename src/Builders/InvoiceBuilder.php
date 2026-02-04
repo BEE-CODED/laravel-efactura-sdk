@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Builders;
+namespace BeeCoded\EFactura\Builders;
 
-use Beecoded\EFactura\Data\Invoice\AddressData;
-use Beecoded\EFactura\Data\Invoice\InvoiceData;
-use Beecoded\EFactura\Data\Invoice\InvoiceLineData;
-use Beecoded\EFactura\Data\Invoice\PartyData;
-use Beecoded\EFactura\Enums\TaxCategoryId;
-use Beecoded\EFactura\Exceptions\ValidationException;
-use Beecoded\EFactura\Support\AddressSanitizer;
+use BeeCoded\EFactura\Data\Invoice\AddressData;
+use BeeCoded\EFactura\Data\Invoice\InvoiceData;
+use BeeCoded\EFactura\Data\Invoice\InvoiceLineData;
+use BeeCoded\EFactura\Data\Invoice\PartyData;
+use BeeCoded\EFactura\Enums\TaxCategoryId;
+use BeeCoded\EFactura\Exceptions\ValidationException;
+use BeeCoded\EFactura\Support\AddressSanitizer;
 use Sabre\Xml\Service as XmlService;
 use Sabre\Xml\Writer;
 

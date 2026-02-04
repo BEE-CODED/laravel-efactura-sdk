@@ -2,12 +2,12 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Services;
+namespace BeeCoded\EFactura\Services;
 
-use Beecoded\EFactura\Builders\InvoiceBuilder;
-use Beecoded\EFactura\Contracts\UblBuilderInterface;
-use Beecoded\EFactura\Data\Invoice\InvoiceData;
-use Beecoded\EFactura\Exceptions\ValidationException;
+use BeeCoded\EFactura\Builders\InvoiceBuilder;
+use BeeCoded\EFactura\Contracts\UblBuilderInterface;
+use BeeCoded\EFactura\Data\Invoice\InvoiceData;
+use BeeCoded\EFactura\Exceptions\ValidationException;
 
 /**
  * UBL XML Builder Service.

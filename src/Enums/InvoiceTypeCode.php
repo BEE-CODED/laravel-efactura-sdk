@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Enums;
+namespace BeeCoded\EFactura\Enums;
 
 /**
  * The type of invoice. Usually invoices are sent for commercial purposes.

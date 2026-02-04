@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Data\Response\ValidationResultData;
+use BeeCoded\EFactura\Data\Response\ValidationResultData;
 
 describe('ValidationResultData', function () {
     it('creates valid result', function () {

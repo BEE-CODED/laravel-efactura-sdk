@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Data\Company;
+namespace BeeCoded\EFactura\Data\Company;
 
 use Carbon\Carbon;
 use Spatie\LaravelData\Data;

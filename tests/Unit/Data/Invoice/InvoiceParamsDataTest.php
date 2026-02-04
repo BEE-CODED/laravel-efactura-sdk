@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Data\Invoice\ListMessagesParamsData;
-use Beecoded\EFactura\Data\Invoice\PaginatedMessagesParamsData;
-use Beecoded\EFactura\Data\Invoice\UploadOptionsData;
-use Beecoded\EFactura\Enums\MessageFilter;
-use Beecoded\EFactura\Enums\StandardType;
+use BeeCoded\EFactura\Data\Invoice\ListMessagesParamsData;
+use BeeCoded\EFactura\Data\Invoice\PaginatedMessagesParamsData;
+use BeeCoded\EFactura\Data\Invoice\UploadOptionsData;
+use BeeCoded\EFactura\Enums\MessageFilter;
+use BeeCoded\EFactura\Enums\StandardType;
 use Carbon\Carbon;
 
 describe('ListMessagesParamsData', function () {

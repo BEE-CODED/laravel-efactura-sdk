@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Services\ApiClients;
+namespace BeeCoded\EFactura\Services\ApiClients;
 
 use Illuminate\Support\Facades\RateLimiter;
 

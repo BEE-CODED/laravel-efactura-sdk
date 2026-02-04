@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Services\ApiClients\AnafDetailsClient;
+use BeeCoded\EFactura\Services\ApiClients\AnafDetailsClient;
 use Illuminate\Support\Facades\Http;
 
 describe('AnafDetailsClient', function () {

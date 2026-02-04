@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Exceptions\RateLimitExceededException;
-use Beecoded\EFactura\Services\RateLimiter;
+use BeeCoded\EFactura\Exceptions\RateLimitExceededException;
+use BeeCoded\EFactura\Services\RateLimiter;
 use Illuminate\Support\Facades\RateLimiter as LaravelRateLimiter;
 
 beforeEach(function () {

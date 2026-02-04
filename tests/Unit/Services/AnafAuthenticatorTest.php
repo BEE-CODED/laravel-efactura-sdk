@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-use Beecoded\EFactura\Data\Auth\AuthUrlSettingsData;
-use Beecoded\EFactura\Exceptions\AuthenticationException;
-use Beecoded\EFactura\Services\AnafAuthenticator;
+use BeeCoded\EFactura\Data\Auth\AuthUrlSettingsData;
+use BeeCoded\EFactura\Exceptions\AuthenticationException;
+use BeeCoded\EFactura\Services\AnafAuthenticator;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\Http;
 

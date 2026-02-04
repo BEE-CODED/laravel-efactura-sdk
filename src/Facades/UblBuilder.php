@@ -2,10 +2,10 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Facades;
+namespace BeeCoded\EFactura\Facades;
 
-use Beecoded\EFactura\Contracts\UblBuilderInterface;
-use Beecoded\EFactura\Data\Invoice\InvoiceData;
+use BeeCoded\EFactura\Contracts\UblBuilderInterface;
+use BeeCoded\EFactura\Data\Invoice\InvoiceData;
 use Illuminate\Support\Facades\Facade;
 
 /**
@@ -13,8 +13,8 @@ use Illuminate\Support\Facades\Facade;
  *
  * @method static string generateInvoiceXml(InvoiceData $invoiceData) Generate UBL 2.1 compliant XML from invoice data
  *
- * @see \Beecoded\EFactura\Services\UblBuilder
- * @see \Beecoded\EFactura\Builders\InvoiceBuilder
+ * @see \BeeCoded\EFactura\Services\UblBuilder
+ * @see \BeeCoded\EFactura\Builders\InvoiceBuilder
  */
 final class UblBuilder extends Facade
 {

@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace Beecoded\EFactura\Services\ApiClients;
+namespace BeeCoded\EFactura\Services\ApiClients;
 
-use Beecoded\EFactura\Contracts\AnafDetailsClientInterface;
-use Beecoded\EFactura\Data\Company\CompanyData;
-use Beecoded\EFactura\Data\Company\CompanyLookupResultData;
-use Beecoded\EFactura\Exceptions\ApiException;
-use Beecoded\EFactura\Support\DateHelper;
-use Beecoded\EFactura\Support\Validators\VatNumberValidator;
+use BeeCoded\EFactura\Contracts\AnafDetailsClientInterface;
+use BeeCoded\EFactura\Data\Company\CompanyData;
+use BeeCoded\EFactura\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFactura\Exceptions\ApiException;
+use BeeCoded\EFactura\Support\DateHelper;
+use BeeCoded\EFactura\Support\Validators\VatNumberValidator;
 use Illuminate\Support\Facades\Log;
 use Psr\Log\LoggerInterface;
 
