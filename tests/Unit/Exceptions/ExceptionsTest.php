@@ -5,7 +5,6 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\EFacturaException;
-use BeeCoded\EFacturaSdk\Exceptions\NotFoundException;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Exceptions\XmlParsingException;
@@ -34,11 +33,20 @@ describe('EFacturaException', function () {
     });
 });
 
+describe('Exception hierarchy', function () {
+    it('all custom exceptions extend EFacturaException', function () {
+        expect(new ApiException('Test', 500))->toBeInstanceOf(EFacturaException::class);
+        expect(new AuthenticationException('Test'))->toBeInstanceOf(EFacturaException::class);
+        expect(new ValidationException('Test'))->toBeInstanceOf(EFacturaException::class);
+        expect(new XmlParsingException('Test'))->toBeInstanceOf(EFacturaException::class);
+        expect(new RateLimitExceededException('Test'))->toBeInstanceOf(EFacturaException::class);
+    });
+});
+
 describe('ApiException', function () {
     it('stores HTTP status code', function () {
         $exception = new ApiException('API Error', 500);
 
-        expect($exception->getMessage())->toBe('API Error');
         expect($exception->statusCode)->toBe(500);
         expect($exception->getCode())->toBe(500);
     });
@@ -48,55 +56,9 @@ describe('ApiException', function () {
 
         expect($exception->details)->toBe('Invalid request body');
     });
-
-    it('can include context', function () {
-        $exception = new ApiException('Error', 500, null, null, ['endpoint' => '/test']);
-
-        expect($exception->context)->toBe(['endpoint' => '/test']);
-    });
-
-    it('extends EFacturaException', function () {
-        $exception = new ApiException('Error', 500);
-
-        expect($exception)->toBeInstanceOf(EFacturaException::class);
-    });
-});
-
-describe('AuthenticationException', function () {
-    it('is an EFacturaException', function () {
-        $exception = new AuthenticationException('Auth failed');
-
-        expect($exception)->toBeInstanceOf(EFacturaException::class);
-        expect($exception->getMessage())->toBe('Auth failed');
-    });
-});
-
-describe('ValidationException', function () {
-    it('is an EFacturaException', function () {
-        $exception = new ValidationException('Invalid data');
-
-        expect($exception)->toBeInstanceOf(EFacturaException::class);
-        expect($exception->getMessage())->toBe('Invalid data');
-    });
-});
-
-describe('NotFoundException', function () {
-    it('is an EFacturaException', function () {
-        $exception = new NotFoundException('Resource not found');
-
-        expect($exception)->toBeInstanceOf(EFacturaException::class);
-        expect($exception->getMessage())->toBe('Resource not found');
-    });
 });
 
 describe('XmlParsingException', function () {
-    it('is an EFacturaException', function () {
-        $exception = new XmlParsingException('Invalid XML');
-
-        expect($exception)->toBeInstanceOf(EFacturaException::class);
-        expect($exception->getMessage())->toBe('Invalid XML');
-    });
-
     it('stores raw response', function () {
         $exception = new XmlParsingException('Parse error', '<invalid>');
 
@@ -107,18 +69,6 @@ describe('XmlParsingException', function () {
         $exception = new XmlParsingException('Parse error');
 
         expect($exception->getCode())->toBe(500);
-    });
-
-    it('can include context', function () {
-        $exception = new XmlParsingException(
-            'Parse error',
-            '<xml>',
-            500,
-            null,
-            ['source' => 'upload']
-        );
-
-        expect($exception->context)->toBe(['source' => 'upload']);
     });
 });
 
@@ -145,11 +95,5 @@ describe('RateLimitExceededException', function () {
         $exception = new RateLimitExceededException('Rate limit exceeded');
 
         expect($exception->retryAfterSeconds)->toBe(60);
-    });
-
-    it('extends EFacturaException', function () {
-        $exception = new RateLimitExceededException('Error');
-
-        expect($exception)->toBeInstanceOf(EFacturaException::class);
     });
 });

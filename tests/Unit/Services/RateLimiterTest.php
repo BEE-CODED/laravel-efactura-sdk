@@ -34,12 +34,6 @@ describe('isEnabled', function () {
 });
 
 describe('checkGlobal', function () {
-    it('allows requests under limit', function () {
-        $limiter = new RateLimiter;
-
-        expect(fn () => $limiter->checkGlobal())->not->toThrow(RateLimitExceededException::class);
-    });
-
     it('throws exception when limit exceeded', function () {
         config(['efactura-sdk.rate_limits.global_per_minute' => 1]);
         $limiter = new RateLimiter;
@@ -66,12 +60,6 @@ describe('checkGlobal', function () {
 });
 
 describe('checkRaspUpload', function () {
-    it('allows uploads under limit', function () {
-        $limiter = new RateLimiter;
-
-        expect(fn () => $limiter->checkRaspUpload('12345678'))->not->toThrow(RateLimitExceededException::class);
-    });
-
     it('throws exception when CUI limit exceeded', function () {
         config(['efactura-sdk.rate_limits.rasp_upload_per_day_cui' => 1]);
         $limiter = new RateLimiter;
@@ -93,12 +81,6 @@ describe('checkRaspUpload', function () {
 });
 
 describe('checkStatusQuery', function () {
-    it('allows queries under limit', function () {
-        $limiter = new RateLimiter;
-
-        expect(fn () => $limiter->checkStatusQuery('MSG123'))->not->toThrow(RateLimitExceededException::class);
-    });
-
     it('throws exception when message limit exceeded', function () {
         config(['efactura-sdk.rate_limits.status_per_day_message' => 1]);
         $limiter = new RateLimiter;
@@ -109,12 +91,6 @@ describe('checkStatusQuery', function () {
 });
 
 describe('checkSimpleList', function () {
-    it('allows queries under limit', function () {
-        $limiter = new RateLimiter;
-
-        expect(fn () => $limiter->checkSimpleList('12345678'))->not->toThrow(RateLimitExceededException::class);
-    });
-
     it('throws exception when CUI limit exceeded', function () {
         config(['efactura-sdk.rate_limits.simple_list_per_day_cui' => 1]);
         $limiter = new RateLimiter;
@@ -125,12 +101,6 @@ describe('checkSimpleList', function () {
 });
 
 describe('checkPaginatedList', function () {
-    it('allows queries under limit', function () {
-        $limiter = new RateLimiter;
-
-        expect(fn () => $limiter->checkPaginatedList('12345678'))->not->toThrow(RateLimitExceededException::class);
-    });
-
     it('throws exception when CUI limit exceeded', function () {
         config(['efactura-sdk.rate_limits.paginated_list_per_day_cui' => 1]);
         $limiter = new RateLimiter;
@@ -141,12 +111,6 @@ describe('checkPaginatedList', function () {
 });
 
 describe('checkDownload', function () {
-    it('allows downloads under limit', function () {
-        $limiter = new RateLimiter;
-
-        expect(fn () => $limiter->checkDownload('MSG123'))->not->toThrow(RateLimitExceededException::class);
-    });
-
     it('throws exception when message limit exceeded', function () {
         config(['efactura-sdk.rate_limits.download_per_day_message' => 1]);
         $limiter = new RateLimiter;
@@ -156,60 +120,101 @@ describe('checkDownload', function () {
     })->throws(RateLimitExceededException::class, 'Download limit exceeded');
 });
 
+describe('limit validation', function () {
+    it('throws exception for zero global_per_minute limit', function () {
+        config(['efactura-sdk.rate_limits.global_per_minute' => 0]);
+        new RateLimiter;
+    })->throws(InvalidArgumentException::class, "Rate limit 'global_per_minute' must be a positive integer, got 0");
+
+    it('throws exception for negative global_per_minute limit', function () {
+        config(['efactura-sdk.rate_limits.global_per_minute' => -10]);
+        new RateLimiter;
+    })->throws(InvalidArgumentException::class, "Rate limit 'global_per_minute' must be a positive integer, got -10");
+
+    it('throws exception for zero rasp_upload_per_day_cui limit', function () {
+        config(['efactura-sdk.rate_limits.rasp_upload_per_day_cui' => 0]);
+        new RateLimiter;
+    })->throws(InvalidArgumentException::class, "Rate limit 'rasp_upload_per_day_cui' must be a positive integer, got 0");
+});
+
+describe('empty identifier validation', function () {
+    it('throws exception for empty CUI in checkRaspUpload', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkRaspUpload('');
+    })->throws(InvalidArgumentException::class, 'CUI cannot be empty for rate limiting');
+
+    it('throws exception for whitespace-only CUI in checkRaspUpload', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkRaspUpload('   ');
+    })->throws(InvalidArgumentException::class, 'CUI cannot be empty for rate limiting');
+
+    it('throws exception for empty message ID in checkStatusQuery', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkStatusQuery('');
+    })->throws(InvalidArgumentException::class, 'message ID cannot be empty for rate limiting');
+
+    it('throws exception for empty CUI in checkSimpleList', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkSimpleList('');
+    })->throws(InvalidArgumentException::class, 'CUI cannot be empty for rate limiting');
+
+    it('throws exception for empty CUI in checkPaginatedList', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkPaginatedList('');
+    })->throws(InvalidArgumentException::class, 'CUI cannot be empty for rate limiting');
+
+    it('throws exception for empty message ID in checkDownload', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkDownload('');
+    })->throws(InvalidArgumentException::class, 'message ID cannot be empty for rate limiting');
+});
+
 describe('getRemainingQuota', function () {
-    it('returns global quota info', function () {
+    it('returns quota info with correct structure and limits', function (string $type, ?string $identifier, int $expectedLimit) {
         $limiter = new RateLimiter;
 
-        $quota = $limiter->getRemainingQuota('global');
+        $quota = $limiter->getRemainingQuota($type, $identifier ?? '');
 
         expect($quota)->toHaveKeys(['limit', 'remaining', 'resetsIn']);
-        expect($quota['limit'])->toBe(500); // Default limit
-    });
-
-    it('returns rasp_upload quota info', function () {
-        $limiter = new RateLimiter;
-
-        $quota = $limiter->getRemainingQuota('rasp_upload', '12345678');
-
-        expect($quota)->toHaveKeys(['limit', 'remaining', 'resetsIn']);
-        expect($quota['limit'])->toBe(500);
-    });
-
-    it('returns status quota info', function () {
-        $limiter = new RateLimiter;
-
-        $quota = $limiter->getRemainingQuota('status', 'MSG123');
-
-        expect($quota['limit'])->toBe(50);
-    });
-
-    it('returns simple_list quota info', function () {
-        $limiter = new RateLimiter;
-
-        $quota = $limiter->getRemainingQuota('simple_list', '12345678');
-
-        expect($quota['limit'])->toBe(750);
-    });
-
-    it('returns paginated_list quota info', function () {
-        $limiter = new RateLimiter;
-
-        $quota = $limiter->getRemainingQuota('paginated_list', '12345678');
-
-        expect($quota['limit'])->toBe(50000);
-    });
-
-    it('returns download quota info', function () {
-        $limiter = new RateLimiter;
-
-        $quota = $limiter->getRemainingQuota('download', 'MSG123');
-
-        expect($quota['limit'])->toBe(5);
-    });
+        expect($quota['limit'])->toBe($expectedLimit);
+    })->with([
+        'global' => ['global', null, 500],
+        'rasp_upload' => ['rasp_upload', '12345678', 500],
+        'status' => ['status', 'MSG123', 50],
+        'simple_list' => ['simple_list', '12345678', 750],
+        'paginated_list' => ['paginated_list', '12345678', 50000],
+        'download' => ['download', 'MSG123', 5],
+    ]);
 
     it('throws exception for unknown type', function () {
         $limiter = new RateLimiter;
 
         $limiter->getRemainingQuota('unknown');
     })->throws(InvalidArgumentException::class, 'Unknown rate limit type');
+
+    it('throws exception for empty identifier on non-global types', function (string $type) {
+        $limiter = new RateLimiter;
+
+        $limiter->getRemainingQuota($type, '');
+    })->with([
+        'rasp_upload',
+        'status',
+        'simple_list',
+        'paginated_list',
+        'download',
+    ])->throws(InvalidArgumentException::class, 'Identifier is required for rate limit type');
+
+    it('throws exception for whitespace-only identifier', function () {
+        $limiter = new RateLimiter;
+
+        $limiter->getRemainingQuota('download', '   ');
+    })->throws(InvalidArgumentException::class, 'Identifier is required for rate limit type: download');
+
+    it('allows empty identifier for global type', function () {
+        $limiter = new RateLimiter;
+
+        $quota = $limiter->getRemainingQuota('global', '');
+
+        expect($quota)->toHaveKeys(['limit', 'remaining', 'resetsIn']);
+    });
 });

@@ -117,5 +117,23 @@ describe('DownloadResponseData', function () {
 
             fclose($stream);
         });
+
+        it('writes complete content to stream', function () {
+            // Bug fix: fwrite() result is now checked to ensure all bytes were written
+            $longContent = str_repeat('x', 10000);
+            $response = new DownloadResponseData(
+                content: $longContent,
+                contentType: 'application/octet-stream',
+            );
+
+            $stream = $response->getStream();
+
+            expect(is_resource($stream))->toBeTrue();
+            $readContent = stream_get_contents($stream);
+            expect(strlen($readContent))->toBe(10000);
+            expect($readContent)->toBe($longContent);
+
+            fclose($stream);
+        });
     });
 });

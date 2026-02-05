@@ -43,17 +43,31 @@ class InvoiceData extends Data
     /**
      * Get the issue date as a Carbon instance.
      * Returns a copy to prevent mutation of the original date.
+     *
+     * @throws \InvalidArgumentException If the date string cannot be parsed
      */
     public function getIssueDateAsCarbon(): Carbon
     {
-        return $this->issueDate instanceof Carbon
-            ? $this->issueDate->copy()
-            : Carbon::parse($this->issueDate);
+        if ($this->issueDate instanceof Carbon) {
+            return $this->issueDate->copy();
+        }
+
+        try {
+            return Carbon::parse($this->issueDate);
+        } catch (\Exception $e) {
+            throw new \InvalidArgumentException(
+                "Invalid issue date format: {$this->issueDate}",
+                0,
+                $e
+            );
+        }
     }
 
     /**
      * Get the due date as a Carbon instance (or null if not set).
      * Returns a copy to prevent mutation of the original date.
+     *
+     * @throws \InvalidArgumentException If the date string cannot be parsed
      */
     public function getDueDateAsCarbon(): ?Carbon
     {
@@ -61,9 +75,19 @@ class InvoiceData extends Data
             return null;
         }
 
-        return $this->dueDate instanceof Carbon
-            ? $this->dueDate->copy()
-            : Carbon::parse($this->dueDate);
+        if ($this->dueDate instanceof Carbon) {
+            return $this->dueDate->copy();
+        }
+
+        try {
+            return Carbon::parse($this->dueDate);
+        } catch (\Exception $e) {
+            throw new \InvalidArgumentException(
+                "Invalid due date format: {$this->dueDate}",
+                0,
+                $e
+            );
+        }
     }
 
     /**
@@ -98,9 +122,11 @@ class InvoiceData extends Data
     public function getTotalVat(): float
     {
         // Group line amounts by tax percentage
+        // Round to 2 decimal places to match InvoiceBuilder::groupLinesByTax() and avoid
+        // floating-point precision issues (e.g., 19.0 vs 19.00000001 producing different keys)
         $taxGroups = [];
         foreach ($this->lines as $line) {
-            $key = (string) $line->taxPercent;
+            $key = (string) round($line->taxPercent, 2);
             if (! isset($taxGroups[$key])) {
                 $taxGroups[$key] = [
                     'taxableAmount' => 0.0,

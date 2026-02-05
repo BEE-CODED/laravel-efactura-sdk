@@ -18,7 +18,7 @@ src/
 ├── Exceptions/                  # Custom exceptions
 └── Contracts/                   # Interfaces
 config/
-    efactura.php                 # Package configuration
+    efactura-sdk.php             # Package configuration
 tests/
     Feature/
     Unit/

@@ -42,6 +42,20 @@ describe('isValid', function () {
         // Testing that isValid delegates to CnpValidator for 13-digit numbers
         expect(VatNumberValidator::isValid('0000000000000'))->toBeTrue(); // ANAF special case
     });
+
+    it('returns false for invalid 13-digit CNP', function () {
+        // 13-digit numbers are treated as CNPs - if CNP validation fails, isValid returns false
+        // This ensures the fix where we check CNP validity for 13-digit numbers works
+        expect(VatNumberValidator::isValid('1234567890123'))->toBeFalse(); // Invalid CNP checksum
+        expect(VatNumberValidator::isValid('9999999999999'))->toBeFalse(); // Invalid CNP (invalid century code 9)
+    });
+
+    it('does not treat 13-digit number as 10-digit CUI with RO prefix', function () {
+        // Regression test: 13-digit numbers should be validated as CNPs,
+        // not as CUIs that happen to start with RO-like digits
+        // This is a 13-digit number, not RO + 10 digits
+        expect(VatNumberValidator::isValid('1234567890123'))->toBeFalse();
+    });
 });
 
 describe('isValidFormat', function () {
@@ -91,6 +105,33 @@ describe('normalize', function () {
     it('throws exception for whitespace only', function () {
         VatNumberValidator::normalize('   ');
     })->throws(InvalidArgumentException::class, 'Company VAT number is missing');
+
+    it('throws exception for invalid format', function () {
+        VatNumberValidator::normalize('ABC123');
+    })->throws(InvalidArgumentException::class, 'Invalid VAT number format');
+
+    it('throws exception for single digit (too short)', function () {
+        VatNumberValidator::normalize('5');
+    })->throws(InvalidArgumentException::class, 'Invalid VAT number format');
+
+    it('throws exception for 11 digits (too long for CUI, too short for CNP)', function () {
+        VatNumberValidator::normalize('12345678901');
+    })->throws(InvalidArgumentException::class, 'Invalid VAT number format');
+
+    it('throws exception for 12 digits (invalid length)', function () {
+        VatNumberValidator::normalize('123456789012');
+    })->throws(InvalidArgumentException::class, 'Invalid VAT number format');
+
+    it('throws exception for 13 digits with invalid CNP checksum', function () {
+        // Bug fix: 13-digit numbers with invalid CNP checksum should not get RO prefix
+        // Instead, they should throw an exception
+        VatNumberValidator::normalize('1234567890123');
+    })->throws(InvalidArgumentException::class, 'Invalid CNP');
+
+    it('throws exception for 13 digits with invalid date in CNP', function () {
+        // 13 digits starting with valid sex digit but invalid month (99)
+        VatNumberValidator::normalize('1999913123456');
+    })->throws(InvalidArgumentException::class, 'Invalid CNP');
 });
 
 describe('stripPrefix', function () {

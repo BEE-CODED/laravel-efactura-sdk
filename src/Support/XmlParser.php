@@ -30,7 +30,12 @@ final class XmlParser
         $parsed = self::parseXml($xml);
 
         if ($parsed === null) {
-            throw new XmlParsingException('Failed to parse XML response', $xml);
+            throw new XmlParsingException(
+                'Failed to parse XML response',
+                $xml,
+                500,
+                self::$lastParseException
+            );
         }
 
         $result = self::tryParseUploadStructure($parsed);
@@ -55,7 +60,12 @@ final class XmlParser
         $parsed = self::parseXml($xml);
 
         if ($parsed === null) {
-            throw new XmlParsingException('Failed to parse XML response', $xml);
+            throw new XmlParsingException(
+                'Failed to parse XML response',
+                $xml,
+                500,
+                self::$lastParseException
+            );
         }
 
         $result = self::tryParseStatusStructure($parsed);
@@ -85,6 +95,19 @@ final class XmlParser
     }
 
     /**
+     * Last parsing exception for debugging purposes.
+     */
+    private static ?\Throwable $lastParseException = null;
+
+    /**
+     * Get the last parse exception (useful for debugging).
+     */
+    public static function getLastParseException(): ?\Throwable
+    {
+        return self::$lastParseException;
+    }
+
+    /**
      * Parse XML string into an array structure.
      *
      * @param  string  $xml  The XML string to parse
@@ -93,6 +116,7 @@ final class XmlParser
     private static function parseXml(string $xml): ?array
     {
         $xml = trim($xml);
+        self::$lastParseException = null;
 
         if ($xml === '') {
             return null;
@@ -107,7 +131,10 @@ final class XmlParser
 
             // Convert to simpler structure
             return self::normalizeXmlArray($result);
-        } catch (\Exception) {
+        } catch (\Exception $e) {
+            // Store exception for debugging - allows callers to get more details if needed
+            self::$lastParseException = $e;
+
             return null;
         }
     }
@@ -280,7 +307,9 @@ final class XmlParser
         }
 
         $executionStatusRaw = $attributes['ExecutionStatus'];
-        $statusValue = is_numeric($executionStatusRaw) ? (int) $executionStatusRaw : 0;
+        // Default non-numeric values to Error (1) instead of Success (0)
+        // to avoid masking API failures with malformed responses
+        $statusValue = is_numeric($executionStatusRaw) ? (int) $executionStatusRaw : ExecutionStatus::Error->value;
 
         $indexIncarcareRaw = $attributes['index_incarcare'] ?? null;
         $dateResponseRaw = $attributes['dateResponse'] ?? null;

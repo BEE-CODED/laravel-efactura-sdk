@@ -15,7 +15,7 @@ use Spatie\LaravelData\Data;
 class ListMessagesResponseData extends Data
 {
     public function __construct(
-        /** Array of messages */
+        /** @var array<int, MessageDetailsData>|null Array of messages */
         #[DataCollectionOf(MessageDetailsData::class)]
         public ?array $mesaje = null,
 

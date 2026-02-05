@@ -33,8 +33,8 @@ final class VatNumberValidator
      * Check if a VAT code is valid (format and checksum).
      *
      * This validates:
-     * - Format: Optional RO prefix followed by 2-10 digits
-     * - Checksum: Using the control key algorithm (modulo 11)
+     * - CNP: 13 digits with valid checksum (Romanian personal identification number)
+     * - CUI/CIF: Optional RO prefix followed by 2-10 digits with valid checksum
      *
      * @param  string  $vatCode  The VAT code to validate
      * @return bool True if the format and checksum are valid
@@ -47,12 +47,13 @@ final class VatNumberValidator
             return false;
         }
 
-        // Check if it's a valid CNP (13 digits with valid checksum)
-        if (CnpValidator::isValid($vatCode)) {
-            return true;
+        // If it's 13 digits, it must be validated as a CNP (not as CUI)
+        // CNPs are valid VAT identifiers for individual entrepreneurs (PFA)
+        if (preg_match('/^\d{13}$/', $vatCode)) {
+            return CnpValidator::isValid($vatCode);
         }
 
-        // Check format: optional RO prefix followed by 2-10 digits
+        // Check CUI format: optional RO prefix followed by 2-10 digits
         if (! preg_match('/^(RO)?(\d{2,10})$/i', $vatCode, $matches)) {
             return false;
         }
@@ -148,7 +149,7 @@ final class VatNumberValidator
      * @param  string  $vatCode  The VAT code to normalize
      * @return string The normalized VAT code with RO prefix
      *
-     * @throws InvalidArgumentException If the VAT code is empty
+     * @throws InvalidArgumentException If the VAT code is empty or has invalid format
      */
     public static function normalize(string $vatCode): string
     {
@@ -158,9 +159,24 @@ final class VatNumberValidator
             throw new InvalidArgumentException('Company VAT number is missing.');
         }
 
+        // Validate format before normalizing to prevent creating invalid outputs
+        if (! self::isValidFormat($vatCode)) {
+            throw new InvalidArgumentException(
+                "Invalid VAT number format: {$vatCode}. Expected CNP (13 digits) or CUI (2-10 digits with optional RO prefix)."
+            );
+        }
+
         // If it's a valid CNP, return it unchanged
         if (CnpValidator::isValid($vatCode)) {
             return $vatCode;
+        }
+
+        // If it's 13 digits but not a valid CNP, reject it
+        // (valid CNP format but invalid checksum/date)
+        if (CnpValidator::isValidFormat($vatCode)) {
+            throw new InvalidArgumentException(
+                "Invalid CNP: {$vatCode}. The 13-digit number has an invalid checksum or date."
+            );
         }
 
         // Add RO prefix if not already present

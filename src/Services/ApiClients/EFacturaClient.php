@@ -70,7 +70,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private const int TOKEN_REFRESH_LOCK_TIMEOUT = 10;
 
     /**
-     * Maximum time to wait for lock acquisition in seconds.
+     * Default maximum time to wait for lock acquisition in seconds.
      */
     private const int TOKEN_REFRESH_LOCK_WAIT = 15;
 
@@ -105,9 +105,18 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private bool $tokenRefreshed = false;
 
     /**
-     * The authenticator for token refresh.
+     * Whether a token refresh attempt has failed.
+     *
+     * Once set to true, subsequent API calls will fail fast instead of
+     * repeatedly attempting to refresh an invalid token. This prevents
+     * cascading failures in long-running processes.
      */
-    private readonly AnafAuthenticatorInterface $authenticator;
+    private bool $tokenRefreshFailed = false;
+
+    /**
+     * The authenticator for token refresh (resolved lazily).
+     */
+    private ?AnafAuthenticatorInterface $authenticator = null;
 
     /**
      * The rate limiter for API call throttling.
@@ -121,20 +130,36 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * @param  string  $accessToken  The OAuth access token
      * @param  string  $refreshToken  The OAuth refresh token for auto-refresh
      * @param  Carbon|null  $expiresAt  Token expiration time
+     * @param  AnafAuthenticatorInterface|null  $authenticator  Optional authenticator (resolved lazily if not provided)
      */
     public function __construct(
         private readonly string $vatNumber,
         string $accessToken,
         string $refreshToken,
         ?Carbon $expiresAt = null,
+        ?AnafAuthenticatorInterface $authenticator = null,
     ) {
         parent::__construct();
 
         $this->accessToken = $accessToken;
         $this->refreshToken = $refreshToken;
         $this->expiresAt = $expiresAt;
-        $this->authenticator = app(AnafAuthenticatorInterface::class);
+        $this->authenticator = $authenticator;
         $this->rateLimiter = app(RateLimiter::class);
+    }
+
+    /**
+     * Get the authenticator, resolving it lazily if needed.
+     *
+     * @throws AuthenticationException If OAuth is not configured when token refresh is needed
+     */
+    private function getAuthenticator(): AnafAuthenticatorInterface
+    {
+        if ($this->authenticator === null) {
+            $this->authenticator = app(AnafAuthenticatorInterface::class);
+        }
+
+        return $this->authenticator;
     }
 
     /**
@@ -142,16 +167,19 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *
      * @param  string  $vatNumber  The VAT number (CIF) for API operations
      * @param  OAuthTokensData  $tokens  The OAuth tokens
+     * @param  AnafAuthenticatorInterface|null  $authenticator  Optional authenticator for token refresh
      */
     public static function fromTokens(
         string $vatNumber,
         OAuthTokensData $tokens,
+        ?AnafAuthenticatorInterface $authenticator = null,
     ): self {
         return new self(
             vatNumber: $vatNumber,
             accessToken: $tokens->accessToken,
             refreshToken: $tokens->refreshToken,
             expiresAt: $tokens->expiresAt,
+            authenticator: $authenticator,
         );
     }
 
@@ -209,12 +237,24 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     }
 
     /**
+     * Get the maximum time to wait for lock acquisition in seconds.
+     * Can be overridden in tests for faster execution.
+     */
+    protected function getLockWaitSeconds(): int
+    {
+        return self::TOKEN_REFRESH_LOCK_WAIT;
+    }
+
+    /**
      * {@inheritdoc}
      *
      * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function uploadDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
     {
+        // Validate first - fail fast without consuming rate limit quota
+        $this->validateXmlContent($xml);
+
         $this->rateLimiter->checkGlobal();
 
         // Check RASP-specific rate limit when uploading RASP documents
@@ -222,8 +262,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         if ($standard === StandardType::RASP) {
             $this->rateLimiter->checkRaspUpload($this->vatNumber);
         }
-
-        $this->validateXmlContent($xml);
 
         $queryParams = $this->buildUploadQueryParams($options);
         $route = '/upload?'.http_build_query($queryParams);
@@ -240,6 +278,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function uploadB2CDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
     {
+        // Validate first - fail fast without consuming rate limit quota
+        $this->validateXmlContent($xml);
+
         $this->rateLimiter->checkGlobal();
 
         // Check RASP-specific rate limit when uploading RASP documents
@@ -247,8 +288,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         if ($standard === StandardType::RASP) {
             $this->rateLimiter->checkRaspUpload($this->vatNumber);
         }
-
-        $this->validateXmlContent($xml);
 
         $queryParams = $this->buildUploadQueryParams($options);
         $route = '/uploadb2c?'.http_build_query($queryParams);
@@ -265,9 +304,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function getStatusMessage(string $uploadId): StatusResponseData
     {
+        // Validate first - fail fast without consuming rate limit quota
+        $this->validateUploadId($uploadId);
+
         $this->rateLimiter->checkGlobal();
         $this->rateLimiter->checkStatusQuery($uploadId);
-        $this->validateUploadId($uploadId);
 
         $queryParams = [
             'id_incarcare' => $uploadId,
@@ -287,9 +328,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function downloadDocument(string $downloadId): DownloadResponseData
     {
+        // Validate first - fail fast without consuming rate limit quota
+        $this->validateDownloadId($downloadId);
+
         $this->rateLimiter->checkGlobal();
         $this->rateLimiter->checkDownload($downloadId);
-        $this->validateDownloadId($downloadId);
 
         $queryParams = [
             'id' => $downloadId,
@@ -312,9 +355,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData
     {
+        // Validate first - fail fast without consuming rate limit quota
+        $this->validateDays($params->days);
+
         $this->rateLimiter->checkGlobal();
         $this->rateLimiter->checkSimpleList($params->cif);
-        $this->validateDays($params->days);
 
         $queryParams = [
             'cif' => $params->cif,
@@ -339,10 +384,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData
     {
-        $this->rateLimiter->checkGlobal();
-        $this->rateLimiter->checkPaginatedList($params->cif);
+        // Validate first - fail fast without consuming rate limit quota
         $this->validateTimeRange($params->startTime, $params->endTime);
         $this->validatePage($params->page);
+
+        $this->rateLimiter->checkGlobal();
+        $this->rateLimiter->checkPaginatedList($params->cif);
 
         $queryParams = [
             'cif' => $params->cif,
@@ -369,12 +416,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function validateXml(string $xml, DocumentStandardType $standard): ValidationResultData
     {
-        $this->rateLimiter->checkGlobal();
+        // Validate first - fail fast without consuming rate limit quota
         $this->validateXmlContent($xml);
+
+        $this->rateLimiter->checkGlobal();
 
         $validateUrl = config('efactura-sdk.endpoints.services.validate');
         if (empty($validateUrl)) {
-            throw new ValidationException('Missing configuration: efactura.endpoints.services.validate');
+            throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.validate');
         }
 
         $url = $validateUrl.'/'.$standard->value;
@@ -391,12 +440,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function verifySignature(string $xml): ValidationResultData
     {
-        $this->rateLimiter->checkGlobal();
+        // Validate first - fail fast without consuming rate limit quota
         $this->validateXmlContent($xml);
+
+        $this->rateLimiter->checkGlobal();
 
         $verifyUrl = config('efactura-sdk.endpoints.services.verify_signature');
         if (empty($verifyUrl)) {
-            throw new ValidationException('Missing configuration: efactura.endpoints.services.verify_signature');
+            throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.verify_signature');
         }
 
         $response = $this->authenticatedXmlRequestToUrl($verifyUrl, 'POST', $xml);
@@ -411,12 +462,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public function convertXmlToPdf(string $xml, DocumentStandardType $standard, bool $validate = false): string
     {
-        $this->rateLimiter->checkGlobal();
+        // Validate first - fail fast without consuming rate limit quota
         $this->validateXmlContent($xml);
+
+        $this->rateLimiter->checkGlobal();
 
         $transformUrl = config('efactura-sdk.endpoints.services.transform');
         if (empty($transformUrl)) {
-            throw new ValidationException('Missing configuration: efactura.endpoints.services.transform');
+            throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.transform');
         }
         $endpoint = $validate ? $standard->value : "{$standard->value}/DA";
 
@@ -428,10 +481,17 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $contentType = (string) $response->header('Content-Type');
         if (str_contains($contentType, 'application/json')) {
             $errorData = $response->json();
+            if ($errorData === null) {
+                throw new ApiException(
+                    'PDF conversion failed with invalid JSON response',
+                    $response->status(),
+                    $response->body()
+                );
+            }
             throw new ApiException(
                 $errorData['message'] ?? $errorData['eroare'] ?? 'PDF conversion failed',
                 $response->status(),
-                json_encode($errorData)
+                json_encode($errorData) ?: null
             );
         }
 
@@ -489,6 +549,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     private function getValidAccessToken(): string
     {
+        // Fail fast if a previous refresh attempt failed - prevents cascading failures
+        // in long-running processes. Create a new client instance with fresh credentials.
+        if ($this->tokenRefreshFailed) {
+            throw new AuthenticationException(
+                'Token refresh previously failed. Create a new client instance with valid credentials.'
+            );
+        }
+
         if ($this->isTokenValid()) {
             return $this->accessToken;
         }
@@ -500,18 +568,30 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         try {
             // Wait for lock with timeout - block() throws LockTimeoutException on timeout
-            $lock->block(self::TOKEN_REFRESH_LOCK_WAIT);
+            $lock->block($this->getLockWaitSeconds());
+
+            // Re-check token validity after acquiring lock - another process may have refreshed it
+            // @phpstan-ignore if.alwaysFalse (race condition: token state can change while waiting for lock)
+            if ($this->isTokenValid()) {
+                return $this->accessToken;
+            }
+
             $this->refreshTokens();
 
             return $this->accessToken;
         } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
             // Could not acquire lock within timeout
-            // This process will use the existing token (may work if another process refreshed)
-            $this->logger->warning('Could not acquire token refresh lock, using existing token', [
+            // Another process is likely refreshing the token - fail fast rather than use stale token
+            // ANAF uses rotating refresh tokens, so the old token is invalidated after refresh
+            $this->logger->error('Could not acquire token refresh lock, token may be stale', [
                 'vatNumber' => $this->vatNumber,
             ]);
 
-            return $this->accessToken;
+            throw new AuthenticationException(
+                'Token refresh lock timeout. Another process may be refreshing the token. Please retry.',
+                0,
+                $e
+            );
         } finally {
             // Safe to call - Laravel's lock tracks ownership and won't release others' locks
             $lock->release();
@@ -545,7 +625,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         ]);
 
         try {
-            $newTokens = $this->authenticator->refreshAccessToken($this->refreshToken);
+            $newTokens = $this->getAuthenticator()->refreshAccessToken($this->refreshToken);
 
             $this->accessToken = $newTokens->accessToken;
             $this->refreshToken = $newTokens->refreshToken;
@@ -557,6 +637,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 'newExpiresAt' => $this->expiresAt?->toIso8601String(),
             ]);
         } catch (AuthenticationException $e) {
+            // Mark refresh as failed to prevent cascading failures on subsequent calls
+            // The client must be recreated with fresh credentials to recover
+            $this->tokenRefreshFailed = true;
+
             $this->logger->error('Failed to refresh ANAF access token', [
                 'vatNumber' => $this->vatNumber,
                 'error' => $e->getMessage(),
@@ -567,6 +651,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * Make an authenticated request to the API.
+     *
+     * @param  array<string, mixed>  $data
      *
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
@@ -596,7 +682,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 throw new AuthenticationException(
                     'Authentication failed. Token may be invalid or revoked.',
                     401,
-                    $e
+                    $e,
+                    $e->context
                 );
             }
             throw $e;
@@ -633,7 +720,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 throw new AuthenticationException(
                     'Authentication failed. Token may be invalid or revoked.',
                     401,
-                    $e
+                    $e,
+                    $e->context
                 );
             }
             throw $e;
@@ -671,7 +759,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 throw new AuthenticationException(
                     'Authentication failed. Token may be invalid or revoked.',
                     401,
-                    $e
+                    $e,
+                    $e->context
                 );
             }
             throw $e;
@@ -694,6 +783,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         int $tryCount = 0
     ): Response {
         $tryCount++;
+        $startTime = Carbon::now();
         $context = fn () => [
             'url' => $fullUrl,
             'bodyLength' => strlen($body),
@@ -703,7 +793,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         ];
 
         try {
-            $startTime = Carbon::now();
             $request = \Illuminate\Support\Facades\Http::timeout(static::getTimeoutDuration());
             $request->withHeaders($headers);
 
@@ -724,6 +813,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 $context()
             );
         } catch (\Exception $exception) {
+            // Calculate duration for failed requests so logging is accurate
+            $this->lastRequestDurationMilliseconds = $startTime->diffInMilliseconds(Carbon::now());
+
             $this->logger->error(
                 "Exception before response was received: {$exception->getMessage()}.",
                 $context()
@@ -739,7 +831,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 $exception->getMessage(),
                 500,
                 null,
-                $exception
+                $exception,
+                $context()
             );
         }
 
@@ -751,12 +844,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             }
 
             throw new ApiException(
-                $response->json('message')
-                    ?? $response->json('eroare')
-                    ?? $response->json('error')
-                    ?? 'No error message in API response',
+                $this->extractErrorMessage($response),
                 $response->status() >= 500 ? 502 : $response->status(),
-                $response->body()
+                $response->body(),
+                null,
+                $context()
             );
         }
 
@@ -908,9 +1000,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         // Handle ANAF validation response format
         // Success: {"valid": true} or {"stare": "ok"}
         // Error: {"valid": false, "mesaj": "..."} or {"eroare": "..."}
+        // Note: Do NOT use stripos heuristics as it matches "Invalid", "not valid", etc.
         $isValid = ($json['valid'] ?? false)
-            || ($json['stare'] ?? '') === 'ok'
-            || (isset($json['mesaj']) && stripos($json['mesaj'], 'valid') !== false);
+            || ($json['stare'] ?? '') === 'ok';
 
         return new ValidationResultData(
             valid: $isValid,

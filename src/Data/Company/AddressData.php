@@ -32,15 +32,19 @@ class AddressData extends Data
      */
     public function getFullAddress(): string
     {
-        $parts = array_filter([
-            $this->street,
-            $this->streetNumber ? "nr. {$this->streetNumber}" : null,
-            $this->details,
-            $this->city,
-            $this->county,
-            $this->postalCode,
-            $this->country,
-        ]);
+        $parts = array_filter(
+            [
+                $this->street,
+                $this->streetNumber !== null && $this->streetNumber !== '' ? "nr. {$this->streetNumber}" : null,
+                $this->details,
+                $this->city,
+                $this->county,
+                $this->postalCode,
+                $this->country,
+            ],
+            // Explicit filter to avoid removing '0' values (PHP's array_filter treats '0' as falsy)
+            fn ($value) => $value !== null && $value !== ''
+        );
 
         return implode(', ', $parts);
     }

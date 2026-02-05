@@ -192,6 +192,35 @@ describe('AnafDetailsClient', function () {
 
             expect($result->success)->toBeFalse();
         });
+
+        it('handles invalid JSON response with proper error message', function () {
+            // When ANAF returns non-JSON (maintenance page, HTML error, etc.)
+            Http::fake([
+                '*' => Http::response('This is not valid JSON', 200, [
+                    'Content-Type' => 'text/html',
+                ]),
+            ]);
+
+            $client = new AnafDetailsClient;
+            $result = $client->getCompanyData('RO18547290');
+
+            expect($result->success)->toBeFalse();
+            expect($result->error)->toContain('Invalid or malformed JSON response');
+        });
+
+        it('distinguishes between null response and empty array response', function () {
+            // Empty array is valid JSON but unexpected structure - handled by transformResponse
+            Http::fake([
+                '*' => Http::response([], 200),
+            ]);
+
+            $client = new AnafDetailsClient;
+            $result = $client->getCompanyData('RO18547290');
+
+            // Should fail with "Unexpected response structure" not "Invalid JSON"
+            expect($result->success)->toBeFalse();
+            expect($result->error)->not->toContain('Invalid or malformed JSON');
+        });
     });
 
     describe('isValidVatCode', function () {
@@ -209,17 +238,13 @@ describe('AnafDetailsClient', function () {
             expect($client->isValidVatCode('abc'))->toBeFalse();
             expect($client->isValidVatCode(''))->toBeFalse();
         });
-    });
 
-    describe('getBaseUrl', function () {
-        it('returns ANAF company lookup URL', function () {
-            expect(AnafDetailsClient::getBaseUrl())->toContain('anaf.ro');
-        });
-    });
+        it('accepts all-zeros CNP (0000000000000) as valid identifier', function () {
+            // Bug fix: ANAF allows 0000000000000 as a special case valid identifier
+            // This is used for certain types of entities (foreign companies, etc.)
+            $client = new AnafDetailsClient;
 
-    describe('getTimeoutDuration', function () {
-        it('returns default timeout from config', function () {
-            expect(AnafDetailsClient::getTimeoutDuration())->toBeNumeric();
+            expect($client->isValidVatCode('0000000000000'))->toBeTrue();
         });
     });
 });

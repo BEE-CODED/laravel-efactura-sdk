@@ -99,21 +99,32 @@ final class CnpValidator
         $month = (int) substr($cnp, 3, 2);
         $day = (int) substr($cnp, 5, 2);
 
-        // Determine century based on sex digit
+        // Validate month (1-12) first - applies to all
+        if ($month < 1 || $month > 12) {
+            return false;
+        }
+
+        // For foreign residents (7, 8, 9), the century encoding is not standardized.
+        // We validate that the date is valid in EITHER 1900s or 2000s century.
+        if (in_array($sexDigit, [7, 8, 9], true)) {
+            // Try 1900s first (most common for existing foreign residents)
+            if (checkdate($month, $day, 1900 + $yearPart)) {
+                return true;
+            }
+
+            // Also accept 2000s for foreign residents born after 1999
+            return checkdate($month, $day, 2000 + $yearPart);
+        }
+
+        // Determine century based on sex digit for Romanian citizens
         $century = match ($sexDigit) {
             1, 2 => 1900,      // Born 1900-1999
             3, 4 => 1800,      // Born 1800-1899
             5, 6 => 2000,      // Born 2000-2099
-            7, 8, 9 => 1900,   // Foreign residents (assume 1900s for validation)
             default => 1900,
         };
 
         $year = $century + $yearPart;
-
-        // Validate month (1-12)
-        if ($month < 1 || $month > 12) {
-            return false;
-        }
 
         // Validate day using checkdate (handles leap years, month lengths)
         return checkdate($month, $day, $year);

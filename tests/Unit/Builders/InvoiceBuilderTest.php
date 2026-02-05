@@ -224,11 +224,26 @@ describe('buildInvoiceXml', function () {
 
     it('uses specified invoice type code', function () {
         $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['invoiceTypeCode' => InvoiceTypeCode::CorrectedInvoice]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:InvoiceTypeCode>384</cbc:InvoiceTypeCode>');
+    });
+
+    it('generates CreditNote document for type 381', function () {
+        $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([], ['invoiceTypeCode' => InvoiceTypeCode::CreditNote]);
 
         $xml = $builder->buildInvoiceXml($invoice);
 
-        expect($xml)->toContain('<cbc:InvoiceTypeCode>381</cbc:InvoiceTypeCode>');
+        // Should be a CreditNote document, not Invoice
+        expect($xml)->toContain('<CreditNote xmlns="urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2"');
+        expect($xml)->toContain('<cbc:CreditNoteTypeCode>381</cbc:CreditNoteTypeCode>');
+        expect($xml)->toContain('<cac:CreditNoteLine>');
+        expect($xml)->toContain('<cbc:CreditedQuantity');
+        expect($xml)->not->toContain('<Invoice');
+        expect($xml)->not->toContain('<cbc:InvoiceTypeCode>');
     });
 });
 
@@ -242,7 +257,7 @@ describe('validation', function () {
 
     it('throws exception for missing supplier registration name', function () {
         $builder = new InvoiceBuilder;
-        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101');
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
         $supplier = new PartyData(registrationName: '', companyId: 'RO12345678', address: $address);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
@@ -251,7 +266,7 @@ describe('validation', function () {
 
     it('throws exception for missing supplier company ID', function () {
         $builder = new InvoiceBuilder;
-        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101');
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
         $supplier = new PartyData(registrationName: 'Test', companyId: '', address: $address);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
@@ -260,7 +275,7 @@ describe('validation', function () {
 
     it('throws exception for missing street address', function () {
         $builder = new InvoiceBuilder;
-        $address = new AddressData(street: '', city: 'Test', postalZone: '010101');
+        $address = new AddressData(street: '', city: 'Test', postalZone: '010101', county: 'Cluj');
         $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
@@ -273,7 +288,7 @@ describe('validation', function () {
 
         // Empty array is passed but the helper function provides default lines
         // Need to create invoice directly
-        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101');
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
         $party = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
 
         $emptyLinesInvoice = new InvoiceData(
@@ -303,7 +318,19 @@ describe('validation', function () {
         ]);
 
         $builder->buildInvoiceXml($invoice);
-    })->throws(ValidationException::class, 'Line 1: Quantity must be greater than zero');
+    })->throws(ValidationException::class, 'Line 1: Quantity cannot be zero');
+
+    it('allows negative quantity for credit notes', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Returned Product', quantity: -2, unitPrice: 100, taxPercent: 19),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:InvoicedQuantity unitCode="EA">-2.00</cbc:InvoicedQuantity>');
+        expect($xml)->toContain('<cbc:LineExtensionAmount currencyID="RON">-200.00</cbc:LineExtensionAmount>');
+    });
 
     it('throws exception for line with negative price', function () {
         $builder = new InvoiceBuilder;
@@ -349,7 +376,7 @@ describe('tax category handling', function () {
 
     it('uses NotSubject (O) for non-VAT payer', function () {
         $builder = new InvoiceBuilder;
-        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101');
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
         $supplier = new PartyData(
             registrationName: 'Test',
             companyId: '12345678',
@@ -410,12 +437,201 @@ describe('address sanitization', function () {
 
         expect($xml)->toContain('<cbc:CountrySubentity>RO-B</cbc:CountrySubentity>');
     });
+
+    it('throws exception for Romanian address with unmappable county', function () {
+        $builder = new InvoiceBuilder;
+        $supplierAddress = new AddressData(
+            street: 'Str. Test',
+            city: 'Test City',
+            postalZone: '010101',
+            county: 'UnknownCounty',  // This county doesn't exist in Romania
+            countryCode: 'RO',
+        );
+        $supplier = new PartyData(
+            registrationName: 'Test',
+            companyId: 'RO12345678',
+            address: $supplierAddress,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'County "UnknownCounty" could not be mapped to a valid ISO 3166-2:RO code');
+
+    it('throws exception for Romanian customer address with unmappable county', function () {
+        $builder = new InvoiceBuilder;
+        $customerAddress = new AddressData(
+            street: 'Str. Test',
+            city: 'Test City',
+            postalZone: '010101',
+            county: 'InvalidCounty',  // This county doesn't exist in Romania
+            countryCode: 'RO',
+        );
+        $customer = new PartyData(
+            registrationName: 'Test Client',
+            companyId: 'RO87654321',
+            address: $customerAddress,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'County "InvalidCounty" could not be mapped to a valid ISO 3166-2:RO code');
+
+    it('passes through county for non-Romanian addresses without validation', function () {
+        $builder = new InvoiceBuilder;
+        $customerAddress = new AddressData(
+            street: '123 Main Street',
+            city: 'London',
+            postalZone: 'SW1A 1AA',
+            county: 'Greater London',  // Foreign county - should pass through
+            countryCode: 'GB',
+        );
+        $customer = new PartyData(
+            registrationName: 'UK Client Ltd',
+            companyId: 'GB123456789',
+            address: $customerAddress,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Foreign addresses should have their county passed through as-is
+        expect($xml)->toContain('<cbc:CountrySubentity>Greater London</cbc:CountrySubentity>');
+    });
+
+    it('throws exception for Romanian address without county (BR-RO-110)', function () {
+        $builder = new InvoiceBuilder;
+        $supplierAddress = new AddressData(
+            street: 'Str. Test',
+            city: 'Bucuresti',
+            postalZone: '010101',
+            county: null,  // No county provided - invalid for RO
+            countryCode: 'RO',
+        );
+        $supplier = new PartyData(
+            registrationName: 'Test Supplier',
+            companyId: 'RO12345678',
+            address: $supplierAddress,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Supplier county is required for Romanian addresses (BR-RO-110)');
+
+    it('allows null county for non-Romanian addresses', function () {
+        $builder = new InvoiceBuilder;
+        $customerAddress = new AddressData(
+            street: '123 Main Street',
+            city: 'London',
+            postalZone: 'SW1A 1AA',
+            county: null,  // No county - OK for non-RO
+            countryCode: 'GB',
+        );
+        $customer = new PartyData(
+            registrationName: 'UK Client Ltd',
+            companyId: 'GB123456789',
+            address: $customerAddress,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Should not contain CountrySubentity for GB address with null county
+        expect($xml)->toContain('<cbc:IdentificationCode>GB</cbc:IdentificationCode>');
+    });
+});
+
+describe('tax grouping floating-point handling', function () {
+    it('groups lines with slightly different float representations of same tax rate', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            // These represent the same 19% tax but as different float values
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.0),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.00),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Should have only 1 TaxSubtotal element (19%) - 2 tags (open + close)
+        expect(substr_count($xml, 'TaxSubtotal'))->toBe(2);
+    });
+
+    it('groups tax rates that round to same value', function () {
+        $builder = new InvoiceBuilder;
+
+        // Create test data with tax percent that would have floating-point issues
+        // 19.001 and 19.004 should both round to 19.00 and be grouped together
+        $supplierAddress = new AddressData(
+            street: 'Str. Furnizor 1',
+            city: 'Bucuresti',
+            postalZone: '010101',
+            county: 'Sector 1',
+            countryCode: 'RO',
+        );
+
+        $supplier = new PartyData(
+            registrationName: 'Furnizor Test SRL',
+            companyId: 'RO12345678',
+            address: $supplierAddress,
+            registrationNumber: 'J40/1234/2020',
+            isVatPayer: true,
+        );
+
+        $customerAddress = new AddressData(
+            street: 'Str. Client 1',
+            city: 'Cluj-Napoca',
+            postalZone: '400001',
+            county: 'Cluj',
+            countryCode: 'RO',
+        );
+
+        $customer = new PartyData(
+            registrationName: 'Client Test SRL',
+            companyId: 'RO87654321',
+            address: $customerAddress,
+            isVatPayer: true,
+        );
+
+        $invoice = new InvoiceData(
+            invoiceNumber: 'INV-2024-001',
+            issueDate: Carbon::create(2024, 3, 15),
+            supplier: $supplier,
+            customer: $customer,
+            lines: [
+                new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.001),
+                new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.004),
+            ],
+        );
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Both should be grouped into single 19% tax subtotal (2 tags = 1 element)
+        expect(substr_count($xml, 'TaxSubtotal'))->toBe(2);
+    });
+
+    it('correctly separates genuinely different tax rates', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.0),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 9.0),
+            new InvoiceLineData(name: 'Product 3', quantity: 1, unitPrice: 100.00, taxPercent: 5.0),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Should have 3 TaxSubtotal elements (19%, 9%, 5%) - 6 tags total
+        expect(substr_count($xml, 'TaxSubtotal'))->toBe(6);
+    });
 });
 
 describe('VAT number normalization', function () {
     it('adds RO prefix to company ID', function () {
         $builder = new InvoiceBuilder;
-        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101');
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
         $supplier = new PartyData(
             registrationName: 'Test',
             companyId: '12345678', // Without RO prefix
@@ -437,5 +653,242 @@ describe('VAT number normalization', function () {
 
         // Should not duplicate RO prefix
         expect($xml)->not->toContain('RORO');
+    });
+
+    it('handles missing countryCode by defaulting to RO', function () {
+        $builder = new InvoiceBuilder;
+        // Create address without explicit countryCode (uses default 'RO')
+        $address = new AddressData(
+            street: 'Test Street',
+            city: 'Test City',
+            postalZone: '010101',
+            county: 'Cluj',  // Required for RO addresses
+        );
+        $supplier = new PartyData(
+            registrationName: 'Test Company',
+            companyId: '12345678',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Should use default RO prefix
+        expect($xml)->toContain('<cbc:CompanyID>RO12345678</cbc:CompanyID>');
+    });
+
+    it('handles non-RO country codes correctly', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Test Street',
+            city: 'Vienna',
+            postalZone: '1010',
+            countryCode: 'AT', // Austrian company
+        );
+        $supplier = new PartyData(
+            registrationName: 'Austrian Company',
+            companyId: '12345678',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Should use AT prefix
+        expect($xml)->toContain('<cbc:CompanyID>AT12345678</cbc:CompanyID>');
+    });
+});
+
+describe('BR-RO-010 invoice number validation', function () {
+    it('throws exception for invoice number without digits', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['invoiceNumber' => 'ABC-DEF']);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Invoice number must contain at least one numeric character (BR-RO-010)');
+
+    it('accepts invoice number with digits', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['invoiceNumber' => 'INV-2024-001']);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:ID>INV-2024-001</cbc:ID>');
+    });
+
+    it('accepts invoice number that is only digits', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['invoiceNumber' => '12345']);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:ID>12345</cbc:ID>');
+    });
+});
+
+describe('BR-RO-100/101 Bucharest sector handling', function () {
+    it('outputs SECTOR code for Bucharest addresses', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Str. Test 1',
+            city: 'Sector 3',
+            postalZone: '030001',
+            county: 'Bucuresti',
+            countryCode: 'RO',
+        );
+        $supplier = new PartyData(
+            registrationName: 'Test SRL',
+            companyId: 'RO12345678',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:CityName>SECTOR3</cbc:CityName>');
+        expect($xml)->toContain('<cbc:CountrySubentity>RO-B</cbc:CountrySubentity>');
+    });
+
+    it('extracts sector from county field', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Str. Test 1',
+            city: 'Bucuresti',
+            postalZone: '020001',
+            county: 'Sector 2',
+            countryCode: 'RO',
+        );
+        $supplier = new PartyData(
+            registrationName: 'Test SRL',
+            companyId: 'RO12345678',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:CityName>SECTOR2</cbc:CityName>');
+    });
+});
+
+describe('BR-RO-L string length validations', function () {
+    it('throws exception for invoice number over 200 chars', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['invoiceNumber' => str_repeat('1', 201)]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Invoice number must not exceed 200 characters (BR-RO-L200)');
+
+    it('throws exception for registration name over 200 chars', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
+        $supplier = new PartyData(
+            registrationName: str_repeat('A', 201),
+            companyId: 'RO12345678',
+            address: $address,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Supplier registration name must not exceed 200 characters (BR-RO-L200)');
+
+    it('throws exception for street over 150 chars', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: str_repeat('A', 151),
+            city: 'Test',
+            postalZone: '010101',
+        );
+        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Supplier street address must not exceed 150 characters (BR-RO-L150)');
+
+    it('throws exception for city over 50 chars', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Test Street',
+            city: str_repeat('A', 51),
+            postalZone: '010101',
+        );
+        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Supplier city must not exceed 50 characters (BR-RO-L050)');
+
+    it('throws exception for postal code over 20 chars', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Test Street',
+            city: 'Test City',
+            postalZone: str_repeat('1', 21),
+        );
+        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Supplier postal code must not exceed 20 characters (BR-RO-L020)');
+
+    it('throws exception for item name over 100 chars', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: str_repeat('A', 101), quantity: 1, unitPrice: 100),
+        ]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Line 1: Item name must not exceed 100 characters (BR-RO-L100)');
+
+    it('throws exception for item description over 200 chars', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(
+                name: 'Test Product',
+                quantity: 1,
+                unitPrice: 100,
+                description: str_repeat('A', 201),
+            ),
+        ]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Line 1: Item description must not exceed 200 characters (BR-RO-L200)');
+});
+
+describe('BR-RO-030 multi-currency support', function () {
+    it('omits TaxCurrencyCode for RON invoices', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'RON']);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:DocumentCurrencyCode>RON</cbc:DocumentCurrencyCode>');
+        expect($xml)->not->toContain('<cbc:TaxCurrencyCode>');
+    });
+
+    it('adds TaxCurrencyCode RON for EUR invoices', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR']);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>');
+        expect($xml)->toContain('<cbc:TaxCurrencyCode>RON</cbc:TaxCurrencyCode>');
+    });
+
+    it('adds second TaxTotal in RON for non-RON invoices', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'USD']);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Should have two TaxTotal elements - one in USD and one in RON
+        expect(substr_count($xml, '<cac:TaxTotal>'))->toBe(2);
+        expect($xml)->toContain('currencyID="USD"');
+        expect($xml)->toContain('currencyID="RON"');
     });
 });

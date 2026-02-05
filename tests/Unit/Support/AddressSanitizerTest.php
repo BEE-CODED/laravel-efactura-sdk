@@ -142,6 +142,40 @@ describe('isBucharest', function () {
         expect(AddressSanitizer::isBucharest('Timisoara'))->toBeFalse();
         expect(AddressSanitizer::isBucharest(''))->toBeFalse();
     });
+
+    it('does not match partial strings containing Bucharest indicators', function () {
+        // Regression test: exact matching prevents false positives
+        // "BUCEGI" should not match just because it starts with "BUC"
+        expect(AddressSanitizer::isBucharest('Bucegi'))->toBeFalse();
+        expect(AddressSanitizer::isBucharest('BUCEGI'))->toBeFalse();
+        // "Bucecea" is a town in Botoșani county
+        expect(AddressSanitizer::isBucharest('Bucecea'))->toBeFalse();
+        // "Bucium" is a commune in Alba county
+        expect(AddressSanitizer::isBucharest('Bucium'))->toBeFalse();
+        // Test that substring matching doesn't happen
+        expect(AddressSanitizer::isBucharest('Bucurestii Noi'))->toBeFalse();
+    });
+
+    it('recognizes Bucharest sector patterns as Bucharest', function () {
+        // County field may contain sector designations which should be recognized as Bucharest
+        expect(AddressSanitizer::isBucharest('Sector 1'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('Sector 2'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('Sector 3'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('Sector 4'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('Sector 5'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('Sector 6'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('SECTOR 1'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('Sectorul 3'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('Sect. 2'))->toBeTrue();
+        expect(AddressSanitizer::isBucharest('S. 4'))->toBeTrue();
+    });
+
+    it('does not recognize invalid sector numbers as Bucharest', function () {
+        // Sectors 7+ don't exist in Bucharest
+        expect(AddressSanitizer::isBucharest('Sector 7'))->toBeFalse();
+        expect(AddressSanitizer::isBucharest('Sector 0'))->toBeFalse();
+        expect(AddressSanitizer::isBucharest('Sector 10'))->toBeFalse();
+    });
 });
 
 describe('getValidCountyCodes', function () {

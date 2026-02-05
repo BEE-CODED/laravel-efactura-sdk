@@ -30,11 +30,11 @@ use Illuminate\Support\Facades\Facade;
  * @method static string getAuthorizationUrl(?AuthUrlSettingsData $settings = null) Get OAuth authorization URL
  * @method static OAuthTokensData exchangeCodeForToken(string $code) Exchange auth code for tokens
  * @method static OAuthTokensData refreshAccessToken(string $refreshToken) Refresh an expired token
- * @method static array decodeState(string $encodedState) Decode state parameter for CSRF validation
+ * @method static array<string, mixed> decodeState(string $encodedState) Decode state parameter for CSRF validation
  *
  * @see \BeeCoded\EFacturaSdk\Services\AnafAuthenticator
  */
-final class EFactura extends Facade
+final class EFacturaSdkAuth extends Facade
 {
     protected static function getFacadeAccessor(): string
     {

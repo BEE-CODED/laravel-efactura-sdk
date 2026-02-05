@@ -258,6 +258,36 @@ describe('AnafAuthenticator', function () {
         })->throws(AuthenticationException::class, 'expected JSON object');
     });
 
+    describe('encodeState exception handling', function () {
+        it('throws AuthenticationException when state contains non-UTF8 data', function () {
+            $auth = createAuthenticator();
+
+            // Create state with invalid UTF-8 sequence that will fail json_encode
+            $invalidUtf8 = "\xB1\x31"; // Invalid UTF-8
+            $state = ['data' => $invalidUtf8];
+
+            // This should throw AuthenticationException, not raw JsonException
+            $settings = new \BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData(state: $state);
+            $auth->getAuthorizationUrl($settings);
+        })->throws(AuthenticationException::class, 'Failed to encode state parameter');
+
+        it('successfully encodes valid state data', function () {
+            $auth = createAuthenticator();
+            $state = ['csrf_token' => 'abc123', 'user_id' => 456, 'nested' => ['key' => 'value']];
+            $settings = new \BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData(state: $state);
+
+            $url = $auth->getAuthorizationUrl($settings);
+
+            expect($url)->toContain('state=');
+            // Extract and decode the state to verify it was encoded correctly
+            preg_match('/state=([^&]+)/', $url, $matches);
+            $encodedState = urldecode($matches[1]);
+            $decodedState = json_decode(base64_decode($encodedState), true);
+
+            expect($decodedState)->toBe($state);
+        });
+    });
+
     describe('error message extraction', function () {
         it('extracts OAuth standard error format', function () {
             Http::fake([
@@ -322,5 +352,28 @@ describe('AnafAuthenticator', function () {
                 expect($e->getMessage())->toContain('HTTP 500');
             }
         });
+    });
+
+    describe('non-JSON response handling', function () {
+        it('throws exception when OAuth server returns HTML on successful status', function () {
+            // Simulates maintenance page or misconfigured server returning 200 with HTML
+            Http::fake([
+                '*' => Http::response('<html><body>Maintenance</body></html>', 200, [
+                    'Content-Type' => 'text/html',
+                ]),
+            ]);
+
+            $auth = createAuthenticator(Http::getFacadeRoot());
+            $auth->exchangeCodeForToken('code');
+        })->throws(AuthenticationException::class, 'OAuth server returned non-JSON response');
+
+        it('throws exception when refresh returns non-JSON response', function () {
+            Http::fake([
+                '*' => Http::response('Internal Server Error', 200),
+            ]);
+
+            $auth = createAuthenticator(Http::getFacadeRoot());
+            $auth->refreshAccessToken('refresh-token');
+        })->throws(AuthenticationException::class, 'OAuth server returned non-JSON response');
     });
 });

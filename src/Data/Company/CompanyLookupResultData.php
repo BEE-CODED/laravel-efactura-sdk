@@ -105,6 +105,11 @@ class CompanyLookupResultData extends Data
             $cui = substr($cui, 2);
         }
 
+        // Guard against empty CUI after prefix removal (e.g., input was just "RO")
+        if ($cui === '') {
+            return null;
+        }
+
         foreach ($this->companies as $company) {
             if ($company->cui === $cui) {
                 return $company;

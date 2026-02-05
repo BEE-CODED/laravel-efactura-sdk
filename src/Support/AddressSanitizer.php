@@ -338,17 +338,29 @@ class AddressSanitizer
     {
         $normalized = self::normalizeInput($county);
 
-        // Check for Bucharest indicators
+        // Check for Bucharest indicators (exact match to avoid false positives like "BUCEGI")
         $bucharestIndicators = [
             'BUCURESTI',
             'BUC',
             'MUNICIPIUL BUCURESTI',
             'RO-B',
+            'B',
         ];
 
         foreach ($bucharestIndicators as $indicator) {
-            if (str_contains($normalized, $indicator)) {
+            if ($normalized === $indicator) {
                 return true;
+            }
+        }
+
+        // Check for Bucharest sector patterns (Sector 1-6)
+        // This allows county fields containing "Sector 1", "Sectorul 2", etc.
+        foreach (self::BUCHAREST_SECTOR_PATTERNS as $pattern) {
+            if (preg_match($pattern, $normalized, $matches)) {
+                $sectorNumber = (int) $matches[1];
+                if ($sectorNumber >= 1 && $sectorNumber <= 6) {
+                    return true;
+                }
             }
         }
 

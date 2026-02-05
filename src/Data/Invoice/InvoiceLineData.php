@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
+use Spatie\LaravelData\Attributes\Validation\Min;
 use Spatie\LaravelData\Data;
 
 /**
  * Invoice line item data.
  *
  * Maps to TypeScript InvoiceLine interface.
+ *
+ * Note: Quantity can be negative for credit notes/corrective invoices.
+ * Tax percent must be non-negative (0% or higher).
  */
 class InvoiceLineData extends Data
 {
@@ -26,7 +30,8 @@ class InvoiceLineData extends Data
         public ?string $description = null,
         /** Unit of measure code (UN/ECE rec 20, e.g., 'EA' for each, 'KGM' for kilogram) */
         public string $unitCode = 'EA',
-        /** VAT percentage (e.g., 19 for 19%) */
+        /** VAT percentage (e.g., 19 for 19%). Must be non-negative. */
+        #[Min(0)]
         public float $taxPercent = 0,
     ) {}
 

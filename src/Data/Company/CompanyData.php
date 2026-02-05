@@ -178,7 +178,9 @@ class CompanyData extends Data
             rtvaiStartDate: $rtvaiDetails?->startDate,
             isInactive: (bool) ($inactive['statusInactivi'] ?? false),
             inactiveDate: $inactiveStatusDetails?->inactiveDate,
-            isDeregistered: ! empty($inactive['dataRadiere']),
+            // isDeregistered should be true only when we have a valid parsed deregistration date
+            // This ensures consistency between the flag and the actual date value
+            isDeregistered: $inactiveStatusDetails?->deregistrationDate !== null,
             deregistrationDate: $inactiveStatusDetails?->deregistrationDate,
             headquartersAddress: $headquartersAddress,
             fiscalDomicileAddress: $fiscalDomicileAddress,

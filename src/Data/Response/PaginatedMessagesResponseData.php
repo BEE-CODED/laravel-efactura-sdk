@@ -15,7 +15,7 @@ use Spatie\LaravelData\Data;
 class PaginatedMessagesResponseData extends Data
 {
     public function __construct(
-        /** Array of messages */
+        /** @var array<int, MessageDetailsData>|null Array of messages */
         #[DataCollectionOf(MessageDetailsData::class)]
         public ?array $mesaje = null,
 
@@ -142,6 +142,10 @@ class PaginatedMessagesResponseData extends Data
      */
     public function isFirstPage(): bool
     {
+        if ($this->currentPage === null) {
+            return false;
+        }
+
         return $this->currentPage === 1;
     }
 

@@ -136,7 +136,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
      *     $code = $request->get('code');
      *
      *     // Decode and validate state
-     *     $decodedState = EFactura::decodeState($state);
+     *     $decodedState = EFacturaSdkAuth::decodeState($state);
      *
      *     // Verify against session-stored state (CSRF protection)
      *     if ($decodedState['csrf_token'] !== session('efactura_csrf_token')) {
@@ -144,7 +144,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
      *     }
      *
      *     // Now safe to exchange code for tokens
-     *     $tokens = EFactura::exchangeCodeForToken($code);
+     *     $tokens = EFacturaSdkAuth::exchangeCodeForToken($code);
      * }
      * ```
      *
@@ -196,20 +196,20 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         foreach ($requiredOauthKeys as $key) {
             if (empty($config['oauth'][$key])) {
                 throw new AuthenticationException(
-                    "Missing required OAuth configuration: {$key}. Please check your efactura.php config."
+                    "Missing required OAuth configuration: {$key}. Please check your efactura-sdk.php config."
                 );
             }
         }
 
         if (empty($config['endpoints']['oauth']['authorize'])) {
             throw new AuthenticationException(
-                'Missing required OAuth authorize endpoint. Please check your efactura.php config.'
+                'Missing required OAuth authorize endpoint. Please check your efactura-sdk.php config.'
             );
         }
 
         if (empty($config['endpoints']['oauth']['token'])) {
             throw new AuthenticationException(
-                'Missing required OAuth token endpoint. Please check your efactura.php config.'
+                'Missing required OAuth token endpoint. Please check your efactura-sdk.php config.'
             );
         }
     }
@@ -218,10 +218,20 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
      * Encode state data as base64 JSON for safe transport in URL.
      *
      * @param  array<string, mixed>  $state
+     *
+     * @throws AuthenticationException When state data cannot be JSON encoded
      */
     private function encodeState(array $state): string
     {
-        return base64_encode(json_encode($state, JSON_THROW_ON_ERROR));
+        try {
+            return base64_encode(json_encode($state, JSON_THROW_ON_ERROR));
+        } catch (\JsonException $e) {
+            throw new AuthenticationException(
+                'Failed to encode state parameter: '.$e->getMessage(),
+                0,
+                $e
+            );
+        }
     }
 
     /**
@@ -269,7 +279,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
     {
         $data = $response->json();
 
-        // Check for HTTP errors
+        // Check for HTTP errors first (takes precedence over JSON parsing issues)
         if ($response->failed()) {
             $errorMessage = $this->extractErrorMessage($data, $response->status());
 
@@ -282,6 +292,22 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             );
 
             throw new AuthenticationException("{$errorPrefix}: {$errorMessage}", $response->status());
+        }
+
+        // Check for non-JSON response on successful HTTP status
+        // (e.g., HTML maintenance page returned with 200 OK)
+        if ($data === null) {
+            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
+                $errorPrefix.': Non-JSON response from OAuth server',
+                [
+                    'status' => $response->status(),
+                    'body' => substr($response->body(), 0, 500),
+                ]
+            );
+
+            throw new AuthenticationException(
+                "{$errorPrefix}: OAuth server returned non-JSON response"
+            );
         }
 
         // Validate required token fields

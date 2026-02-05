@@ -33,6 +33,9 @@ abstract class BaseApiClient implements HasLogger
 
     abstract public static function getTimeoutDuration(): float|int;
 
+    /**
+     * @return array<string, string>
+     */
     abstract protected function getHeaders(): array;
 
     /**
@@ -53,6 +56,9 @@ abstract class BaseApiClient implements HasLogger
         return static::MAX_TRY_COUNT;
     }
 
+    /**
+     * @return array<string, string>
+     */
     protected function getDefaultHeaders(): array
     {
         return [];
@@ -95,6 +101,8 @@ abstract class BaseApiClient implements HasLogger
         $request->withHeaders($this->getDefaultHeaders() + $headers);
 
         if ($contentType) {
+            // When contentType is provided, data must be a string (raw body)
+            assert(is_string($data), 'Data must be a string when contentType is provided');
             $response = $request->withBody($data, $contentType)->$method($url);
         } else {
             if (strtolower($method) === 'get') {
@@ -149,6 +157,7 @@ abstract class BaseApiClient implements HasLogger
         int $tryCount = 0
     ): Response {
         $tryCount++;
+        $startTime = Carbon::now();
         $context = fn () => [
             'route' => $route,
             'data' => $data,
@@ -165,6 +174,9 @@ abstract class BaseApiClient implements HasLogger
                 $context
             );
         } catch (Exception $exception) {
+            // Calculate duration for failed requests so logging is accurate
+            $this->lastRequestDurationMilliseconds = $startTime->diffInMilliseconds(Carbon::now());
+
             $this->logger->error(
                 "Exception before response was received: {$exception->getMessage()}.",
                 $context()
@@ -180,7 +192,8 @@ abstract class BaseApiClient implements HasLogger
                 $exception->getMessage(),
                 500,
                 null,
-                $exception
+                $exception,
+                $context()
             );
         }
 
@@ -192,14 +205,11 @@ abstract class BaseApiClient implements HasLogger
             }
 
             throw new ApiException(
-                $response->json('message')
-                    ?? $response->json('errorSummary')
-                    ?? $response->json('error')
-                    ?? $response->json('err')
-                    ?? $response->json('eroare')
-                    ?? 'No error message in API response',
+                $this->extractErrorMessage($response),
                 $response->status() >= 500 ? 502 : $response->status(),
-                $response->body()
+                $response->body(),
+                null,
+                $context()
             );
         }
 
@@ -222,6 +232,7 @@ abstract class BaseApiClient implements HasLogger
         int $tryCount = 0
     ): Response {
         $tryCount++;
+        $startTime = Carbon::now();
         $context = fn () => [
             'route' => $route,
             'bodyLength' => strlen($body),
@@ -240,6 +251,9 @@ abstract class BaseApiClient implements HasLogger
                 $contentType
             );
         } catch (Exception $exception) {
+            // Calculate duration for failed requests so logging is accurate
+            $this->lastRequestDurationMilliseconds = $startTime->diffInMilliseconds(Carbon::now());
+
             $this->logger->error(
                 "Exception before response was received: {$exception->getMessage()}.",
                 $context()
@@ -255,7 +269,8 @@ abstract class BaseApiClient implements HasLogger
                 $exception->getMessage(),
                 500,
                 null,
-                $exception
+                $exception,
+                $context()
             );
         }
 
@@ -267,12 +282,11 @@ abstract class BaseApiClient implements HasLogger
             }
 
             throw new ApiException(
-                $response->json('message')
-                    ?? $response->json('eroare')
-                    ?? $response->json('error')
-                    ?? 'No error message in API response',
+                $this->extractErrorMessage($response),
                 $response->status() >= 500 ? 502 : $response->status(),
-                $response->body()
+                $response->body(),
+                null,
+                $context()
             );
         }
 
@@ -281,8 +295,28 @@ abstract class BaseApiClient implements HasLogger
 
     protected function isRetryable(Response $response): bool
     {
-        return $response->status() === 429
-            || $response->status() === 0
+        // Only retry on connection failures (status 0) or server errors (5xx)
+        // 429 (rate limit) is NOT retried because:
+        // 1. Client-side rate limiting should prevent most 429s
+        // 2. Blind retry without Retry-After header is counterproductive
+        // 3. If client-side limits are wrong/disabled, failing fast is better
+        return $response->status() === 0
             || $response->status() >= 500;
+    }
+
+    /**
+     * Extract error message from API response.
+     *
+     * Checks multiple common error keys used by different ANAF endpoints:
+     * - 'message': Standard HTTP error message
+     * - 'eroare': Romanian error message (used by e-Factura API)
+     * - 'error': Standard error key
+     */
+    protected function extractErrorMessage(Response $response): string
+    {
+        return $response->json('message')
+            ?? $response->json('eroare')
+            ?? $response->json('error')
+            ?? 'No error message in API response';
     }
 }

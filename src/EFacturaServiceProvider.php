@@ -55,21 +55,13 @@ final class EFacturaServiceProvider extends ServiceProvider
         );
 
         // Authenticator for OAuth flow (stateless - returns tokens to caller)
-        // Note: This will throw AuthenticationException if OAuth credentials are not configured.
+        // Note: The AnafAuthenticator constructor validates all OAuth credentials (client_id,
+        // client_secret, redirect_uri) and throws AuthenticationException if any are missing.
         // Only resolve this service when you need OAuth functionality.
         $this->app->singleton(AnafAuthenticatorInterface::class, function ($app) {
-            $config = $app['config']['efactura-sdk'];
-
-            // Check if OAuth is configured before attempting to create authenticator
-            if (empty($config['oauth']['client_id'] ?? null)) {
-                throw new \BeeCoded\EFacturaSdk\Exceptions\AuthenticationException(
-                    'OAuth credentials not configured. Set EFACTURA_CLIENT_ID, EFACTURA_CLIENT_SECRET, and EFACTURA_REDIRECT_URI in your environment, or resolve this service only when OAuth is needed.'
-                );
-            }
-
             return new AnafAuthenticator(
                 http: $app->make(HttpFactory::class),
-                config: $config
+                config: $app['config']['efactura-sdk']
             );
         });
 

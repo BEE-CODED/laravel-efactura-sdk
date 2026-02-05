@@ -110,6 +110,49 @@ describe('CompanyData', function () {
         });
     });
 
+    describe('isDeregistered consistency', function () {
+        it('sets isDeregistered true only when deregistration date is valid', function () {
+            // Bug fix: isDeregistered should be true only when we have a valid parsed date
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+                'stare_inactiv' => ['dataRadiere' => '2023-06-15'],
+            ]);
+
+            expect($company->isDeregistered)->toBeTrue();
+            expect($company->deregistrationDate)->not->toBeNull();
+            expect($company->deregistrationDate->format('Y-m-d'))->toBe('2023-06-15');
+        });
+
+        it('sets isDeregistered false when deregistration date is empty', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+                'stare_inactiv' => ['dataRadiere' => ''],
+            ]);
+
+            expect($company->isDeregistered)->toBeFalse();
+            expect($company->deregistrationDate)->toBeNull();
+        });
+
+        it('sets isDeregistered false when deregistration date is invalid', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+                'stare_inactiv' => ['dataRadiere' => 'not-a-date'],
+            ]);
+
+            expect($company->isDeregistered)->toBeFalse();
+            expect($company->deregistrationDate)->toBeNull();
+        });
+
+        it('sets isDeregistered false when stare_inactiv is missing', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+            ]);
+
+            expect($company->isDeregistered)->toBeFalse();
+            expect($company->deregistrationDate)->toBeNull();
+        });
+    });
+
     describe('getPrimaryAddress', function () {
         it('returns headquarters address when available', function () {
             $company = CompanyData::fromAnafResponse([
@@ -247,6 +290,19 @@ describe('CompanyLookupResultData', function () {
             $result = CompanyLookupResultData::success([]);
 
             expect($result->getByCui('99999999'))->toBeNull();
+        });
+
+        it('returns null for RO-only input (empty CUI after prefix removal)', function () {
+            // Edge case: if input is just "RO", stripping the prefix leaves empty string
+            // This should return null, not match a company with empty CUI
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '', 'denumire' => 'Empty CUI Company'],
+            ]);
+
+            $result = CompanyLookupResultData::success([$company]);
+
+            expect($result->getByCui('RO'))->toBeNull();
+            expect($result->getByCui('ro'))->toBeNull();
         });
     });
 });
@@ -416,6 +472,75 @@ describe('VatRegistrationData', function () {
             ]);
 
             expect($vatReg->startDate)->toBeNull();
+        });
+    });
+});
+
+describe('AddressData', function () {
+    describe('getFullAddress', function () {
+        it('formats address with all parts', function () {
+            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+                street: 'Str. Exemplu',
+                streetNumber: '123',
+                details: 'Bl. A, Sc. 1',
+                city: 'Bucuresti',
+                county: 'Bucuresti',
+                postalCode: '010101',
+                country: 'Romania',
+            );
+
+            $fullAddress = $address->getFullAddress();
+
+            expect($fullAddress)->toContain('Str. Exemplu');
+            expect($fullAddress)->toContain('nr. 123');
+            expect($fullAddress)->toContain('Bl. A, Sc. 1');
+            expect($fullAddress)->toContain('Bucuresti');
+            expect($fullAddress)->toContain('010101');
+            expect($fullAddress)->toContain('Romania');
+        });
+
+        it('skips null and empty values', function () {
+            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+                street: 'Str. Test',
+                streetNumber: null,
+                city: 'Bucuresti',
+            );
+
+            $fullAddress = $address->getFullAddress();
+
+            expect($fullAddress)->toBe('Str. Test, Bucuresti');
+            expect($fullAddress)->not->toContain('nr.');
+        });
+
+        it('preserves zero string values', function () {
+            // Edge case: '0' should not be filtered out by array_filter
+            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+                street: '0',
+                city: 'Test City',
+            );
+
+            $fullAddress = $address->getFullAddress();
+
+            expect($fullAddress)->toContain('0');
+            expect($fullAddress)->toBe('0, Test City');
+        });
+
+        it('handles street number zero correctly', function () {
+            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+                street: 'Strada Zero',
+                streetNumber: '0',
+                city: 'Bucuresti',
+            );
+
+            $fullAddress = $address->getFullAddress();
+
+            expect($fullAddress)->toContain('nr. 0');
+        });
+
+        it('returns empty string when all fields are null', function () {
+            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData;
+
+            expect($address->getFullAddress())->toBe('');
         });
     });
 });

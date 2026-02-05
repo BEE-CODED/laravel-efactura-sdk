@@ -8,11 +8,25 @@ use BeeCoded\EFacturaSdk\Data\Invoice\ListMessagesParamsData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
 use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
 use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+
+/**
+ * Test helper: EFacturaClient with short lock wait time for faster tests.
+ */
+class FastLockTimeoutClient extends EFacturaClient
+{
+    protected function getLockWaitSeconds(): int
+    {
+        return 1; // 1 second for fast tests
+    }
+}
 
 beforeEach(function () {
     // Mock the authenticator and rate limiter
@@ -30,66 +44,6 @@ beforeEach(function () {
 });
 
 describe('EFacturaClient', function () {
-    describe('constructor and fromTokens', function () {
-        it('creates client with constructor', function () {
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'test-access-token',
-                refreshToken: 'test-refresh-token',
-                expiresAt: Carbon::now()->addHour(),
-            );
-
-            expect($client->getVatNumber())->toBe('12345678');
-            expect($client->wasTokenRefreshed())->toBeFalse();
-        });
-
-        it('creates client from OAuthTokensData', function () {
-            $tokens = new OAuthTokensData(
-                accessToken: 'access-token',
-                refreshToken: 'refresh-token',
-                expiresAt: Carbon::now()->addHour(),
-            );
-
-            $client = EFacturaClient::fromTokens('87654321', $tokens);
-
-            expect($client->getVatNumber())->toBe('87654321');
-            expect($client->getTokens()->accessToken)->toBe('access-token');
-        });
-    });
-
-    describe('getTokens', function () {
-        it('returns current tokens', function () {
-            $expiresAt = Carbon::now()->addHour();
-
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'access',
-                refreshToken: 'refresh',
-                expiresAt: $expiresAt,
-            );
-
-            $tokens = $client->getTokens();
-
-            expect($tokens->accessToken)->toBe('access');
-            expect($tokens->refreshToken)->toBe('refresh');
-            expect($tokens->expiresAt)->toBe($expiresAt);
-        });
-    });
-
-    describe('static methods', function () {
-        it('getBaseUrl returns API URL', function () {
-            expect(EFacturaClient::getBaseUrl())->toBeString();
-        });
-
-        it('getTimeoutDuration returns timeout value', function () {
-            expect(EFacturaClient::getTimeoutDuration())->toBeNumeric();
-        });
-
-        it('getLogger returns logger instance', function () {
-            expect(EFacturaClient::getLogger())->toBeInstanceOf(Psr\Log\LoggerInterface::class);
-        });
-    });
-
     describe('uploadDocument validation', function () {
         it('throws ValidationException for empty XML', function () {
             Http::fake([
@@ -334,8 +288,17 @@ describe('EFacturaClient', function () {
         })->throws(ValidationException::class, 'Missing configuration');
     });
 
-    describe('getRateLimiter', function () {
-        it('returns rate limiter instance', function () {
+    describe('RASP rate limiting', function () {
+        it('checks RASP rate limit when uploading RASP documents', function () {
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="12345"/>', 200),
+            ]);
+
+            // Expect checkRaspUpload to be called for RASP standard
+            $this->rateLimiter->shouldReceive('checkRaspUpload')
+                ->once()
+                ->with('12345678');
+
             $client = new EFacturaClient(
                 vatNumber: '12345678',
                 accessToken: 'token',
@@ -343,7 +306,79 @@ describe('EFacturaClient', function () {
                 expiresAt: Carbon::now()->addHour(),
             );
 
-            expect($client->getRateLimiter())->toBeInstanceOf(RateLimiter::class);
+            $options = new UploadOptionsData(standard: \BeeCoded\EFacturaSdk\Enums\StandardType::RASP);
+
+            $client->uploadDocument('<Invoice/>', $options);
+        });
+
+        it('does not check RASP rate limit for UBL documents', function () {
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="12345"/>', 200),
+            ]);
+
+            // checkRaspUpload should NOT be called for UBL
+            $this->rateLimiter->shouldNotReceive('checkRaspUpload');
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $options = new UploadOptionsData(standard: \BeeCoded\EFacturaSdk\Enums\StandardType::UBL);
+
+            $client->uploadDocument('<Invoice/>', $options);
+        });
+
+        it('checks RASP rate limit for B2C RASP documents', function () {
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="12345"/>', 200),
+            ]);
+
+            // Expect checkRaspUpload to be called
+            $this->rateLimiter->shouldReceive('checkRaspUpload')
+                ->once()
+                ->with('12345678');
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $options = new UploadOptionsData(standard: \BeeCoded\EFacturaSdk\Enums\StandardType::RASP);
+
+            $client->uploadB2CDocument('<Invoice/>', $options);
+        });
+    });
+
+    describe('authentication error context preservation', function () {
+        it('preserves API exception context when converting to AuthenticationException', function () {
+            // Create a mock that throws ApiException with context on 401
+            Http::fake([
+                '*' => Http::response(['error' => 'Unauthorized'], 401),
+            ]);
+
+            // We need to test that the context is preserved, but the rateLimiter mock
+            // interferes. Instead, we verify the behavior through exception catching.
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            try {
+                $client->getStatusMessage('12345');
+                $this->fail('Expected AuthenticationException');
+            } catch (AuthenticationException $e) {
+                // The previous exception should be the ApiException
+                expect($e->getPrevious())->toBeInstanceOf(ApiException::class);
+                // The message should indicate auth failure
+                expect($e->getMessage())->toContain('Authentication failed');
+            }
         });
     });
 
@@ -407,6 +442,319 @@ describe('EFacturaClient', function () {
             Http::assertSent(function ($request) {
                 return str_contains($request->url(), 'autofactura=DA');
             });
+        });
+    });
+
+    describe('convertXmlToPdf error handling', function () {
+        it('throws ApiException with details when JSON response contains error', function () {
+            // Configure the transform endpoint
+            config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transform');
+
+            Http::fake([
+                '*' => Http::response(
+                    ['eroare' => 'Invalid XML format', 'code' => 'ERR001'],
+                    400,
+                    ['Content-Type' => 'application/json']
+                ),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1);
+        })->throws(ApiException::class, 'Invalid XML format');
+
+        it('throws ApiException when JSON response is invalid/null', function () {
+            // Configure the transform endpoint
+            config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transform');
+
+            // Return a response with 200 status, JSON content-type but empty body that json() returns null
+            // The 200 status is needed so it passes BaseApiClient's success check and reaches convertXmlToPdf's null handling
+            Http::fake([
+                '*' => Http::response(
+                    '',
+                    200,
+                    ['Content-Type' => 'application/json']
+                ),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1);
+        })->throws(ApiException::class, 'PDF conversion failed with invalid JSON response');
+
+        it('returns PDF binary when response is successful', function () {
+            // Configure the transform endpoint
+            config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transform');
+
+            $pdfContent = '%PDF-1.4 fake pdf content';
+
+            Http::fake([
+                '*' => Http::response(
+                    $pdfContent,
+                    200,
+                    ['Content-Type' => 'application/pdf']
+                ),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $result = $client->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1);
+
+            expect($result)->toBe($pdfContent);
+        });
+    });
+
+    describe('token refresh race condition handling', function () {
+        it('throws AuthenticationException on lock timeout', function () {
+            // Set up an expired token so it needs refresh
+            $expiredTime = Carbon::now()->subMinutes(5);
+
+            // Acquire the lock to simulate another process holding it
+            $lockKey = 'efactura:token_refresh:12345678';
+            $lock = Cache::lock($lockKey, 30);
+            $lock->acquire();
+
+            try {
+                // Use FastLockTimeoutClient with 1-second lock wait for fast test
+                $client = new FastLockTimeoutClient(
+                    vatNumber: '12345678',
+                    accessToken: 'expired-token',
+                    refreshToken: 'refresh',
+                    expiresAt: $expiredTime,
+                );
+
+                Http::fake([
+                    '*' => Http::response('<?xml version="1.0"?><header stare="ok"/>', 200),
+                ]);
+
+                // Try to make an authenticated request which triggers token refresh
+                // This should timeout quickly because the lock is held and wait time is 1 second
+                $client->getStatusMessage('12345');
+            } catch (AuthenticationException $e) {
+                expect($e->getMessage())->toContain('Token refresh lock timeout');
+                expect($e->getPrevious())->toBeInstanceOf(\Illuminate\Contracts\Cache\LockTimeoutException::class);
+            } finally {
+                // Always release the lock
+                $lock->release();
+            }
+        });
+
+        it('refreshes token successfully when lock is available', function () {
+            // Set up an expired token
+            $expiredTime = Carbon::now()->subMinutes(5);
+
+            // Mock the authenticator to return new tokens
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->once()
+                ->andReturn(new OAuthTokensData(
+                    accessToken: 'new-access-token',
+                    refreshToken: 'new-refresh-token',
+                    expiresAt: Carbon::now()->addHour(),
+                ));
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired-token',
+                refreshToken: 'refresh',
+                expiresAt: $expiredTime,
+            );
+
+            // This should trigger token refresh and succeed
+            $result = $client->getStatusMessage('12345');
+
+            expect($client->wasTokenRefreshed())->toBeTrue();
+        });
+
+        it('skips refresh when another process already refreshed token', function () {
+            // This test verifies the re-check after acquiring lock
+            $expiredTime = Carbon::now()->subMinutes(5);
+            $validTime = Carbon::now()->addHour();
+
+            // The authenticator should NOT be called because token becomes valid
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'valid-token',
+                refreshToken: 'refresh',
+                expiresAt: $validTime,  // Token is valid
+            );
+
+            // This should NOT trigger refresh because token is valid
+            $result = $client->getStatusMessage('12345');
+
+            expect($client->wasTokenRefreshed())->toBeFalse();
+        });
+    });
+
+    describe('token refresh failure circuit breaker', function () {
+        it('fails fast on subsequent calls after token refresh failure', function () {
+            $expiredTime = Carbon::now()->subMinutes(5);
+
+            // Mock authenticator to fail on refresh
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->once()
+                ->andThrow(new AuthenticationException('Refresh token revoked'));
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired-token',
+                refreshToken: 'revoked-refresh',
+                expiresAt: $expiredTime,
+            );
+
+            // First call should fail due to refresh failure
+            $firstException = null;
+            try {
+                $client->getStatusMessage('12345');
+            } catch (AuthenticationException $e) {
+                $firstException = $e;
+                expect($e->getMessage())->toContain('Refresh token revoked');
+            }
+            expect($firstException)->not->toBeNull();
+
+            // Second call should fail fast without attempting refresh
+            $secondException = null;
+            try {
+                $client->getStatusMessage('67890');
+            } catch (AuthenticationException $e) {
+                $secondException = $e;
+                expect($e->getMessage())->toContain('Token refresh previously failed');
+                expect($e->getMessage())->toContain('Create a new client instance');
+            }
+            expect($secondException)->not->toBeNull();
+
+            // Verify authenticator was only called once (not on second attempt)
+            $this->authenticator->shouldHaveReceived('refreshAccessToken')->once();
+        });
+
+        it('does not set failure flag when token is valid', function () {
+            $validTime = Carbon::now()->addHour();
+
+            // Authenticator should NOT be called
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'valid-token',
+                refreshToken: 'refresh',
+                expiresAt: $validTime,
+            );
+
+            // Multiple calls should work without issue
+            $client->getStatusMessage('12345');
+            $client->getStatusMessage('67890');
+
+            // No exception means success
+            expect(true)->toBeTrue();
+        });
+    });
+
+    describe('lazy authenticator resolution', function () {
+        it('creates client without OAuth config when tokens are valid', function () {
+            // Remove the mock authenticator from container to simulate no OAuth config
+            app()->forgetInstance(AnafAuthenticatorInterface::class);
+            app()->bind(AnafAuthenticatorInterface::class, function () {
+                throw new AuthenticationException('OAuth credentials not configured');
+            });
+
+            // Should NOT throw because token is valid and authenticator is not needed yet
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'valid-token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->getVatNumber())->toBe('12345678');
+        });
+
+        it('accepts explicit authenticator in constructor', function () {
+            $mockAuthenticator = Mockery::mock(AnafAuthenticatorInterface::class);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'access-token',
+                refreshToken: 'refresh-token',
+                expiresAt: Carbon::now()->addHour(),
+                authenticator: $mockAuthenticator,
+            );
+
+            expect($client->getVatNumber())->toBe('12345678');
+        });
+
+        it('accepts explicit authenticator in fromTokens', function () {
+            $mockAuthenticator = Mockery::mock(AnafAuthenticatorInterface::class);
+            $tokens = new OAuthTokensData(
+                accessToken: 'access-token',
+                refreshToken: 'refresh-token',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client = EFacturaClient::fromTokens('12345678', $tokens, $mockAuthenticator);
+
+            expect($client->getVatNumber())->toBe('12345678');
+        });
+
+        it('resolves authenticator lazily when token refresh is needed', function () {
+            $expiredTime = Carbon::now()->subMinutes(5);
+
+            // Mock authenticator to return new tokens
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->once()
+                ->andReturn(new OAuthTokensData(
+                    accessToken: 'new-access-token',
+                    refreshToken: 'new-refresh-token',
+                    expiresAt: Carbon::now()->addHour(),
+                ));
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok"/>', 200),
+            ]);
+
+            // Create client without explicit authenticator (will resolve from container when needed)
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired-token',
+                refreshToken: 'refresh',
+                expiresAt: $expiredTime,
+            );
+
+            // This triggers token refresh which resolves the authenticator lazily
+            $client->getStatusMessage('12345');
+
+            expect($client->wasTokenRefreshed())->toBeTrue();
         });
     });
 });

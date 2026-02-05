@@ -6,6 +6,7 @@ namespace BeeCoded\EFacturaSdk\Services;
 
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\RateLimitStore;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Rate limiter for ANAF e-Factura API.
@@ -43,12 +44,87 @@ class RateLimiter
         $this->dailyStore = new RateLimitStore('daily', 86400); // 24 hours
 
         // Load from config with conservative defaults (50% of ANAF limits)
-        $this->globalPerMinute = (int) config('efactura-sdk.rate_limits.global_per_minute', 500);
-        $this->raspUploadPerDayCui = (int) config('efactura-sdk.rate_limits.rasp_upload_per_day_cui', 500);
-        $this->statusPerDayMessage = (int) config('efactura-sdk.rate_limits.status_per_day_message', 50);
-        $this->simpleListPerDayCui = (int) config('efactura-sdk.rate_limits.simple_list_per_day_cui', 750);
-        $this->paginatedListPerDayCui = (int) config('efactura-sdk.rate_limits.paginated_list_per_day_cui', 50000);
-        $this->downloadPerDayMessage = (int) config('efactura-sdk.rate_limits.download_per_day_message', 5);
+        $this->globalPerMinute = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.global_per_minute', 500),
+            'global_per_minute'
+        );
+        $this->raspUploadPerDayCui = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.rasp_upload_per_day_cui', 500),
+            'rasp_upload_per_day_cui'
+        );
+        $this->statusPerDayMessage = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.status_per_day_message', 50),
+            'status_per_day_message'
+        );
+        $this->simpleListPerDayCui = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.simple_list_per_day_cui', 750),
+            'simple_list_per_day_cui'
+        );
+        $this->paginatedListPerDayCui = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.paginated_list_per_day_cui', 50000),
+            'paginated_list_per_day_cui'
+        );
+        $this->downloadPerDayMessage = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.download_per_day_message', 5),
+            'download_per_day_message'
+        );
+
+        // Warn about cache driver requirements for rate limiting
+        $this->validateCacheDriver();
+    }
+
+    /**
+     * Validate that a rate limit value is positive.
+     *
+     * @throws \InvalidArgumentException If the limit is zero or negative
+     */
+    private function validateLimit(int $limit, string $name): int
+    {
+        if ($limit <= 0) {
+            throw new \InvalidArgumentException(
+                "Rate limit '{$name}' must be a positive integer, got {$limit}. ".
+                'Check your efactura-sdk.php config or environment variables.'
+            );
+        }
+
+        return $limit;
+    }
+
+    /**
+     * Validate that an identifier is not empty.
+     *
+     * @throws \InvalidArgumentException If the identifier is empty
+     */
+    private function validateIdentifier(string $identifier, string $name): void
+    {
+        if (trim($identifier) === '') {
+            throw new \InvalidArgumentException(
+                "{$name} cannot be empty for rate limiting"
+            );
+        }
+    }
+
+    /**
+     * Validate cache driver is suitable for rate limiting.
+     * Logs warnings for drivers that may not work correctly.
+     */
+    private function validateCacheDriver(): void
+    {
+        if (! $this->isEnabled()) {
+            return;
+        }
+
+        $cacheDriver = config('cache.default');
+
+        // Warn about drivers that don't persist across requests/processes
+        if (in_array($cacheDriver, ['null', 'array'], true)) {
+            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->warning(
+                "EFactura SDK rate limiting may not work correctly with '{$cacheDriver}' cache driver. ".
+                'Rate limits will not persist across requests. '.
+                'Consider using redis, memcached, or database cache driver for production.',
+                ['cache_driver' => $cacheDriver]
+            );
+        }
     }
 
     /**
@@ -93,6 +169,8 @@ class RateLimiter
             return;
         }
 
+        $this->validateIdentifier($cui, 'CUI');
+
         $key = "rasp_upload:{$cui}";
 
         if (! $this->dailyStore->attemptOrFail($key, $this->raspUploadPerDayCui)) {
@@ -114,6 +192,8 @@ class RateLimiter
         if (! $this->isEnabled()) {
             return;
         }
+
+        $this->validateIdentifier($messageId, 'message ID');
 
         $key = "status:{$messageId}";
 
@@ -137,6 +217,8 @@ class RateLimiter
             return;
         }
 
+        $this->validateIdentifier($cui, 'CUI');
+
         $key = "list_simple:{$cui}";
 
         if (! $this->dailyStore->attemptOrFail($key, $this->simpleListPerDayCui)) {
@@ -158,6 +240,8 @@ class RateLimiter
         if (! $this->isEnabled()) {
             return;
         }
+
+        $this->validateIdentifier($cui, 'CUI');
 
         $key = "list_paginated:{$cui}";
 
@@ -181,6 +265,8 @@ class RateLimiter
             return;
         }
 
+        $this->validateIdentifier($messageId, 'message ID');
+
         $key = "download:{$messageId}";
 
         if (! $this->dailyStore->attemptOrFail($key, $this->downloadPerDayMessage)) {
@@ -195,10 +281,27 @@ class RateLimiter
     /**
      * Get remaining quota for various limits.
      *
+     * @param  string  $type  The rate limit type ('global', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download')
+     * @param  string  $identifier  The identifier (CUI or message ID) - required for all types except 'global'
      * @return array{limit: int, remaining: int, resetsIn: int}
+     *
+     * @throws \InvalidArgumentException If type is unknown or identifier is empty for types that require it
      */
     public function getRemainingQuota(string $type, string $identifier = ''): array
     {
+        // Validate type first
+        $validTypes = ['global', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download'];
+        if (! in_array($type, $validTypes, true)) {
+            throw new \InvalidArgumentException("Unknown rate limit type: {$type}");
+        }
+
+        // Validate identifier for types that require it
+        if ($type !== 'global' && trim($identifier) === '') {
+            throw new \InvalidArgumentException(
+                "Identifier is required for rate limit type: {$type}"
+            );
+        }
+
         return match ($type) {
             'global' => [
                 'limit' => $this->globalPerMinute,
@@ -230,7 +333,6 @@ class RateLimiter
                 'remaining' => $this->dailyStore->getRemaining("download:{$identifier}", $this->downloadPerDayMessage),
                 'resetsIn' => $this->dailyStore->availableIn("download:{$identifier}"),
             ],
-            default => throw new \InvalidArgumentException("Unknown rate limit type: {$type}"),
         };
     }
 }

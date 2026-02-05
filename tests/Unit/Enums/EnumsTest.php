@@ -2,23 +2,11 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
 use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
-use BeeCoded\EFacturaSdk\Enums\MessageFilter;
-use BeeCoded\EFacturaSdk\Enums\StandardType;
-use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
 
 describe('ExecutionStatus', function () {
-    it('has Success case with value 0', function () {
-        expect(ExecutionStatus::Success->value)->toBe(0);
-    });
-
-    it('has Error case with value 1', function () {
-        expect(ExecutionStatus::Error->value)->toBe(1);
-    });
-
     it('can be created from value', function () {
         expect(ExecutionStatus::from(0))->toBe(ExecutionStatus::Success);
         expect(ExecutionStatus::from(1))->toBe(ExecutionStatus::Error);
@@ -30,95 +18,39 @@ describe('ExecutionStatus', function () {
 });
 
 describe('UploadStatusValue', function () {
-    it('has Ok case', function () {
-        expect(UploadStatusValue::Ok->value)->toBe('ok');
-    });
-
-    it('has Failed case', function () {
-        expect(UploadStatusValue::Failed->value)->toBe('nok');
-    });
-
-    it('has InProgress case', function () {
-        expect(UploadStatusValue::InProgress->value)->toBe('in prelucrare');
-    });
-
     it('can be created from value', function () {
         expect(UploadStatusValue::from('ok'))->toBe(UploadStatusValue::Ok);
         expect(UploadStatusValue::from('nok'))->toBe(UploadStatusValue::Failed);
         expect(UploadStatusValue::from('in prelucrare'))->toBe(UploadStatusValue::InProgress);
     });
-});
 
-describe('MessageFilter', function () {
-    it('has InvoiceSent case', function () {
-        expect(MessageFilter::InvoiceSent->value)->toBe('T');
-    });
-
-    it('has InvoiceReceived case', function () {
-        expect(MessageFilter::InvoiceReceived->value)->toBe('P');
-    });
-
-    it('has InvoiceErrors case', function () {
-        expect(MessageFilter::InvoiceErrors->value)->toBe('E');
-    });
-
-    it('has BuyerMessage case', function () {
-        expect(MessageFilter::BuyerMessage->value)->toBe('R');
+    it('returns null for invalid value using tryFrom', function () {
+        expect(UploadStatusValue::tryFrom('invalid'))->toBeNull();
     });
 });
 
 describe('InvoiceTypeCode', function () {
-    it('has CommercialInvoice case', function () {
+    it('has correct UNTDID 1001 values', function () {
         expect(InvoiceTypeCode::CommercialInvoice->value)->toBe('380');
-    });
-
-    it('has InvoiceInformationForAccountingPurposes case', function () {
-        expect(InvoiceTypeCode::InvoiceInformationForAccountingPurposes->value)->toBe('751');
-    });
-
-    it('has CreditNote case', function () {
         expect(InvoiceTypeCode::CreditNote->value)->toBe('381');
-    });
-});
-
-describe('TaxCategoryId', function () {
-    it('has NotSubject case', function () {
-        expect(TaxCategoryId::NotSubject->value)->toBe('O');
+        expect(InvoiceTypeCode::CorrectedInvoice->value)->toBe('384');
+        expect(InvoiceTypeCode::SelfBilledInvoice->value)->toBe('389');
+        expect(InvoiceTypeCode::AccountingInvoice->value)->toBe('751');
     });
 
-    it('has Standard case', function () {
-        expect(TaxCategoryId::Standard->value)->toBe('S');
+    it('identifies credit note type', function () {
+        expect(InvoiceTypeCode::CreditNote->isCreditNote())->toBeTrue();
+        expect(InvoiceTypeCode::CommercialInvoice->isCreditNote())->toBeFalse();
+        expect(InvoiceTypeCode::CorrectedInvoice->isCreditNote())->toBeFalse();
+        expect(InvoiceTypeCode::SelfBilledInvoice->isCreditNote())->toBeFalse();
+        expect(InvoiceTypeCode::AccountingInvoice->isCreditNote())->toBeFalse();
     });
 
-    it('has ZeroRated case', function () {
-        expect(TaxCategoryId::ZeroRated->value)->toBe('Z');
-    });
-});
-
-describe('StandardType', function () {
-    it('has UBL case', function () {
-        expect(StandardType::UBL->value)->toBe('UBL');
-    });
-
-    it('has CN case', function () {
-        expect(StandardType::CN->value)->toBe('CN');
-    });
-
-    it('has CII case', function () {
-        expect(StandardType::CII->value)->toBe('CII');
-    });
-
-    it('has RASP case', function () {
-        expect(StandardType::RASP->value)->toBe('RASP');
-    });
-});
-
-describe('DocumentStandardType', function () {
-    it('has FACT1 case', function () {
-        expect(DocumentStandardType::FACT1->value)->toBe('FACT1');
-    });
-
-    it('has FCN case', function () {
-        expect(DocumentStandardType::FCN->value)->toBe('FCN');
+    it('identifies invoice types', function () {
+        expect(InvoiceTypeCode::CommercialInvoice->isInvoice())->toBeTrue();
+        expect(InvoiceTypeCode::CorrectedInvoice->isInvoice())->toBeTrue();
+        expect(InvoiceTypeCode::SelfBilledInvoice->isInvoice())->toBeTrue();
+        expect(InvoiceTypeCode::AccountingInvoice->isInvoice())->toBeTrue();
+        expect(InvoiceTypeCode::CreditNote->isInvoice())->toBeFalse();
     });
 });

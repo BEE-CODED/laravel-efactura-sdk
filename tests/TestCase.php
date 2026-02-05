@@ -6,12 +6,14 @@ namespace BeeCoded\EFacturaSdk\Tests;
 
 use BeeCoded\EFacturaSdk\EFacturaServiceProvider;
 use Orchestra\Testbench\TestCase as BaseTestCase;
+use Spatie\LaravelData\LaravelDataServiceProvider;
 
 abstract class TestCase extends BaseTestCase
 {
     protected function getPackageProviders($app): array
     {
         return [
+            LaravelDataServiceProvider::class,
             EFacturaServiceProvider::class,
         ];
     }
@@ -19,7 +21,7 @@ abstract class TestCase extends BaseTestCase
     protected function getPackageAliases($app): array
     {
         return [
-            'EFactura' => \BeeCoded\EFacturaSdk\Facades\EFactura::class,
+            'EFacturaSdkAuth' => \BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth::class,
         ];
     }
 

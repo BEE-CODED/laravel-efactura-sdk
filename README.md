@@ -126,13 +126,13 @@ The SDK provides a stateless OAuth implementation. **You are responsible for sto
 #### Step 1: Redirect User to ANAF Authorization
 
 ```php
-use BeeCoded\EFacturaSdk\Facades\EFactura;
+use BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth;
 
 // Generate authorization URL
-$authUrl = EFactura::getAuthorizationUrl();
+$authUrl = EFacturaSdkAuth::getAuthorizationUrl();
 
 // Or with custom state data
-$authUrl = EFactura::getAuthorizationUrl(new AuthUrlSettingsData(
+$authUrl = EFacturaSdkAuth::getAuthorizationUrl(new AuthUrlSettingsData(
     state: ['company_id' => 123, 'user_id' => 456],
     scope: 'custom-scope',
 ));
@@ -143,14 +143,14 @@ return redirect($authUrl);
 #### Step 2: Handle OAuth Callback
 
 ```php
-use BeeCoded\EFacturaSdk\Facades\EFactura;
+use BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth;
 
 public function handleCallback(Request $request)
 {
     $code = $request->get('code');
 
     // Exchange authorization code for tokens
-    $tokens = EFactura::exchangeCodeForToken($code);
+    $tokens = EFacturaSdkAuth::exchangeCodeForToken($code);
 
     // Store tokens in YOUR database
     YourTokenModel::create([
@@ -165,9 +165,9 @@ public function handleCallback(Request $request)
 #### Manual Token Refresh
 
 ```php
-use BeeCoded\EFacturaSdk\Facades\EFactura;
+use BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth;
 
-$newTokens = EFactura::refreshAccessToken($storedRefreshToken);
+$newTokens = EFacturaSdkAuth::refreshAccessToken($storedRefreshToken);
 
 // Update stored tokens
 $tokenModel->update([
@@ -519,6 +519,34 @@ $invoice = new InvoiceData(
 $xml = UblBuilder::generateInvoiceXml($invoice);
 ```
 
+#### Creating a Credit Note
+
+```php
+use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
+
+$creditNote = new InvoiceData(
+    invoiceNumber: 'CN-2024-001',
+    issueDate: now(),
+    currency: 'RON',
+    invoiceTypeCode: InvoiceTypeCode::CreditNote,  // Generates <CreditNote> XML
+
+    supplier: $supplier,
+    customer: $customer,
+
+    lines: [
+        new InvoiceLineData(
+            name: 'Returned product',
+            quantity: -2,      // Negative for credit
+            unitPrice: 100.00,
+            taxPercent: 19,
+        ),
+    ],
+);
+
+// Generates UBL CreditNote document with <CreditNoteTypeCode>381</CreditNoteTypeCode>
+$xml = UblBuilder::generateInvoiceXml($creditNote);
+```
+
 #### Invoice Calculations
 
 ```php
@@ -689,11 +717,25 @@ MessageFilter::BuyerMessage    // 'R' - Buyer messages
 ```
 
 ### InvoiceTypeCode
+
+Valid codes per ANAF BR-RO-020 schematron rule:
+
 ```php
-InvoiceTypeCode::Invoice    // '380' - Standard invoice
-InvoiceTypeCode::CreditNote // '381' - Credit note
-InvoiceTypeCode::DebitNote  // '383' - Debit note
+// Invoice document types (generates <Invoice> XML)
+InvoiceTypeCode::CommercialInvoice  // '380' - Standard commercial invoice
+InvoiceTypeCode::CorrectedInvoice   // '384' - Corrected invoice
+InvoiceTypeCode::SelfBilledInvoice  // '389' - Self-billed invoice (autofactura)
+InvoiceTypeCode::AccountingInvoice  // '751' - Invoice for accounting purposes
+
+// Credit note (generates <CreditNote> XML)
+InvoiceTypeCode::CreditNote         // '381' - Credit note
+
+// Helper methods
+$type->isCreditNote();  // true for 381
+$type->isInvoice();     // true for 380, 384, 389, 751
 ```
+
+**Note:** The SDK automatically generates the correct UBL document type. Code 381 generates a `<CreditNote>` document with `<CreditNoteTypeCode>` and `<CreditNoteLine>` elements, while all other codes generate an `<Invoice>` document.
 
 ## Exception Handling
 

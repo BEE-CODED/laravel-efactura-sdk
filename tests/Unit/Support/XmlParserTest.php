@@ -64,6 +64,31 @@ XML;
         expect($result['executionStatus'])->toBe(0);
         expect($result['indexIncarcare'])->toBe('67890');
     });
+
+    it('treats non-numeric ExecutionStatus as error', function () {
+        // Malformed response with non-numeric ExecutionStatus should default to Error (1)
+        // to avoid masking API failures
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header ExecutionStatus="success" index_incarcare="12345"/>
+XML;
+
+        $result = XmlParser::parseUploadResponse($xml);
+
+        expect($result['executionStatus'])->toBe(ExecutionStatus::Error->value);
+        expect($result['indexIncarcare'])->toBe('12345');
+    });
+
+    it('treats empty ExecutionStatus as error', function () {
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header ExecutionStatus="" index_incarcare="12345"/>
+XML;
+
+        $result = XmlParser::parseUploadResponse($xml);
+
+        expect($result['executionStatus'])->toBe(ExecutionStatus::Error->value);
+    });
 });
 
 describe('parseStatusResponse', function () {
@@ -148,6 +173,59 @@ XML;
     });
 });
 
+describe('getLastParseException', function () {
+    it('returns null when no parse error has occurred', function () {
+        // Parse valid XML first to reset state
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header ExecutionStatus="0" index_incarcare="12345"/>
+XML;
+
+        XmlParser::parseUploadResponse($xml);
+
+        expect(XmlParser::getLastParseException())->toBeNull();
+    });
+
+    it('captures parse exception for invalid XML', function () {
+        $invalidXml = 'definitely not valid xml <<<<>>>';
+
+        // This will fail to parse
+        XmlParser::extractErrorMessage($invalidXml);
+
+        $exception = XmlParser::getLastParseException();
+
+        expect($exception)->toBeInstanceOf(\Throwable::class);
+    });
+
+    it('passes previous exception to XmlParsingException', function () {
+        $invalidXml = 'this is not XML at all <<<';
+
+        try {
+            XmlParser::parseUploadResponse($invalidXml);
+        } catch (XmlParsingException $e) {
+            // The previous exception should be set
+            expect($e->getPrevious())->toBeInstanceOf(\Throwable::class);
+        }
+    });
+
+    it('resets last exception on successful parse', function () {
+        // First cause a parse error
+        XmlParser::extractErrorMessage('invalid xml <<<');
+        expect(XmlParser::getLastParseException())->not->toBeNull();
+
+        // Now parse valid XML
+        $validXml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header ExecutionStatus="0" index_incarcare="12345"/>
+XML;
+
+        XmlParser::parseUploadResponse($validXml);
+
+        // Exception should be cleared
+        expect(XmlParser::getLastParseException())->toBeNull();
+    });
+});
+
 describe('extractErrorMessage', function () {
     it('extracts errorMessage from attribute', function () {
         $xml = <<<'XML'
@@ -184,6 +262,17 @@ XML;
 
     it('returns null for invalid XML', function () {
         expect(XmlParser::extractErrorMessage('not xml at all'))->toBeNull();
+    });
+
+    it('returns null for empty extractErrorMessage when XML parses but has no error', function () {
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<Data>
+    <Value>Something</Value>
+</Data>
+XML;
+
+        expect(XmlParser::extractErrorMessage($xml))->toBeNull();
     });
 
     it('extracts nested errorMessage', function () {

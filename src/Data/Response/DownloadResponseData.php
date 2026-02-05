@@ -76,7 +76,13 @@ class DownloadResponseData extends Data
             return false;
         }
 
-        fwrite($stream, $this->content);
+        $bytesWritten = fwrite($stream, $this->content);
+        if ($bytesWritten === false || $bytesWritten !== strlen($this->content)) {
+            fclose($stream);
+
+            return false;
+        }
+
         rewind($stream);
 
         return $stream;

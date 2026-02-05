@@ -60,6 +60,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
     /**
      * Get the default headers for API requests.
+     *
+     * @return array<string, string>
      */
     protected function getHeaders(): array
     {
@@ -149,9 +151,12 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             $response = $this->callRaw('', 'post', $jsonBody, 'application/json');
             $data = $response->json();
 
-            if (! $data) {
+            // Use strict null check to distinguish between:
+            // - null: JSON parsing failed (invalid response)
+            // - []: Valid but unexpected empty response (handled by transformResponse)
+            if ($data === null) {
                 return CompanyLookupResultData::failure(
-                    'No response received from ANAF API.',
+                    'Invalid or malformed JSON response from ANAF API.',
                     $invalidCodes
                 );
             }
@@ -223,9 +228,15 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             return null;
         }
 
+        // Special case: ANAF allows all-zeros CNP (0000000000000) as valid identifier
+        // This is used for anonymous/placeholder entries in e-Factura
+        if ($cuiString === '0000000000000') {
+            return 0;
+        }
+
         $cuiNumber = (int) $cuiString;
 
-        // CUI must be positive
+        // CUI must be positive (except for the ANAF zero CNP handled above)
         if ($cuiNumber <= 0) {
             return null;
         }

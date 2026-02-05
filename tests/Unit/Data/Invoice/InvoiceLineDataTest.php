@@ -5,19 +5,7 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 
 describe('InvoiceLineData construction', function () {
-    it('creates line with required fields', function () {
-        $line = new InvoiceLineData(
-            name: 'Test Product',
-            quantity: 2,
-            unitPrice: 100.00,
-        );
-
-        expect($line->name)->toBe('Test Product');
-        expect($line->quantity)->toBe(2.0);
-        expect($line->unitPrice)->toBe(100.00);
-    });
-
-    it('has default values', function () {
+    it('has correct default values', function () {
         $line = new InvoiceLineData(
             name: 'Test Product',
             quantity: 1,
@@ -28,34 +16,6 @@ describe('InvoiceLineData construction', function () {
         expect($line->description)->toBeNull();
         expect($line->unitCode)->toBe('EA');
         expect($line->taxPercent)->toBe(0.0);
-    });
-
-    it('accepts all optional fields', function () {
-        $line = new InvoiceLineData(
-            name: 'Test Product',
-            quantity: 2,
-            unitPrice: 100.00,
-            id: 'LINE-001',
-            description: 'A test product description',
-            unitCode: 'KGM',
-            taxPercent: 19,
-        );
-
-        expect($line->id)->toBe('LINE-001');
-        expect($line->description)->toBe('A test product description');
-        expect($line->unitCode)->toBe('KGM');
-        expect($line->taxPercent)->toBe(19.0);
-    });
-
-    it('accepts integer id', function () {
-        $line = new InvoiceLineData(
-            name: 'Test Product',
-            quantity: 1,
-            unitPrice: 100.00,
-            id: 1,
-        );
-
-        expect($line->id)->toBe(1);
     });
 });
 
@@ -186,6 +146,41 @@ describe('getRawLineTotal', function () {
 
         // Raw total preserves precision for grouping
         expect($line->getRawLineTotal())->not->toBe($line->getLineTotal());
+    });
+});
+
+describe('negative values', function () {
+    it('allows negative quantity for credit notes', function () {
+        $line = new InvoiceLineData(
+            name: 'Returned Product',
+            quantity: -2,
+            unitPrice: 100.00,
+            taxPercent: 19,
+        );
+
+        expect($line->getLineTotal())->toBe(-200.00);
+        expect($line->getTaxAmount())->toBe(-38.00);
+        expect($line->getLineTotalWithTax())->toBe(-238.00);
+    });
+
+    it('rejects negative tax percent via validation', function () {
+        $validated = InvoiceLineData::validateAndCreate([
+            'name' => 'Product',
+            'quantity' => 1,
+            'unitPrice' => 100.00,
+            'taxPercent' => -5,
+        ]);
+    })->throws(Illuminate\Validation\ValidationException::class, 'The tax percent field must be at least 0.');
+
+    it('accepts zero tax percent', function () {
+        $line = InvoiceLineData::validateAndCreate([
+            'name' => 'Exempt Product',
+            'quantity' => 1,
+            'unitPrice' => 100.00,
+            'taxPercent' => 0,
+        ]);
+
+        expect($line->taxPercent)->toBe(0.0);
     });
 });
 

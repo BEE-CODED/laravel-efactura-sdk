@@ -137,6 +137,37 @@ describe('getDueDateAsCarbon', function () {
 
         expect($result)->toBeInstanceOf(Carbon::class);
     });
+
+    it('throws exception for invalid date string', function () {
+        $invoice = createTestInvoice([], ['dueDate' => 'not-a-valid-date']);
+
+        $invoice->getDueDateAsCarbon();
+    })->throws(\InvalidArgumentException::class, 'Invalid due date format');
+});
+
+describe('getIssueDateAsCarbon exception handling', function () {
+    it('throws exception for invalid issue date string', function () {
+        $invoice = createTestInvoice([], ['issueDate' => 'invalid-date-format']);
+
+        $invoice->getIssueDateAsCarbon();
+    })->throws(\InvalidArgumentException::class, 'Invalid issue date format');
+
+    it('throws exception for malformed date', function () {
+        $invoice = createTestInvoice([], ['issueDate' => '2024-13-45']);
+
+        $invoice->getIssueDateAsCarbon();
+    })->throws(\InvalidArgumentException::class, 'Invalid issue date format');
+
+    it('includes original value in exception message', function () {
+        $invoice = createTestInvoice([], ['issueDate' => 'foobar']);
+
+        try {
+            $invoice->getIssueDateAsCarbon();
+        } catch (\InvalidArgumentException $e) {
+            expect($e->getMessage())->toContain('foobar');
+            expect($e->getPrevious())->not->toBeNull();
+        }
+    });
 });
 
 describe('getInvoiceTypeCode', function () {
@@ -232,6 +263,46 @@ describe('getTotalVat', function () {
 
         // Raw: 3 * 33.33 = 99.99, Tax: 99.99 * 0.19 = 18.9981 -> 19.00
         expect($invoice->getTotalVat())->toBe(19.00);
+    });
+
+    it('groups lines with floating-point precision differences together', function () {
+        // Lines with tax rates that differ only due to floating-point precision
+        // should be grouped together (both round to 19.00)
+        $lines = [
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.0),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.001),
+        ];
+        $invoice = createTestInvoice($lines);
+
+        // Both should be grouped as 19% tax rate: 200 * 0.19 = 38.00
+        // Not treated as separate groups which would give different results
+        expect($invoice->getTotalVat())->toBe(38.00);
+    });
+
+    it('groups rates that round to same 2-decimal value', function () {
+        // Tax rates 19.001 and 19.004 should both round to 19.00 and be grouped together
+        $lines = [
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.001),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.004),
+        ];
+        $invoice = createTestInvoice($lines);
+
+        // Both round to 19.00, so: 200 * 0.19 = 38.00
+        expect($invoice->getTotalVat())->toBe(38.00);
+    });
+
+    it('keeps different tax rates separate when they round to different values', function () {
+        // Tax rates that round to different values should remain separate
+        $lines = [
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.004),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.006),
+        ];
+        $invoice = createTestInvoice($lines);
+
+        // 19.004 rounds to 19.00, 19.006 rounds to 19.01
+        // So: 100 * 0.19 = 19.00, 100 * 0.1901 = 19.01
+        // Total: 38.01
+        expect($invoice->getTotalVat())->toBe(38.01);
     });
 });
 

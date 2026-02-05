@@ -280,6 +280,38 @@ describe('PaginatedMessagesResponseData', function () {
         expect($response->isLastPage())->toBeTrue();
     });
 
+    it('isFirstPage returns false when pagination info is missing', function () {
+        $response = PaginatedMessagesResponseData::fromAnafResponse([]);
+
+        expect($response->isFirstPage())->toBeFalse();
+    });
+
+    it('isFirstPage returns false when currentPage is null', function () {
+        $response = PaginatedMessagesResponseData::fromAnafResponse([
+            'numar_total_pagini' => 5,
+            // index_pagina_curenta is missing (null)
+        ]);
+
+        expect($response->isFirstPage())->toBeFalse();
+    });
+
+    it('hasNextPage returns false when currentPage is null', function () {
+        $response = PaginatedMessagesResponseData::fromAnafResponse([
+            'numar_total_pagini' => 5,
+            // index_pagina_curenta is missing
+        ]);
+
+        expect($response->hasNextPage())->toBeFalse();
+    });
+
+    it('hasPreviousPage returns false when currentPage is null', function () {
+        $response = PaginatedMessagesResponseData::fromAnafResponse([
+            // index_pagina_curenta is missing
+        ]);
+
+        expect($response->hasPreviousPage())->toBeFalse();
+    });
+
     it('handles error responses', function () {
         $response = PaginatedMessagesResponseData::fromAnafResponse([
             'eroare' => 'Invalid request',
@@ -289,27 +321,7 @@ describe('PaginatedMessagesResponseData', function () {
     });
 });
 
-describe('DownloadResponseData', function () {
-    it('can be created with content', function () {
-        $response = new DownloadResponseData(
-            content: '<xml>content</xml>',
-            contentType: 'application/xml',
-        );
-
-        expect($response->content)->toBe('<xml>content</xml>');
-        expect($response->contentType)->toBe('application/xml');
-    });
-});
-
 describe('ValidationResultData', function () {
-    it('can be created with validation result', function () {
-        $result = new ValidationResultData(
-            valid: true,
-        );
-
-        expect($result->valid)->toBeTrue();
-    });
-
     it('can contain validation errors', function () {
         $result = new ValidationResultData(
             valid: false,
