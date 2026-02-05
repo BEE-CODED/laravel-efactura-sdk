@@ -44,9 +44,9 @@ class OAuthTokensData extends Data
     /**
      * Check if the token is expired or about to expire.
      *
-     * @param  int  $bufferSeconds  Buffer time before actual expiration (default 30 seconds)
+     * @param  int  $bufferSeconds  Buffer time before actual expiration (default 120 seconds)
      */
-    public function isExpired(int $bufferSeconds = 30): bool
+    public function isExpired(int $bufferSeconds = 120): bool
     {
         if ($this->expiresAt === null) {
             return false;

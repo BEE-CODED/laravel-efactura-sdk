@@ -28,7 +28,7 @@ use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
  *
  * Token Management:
  * - Tokens are passed in via constructor (stateless design)
- * - Auto-refresh occurs when tokens are expired (with 30-second buffer)
+ * - Auto-refresh occurs when tokens are expired (with 120-second buffer)
  * - Use wasTokenRefreshed() to check if tokens were refreshed
  * - Use getTokens() to get the current (potentially refreshed) tokens
  */

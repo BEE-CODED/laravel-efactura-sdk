@@ -62,7 +62,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     /**
      * Buffer time in seconds before token expiration to trigger refresh.
      */
-    private const int TOKEN_EXPIRY_BUFFER_SECONDS = 30;
+    private const int TOKEN_EXPIRY_BUFFER_SECONDS = 120;
 
     /**
      * Lock timeout in seconds for token refresh.
