@@ -285,12 +285,8 @@ class InvoiceBuilder
             throw new ValidationException("{$role} city must not exceed 50 characters (BR-RO-L050)");
         }
 
-        if (empty($address->postalZone)) {
-            throw new ValidationException("{$role} postal code is required");
-        }
-
-        // BR-RO-L020: Postal code max 20 characters
-        if (mb_strlen($address->postalZone) > 20) {
+        // BR-RO-L020: Postal code max 20 characters (optional field)
+        if ($address->postalZone !== null && $address->postalZone !== '' && mb_strlen($address->postalZone) > 20) {
             throw new ValidationException("{$role} postal code must not exceed 20 characters (BR-RO-L020)");
         }
 
@@ -495,7 +491,9 @@ class InvoiceBuilder
         $cityName = $this->sanitizeCityName($address, $countrySubdivision);
         $this->writeElement($writer, self::NS_CBC, 'CityName', $cityName);
 
-        $this->writeElement($writer, self::NS_CBC, 'PostalZone', $address->postalZone);
+        if ($address->postalZone !== null && $address->postalZone !== '') {
+            $this->writeElement($writer, self::NS_CBC, 'PostalZone', $address->postalZone);
+        }
 
         if ($countrySubdivision !== null) {
             $this->writeElement($writer, self::NS_CBC, 'CountrySubentity', $countrySubdivision);

@@ -16,7 +16,7 @@ class AddressData extends Data
     public function __construct(
         public string $street,
         public string $city,
-        public string $postalZone,
+        public ?string $postalZone = null,
         public ?string $county = null,
         public string $countryCode = 'RO',
     ) {}

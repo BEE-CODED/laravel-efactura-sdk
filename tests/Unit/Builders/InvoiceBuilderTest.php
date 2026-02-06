@@ -828,12 +828,51 @@ describe('BR-RO-L string length validations', function () {
             street: 'Test Street',
             city: 'Test City',
             postalZone: str_repeat('1', 21),
+            county: 'Cluj',
         );
         $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
     })->throws(ValidationException::class, 'Supplier postal code must not exceed 20 characters (BR-RO-L020)');
+
+    it('allows omitting postal code for all parties', function () {
+        $builder = new InvoiceBuilder;
+        $supplierAddress = new AddressData(
+            street: 'Str. Test',
+            city: 'Cluj-Napoca',
+            county: 'Cluj',
+            countryCode: 'RO',
+        );
+        $supplier = new PartyData(
+            registrationName: 'Test SRL',
+            companyId: 'RO12345678',
+            address: $supplierAddress,
+            isVatPayer: true,
+        );
+        $customerAddress = new AddressData(
+            street: 'Str. Client',
+            city: 'Bucuresti',
+            county: 'Sector 1',
+            countryCode: 'RO',
+        );
+        $customer = new PartyData(
+            registrationName: 'Client SRL',
+            companyId: 'RO87654321',
+            address: $customerAddress,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], [
+            'supplier' => $supplier,
+            'customer' => $customer,
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('Test SRL');
+        expect($xml)->toContain('Client SRL');
+        expect($xml)->not->toContain('PostalZone');
+    });
 
     it('throws exception for item name over 100 chars', function () {
         $builder = new InvoiceBuilder;
