@@ -63,6 +63,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             'response_type' => 'code',
             'client_id' => $this->clientId,
             'redirect_uri' => $this->redirectUri,
+            'token_content_type' => 'jwt',
         ];
 
         // Add optional scope
@@ -116,6 +117,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             'refresh_token' => $refreshToken,
             'client_id' => $this->clientId,
             'client_secret' => $this->clientSecret,
+            'token_content_type' => 'jwt',
         ]);
 
         return $this->parseTokenResponse($response, 'Token refresh failed');

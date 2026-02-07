@@ -4,7 +4,7 @@ A Laravel package for integrating with Romania's ANAF e-Factura (electronic invo
 
 ## Features
 
-- **OAuth 2.0 Authentication** - Complete OAuth flow with automatic token refresh
+- **OAuth 2.0 Authentication** - Complete OAuth flow with JWT tokens and automatic token refresh
 - **Document Operations** - Upload, download, and check status of invoices
 - **UBL 2.1 XML Generation** - Generate CIUS-RO compliant invoice XML
 - **Company Lookup** - Query ANAF for company details (VAT status, addresses, etc.)
@@ -347,7 +347,7 @@ if ($result->valid) {
 
 ### Automatic Token Refresh
 
-The SDK automatically refreshes tokens when they're about to expire (30-second buffer before expiration).
+The SDK automatically refreshes tokens when they're about to expire (120-second buffer before expiration).
 
 **Important:** ANAF uses rotating refresh tokens. When a token is refreshed, both the access token AND refresh token are replaced. The old refresh token becomes invalid.
 

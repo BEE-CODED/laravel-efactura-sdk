@@ -100,6 +100,7 @@ describe('AnafAuthenticator', function () {
             expect($url)->toContain('response_type=code');
             expect($url)->toContain('client_id=test-client-id');
             expect($url)->toContain('redirect_uri=');
+            expect($url)->toContain('token_content_type=jwt');
         });
 
         it('includes scope when provided', function () {
