@@ -94,8 +94,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             'grant_type' => 'authorization_code',
             'code' => $code,
             'redirect_uri' => $this->redirectUri,
-            'client_id' => $this->clientId,
-            'client_secret' => $this->clientSecret,
+            'token_content_type' => 'jwt',
         ]);
 
         return $this->parseTokenResponse($response, 'Token exchange failed');
@@ -115,8 +114,6 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         $response = $this->postTokenRequest([
             'grant_type' => 'refresh_token',
             'refresh_token' => $refreshToken,
-            'client_id' => $this->clientId,
-            'client_secret' => $this->clientSecret,
             'token_content_type' => 'jwt',
         ]);
 
@@ -249,6 +246,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             $response = $this->http
                 ->timeout($this->timeout)
                 ->asForm()
+                ->withBasicAuth($this->clientId, $this->clientSecret)
                 ->withHeaders([
                     'Accept' => 'application/json',
                 ])
