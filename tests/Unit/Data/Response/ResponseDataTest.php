@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use BeeCoded\EFacturaSdk\Data\Response\DownloadResponseData;
 use BeeCoded\EFacturaSdk\Data\Response\ListMessagesResponseData;
 use BeeCoded\EFacturaSdk\Data\Response\MessageDetailsData;
 use BeeCoded\EFacturaSdk\Data\Response\PaginatedMessagesResponseData;
