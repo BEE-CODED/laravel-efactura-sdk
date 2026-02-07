@@ -706,12 +706,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $headers = [
             'Authorization' => 'Bearer '.$token,
-            'Content-Type' => 'text/plain',
+            'Content-Type' => 'application/xml',
             'Accept' => $expectBinary ? 'application/octet-stream, application/zip, application/json' : 'application/json',
         ];
 
         try {
-            $response = $this->callRaw($route, $method, $xmlBody, 'text/plain', $headers);
+            $response = $this->callRaw($route, $method, $xmlBody, 'application/xml', $headers);
             $this->handleAuthenticationError($response);
 
             return $response;
