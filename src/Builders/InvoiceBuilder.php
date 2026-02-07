@@ -11,6 +11,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Support\AddressSanitizer;
+use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use Sabre\Xml\Service as XmlService;
 use Sabre\Xml\Writer;
 
@@ -452,23 +453,24 @@ class InvoiceBuilder
         // Postal Address
         $this->buildPostalAddressXml($writer, $party->address);
 
-        // Party Tax Scheme (VAT identification)
-        $writer->startElement('{'.self::NS_CAC.'}PartyTaxScheme');
+        // Party Tax Scheme (VAT identification) — only for VAT payers per CIUS-RO
+        if ($isVatPayer) {
+            $writer->startElement('{'.self::NS_CAC.'}PartyTaxScheme');
 
-        // Normalize VAT number (ensure RO prefix for Romanian VAT payers)
-        $companyId = $this->normalizeVatNumber($party->companyId, $party->address->countryCode);
-        $this->writeElement($writer, self::NS_CBC, 'CompanyID', $companyId);
+            $companyId = $this->normalizeVatNumber($party->companyId, $party->address->countryCode);
+            $this->writeElement($writer, self::NS_CBC, 'CompanyID', $companyId);
 
-        $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
-        $this->writeElement($writer, self::NS_CBC, 'ID', self::VAT_SCHEME_ID);
-        $writer->endElement(); // TaxScheme
+            $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
+            $this->writeElement($writer, self::NS_CBC, 'ID', self::VAT_SCHEME_ID);
+            $writer->endElement(); // TaxScheme
 
-        $writer->endElement(); // PartyTaxScheme
+            $writer->endElement(); // PartyTaxScheme
+        }
 
-        // Party Legal Entity
+        // Party Legal Entity — always use raw CUI without country prefix
         $writer->startElement('{'.self::NS_CAC.'}PartyLegalEntity');
         $this->writeElement($writer, self::NS_CBC, 'RegistrationName', $party->registrationName);
-        $this->writeElement($writer, self::NS_CBC, 'CompanyID', $party->companyId);
+        $this->writeElement($writer, self::NS_CBC, 'CompanyID', VatNumberValidator::stripPrefix($party->companyId));
         $writer->endElement(); // PartyLegalEntity
 
         $writer->endElement(); // Party
@@ -641,6 +643,10 @@ class InvoiceBuilder
             $writer->startElement('{'.self::NS_CAC.'}TaxCategory');
             $this->writeElement($writer, self::NS_CBC, 'ID', $group['taxCategoryId']->value);
             $this->writeElement($writer, self::NS_CBC, 'Percent', $this->formatAmount($group['taxPercent']));
+
+            if ($group['taxCategoryId'] === TaxCategoryId::NotSubject) {
+                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReasonCode', 'VATEX-EU-O');
+            }
 
             $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
             $this->writeElement($writer, self::NS_CBC, 'ID', self::VAT_SCHEME_ID);

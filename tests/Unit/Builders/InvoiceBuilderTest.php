@@ -629,7 +629,7 @@ describe('tax grouping floating-point handling', function () {
 });
 
 describe('VAT number normalization', function () {
-    it('adds RO prefix to company ID', function () {
+    it('adds RO prefix to PartyTaxScheme CompanyID for VAT payers', function () {
         $builder = new InvoiceBuilder;
         $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
         $supplier = new PartyData(
@@ -642,7 +642,37 @@ describe('VAT number normalization', function () {
 
         $xml = $builder->buildInvoiceXml($invoice);
 
+        // PartyTaxScheme should have prefixed CompanyID
         expect($xml)->toContain('<cbc:CompanyID>RO12345678</cbc:CompanyID>');
+    });
+
+    it('uses raw CUI in PartyLegalEntity CompanyID regardless of input format', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
+        $supplier = new PartyData(
+            registrationName: 'Test',
+            companyId: 'RO12345678', // With RO prefix
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // PartyTaxScheme has prefixed CompanyID
+        // PartyLegalEntity has raw CUI — extract supplier section to verify
+        $supplierSection = substr($xml,
+            strpos($xml, '<cac:AccountingSupplierParty>'),
+            strpos($xml, '</cac:AccountingSupplierParty>') - strpos($xml, '<cac:AccountingSupplierParty>')
+        );
+        // Count occurrences: RO12345678 should appear once (in PartyTaxScheme)
+        // 12345678 (without RO) should appear in PartyLegalEntity
+        expect($supplierSection)->toContain('<cbc:CompanyID>RO12345678</cbc:CompanyID>');
+        expect(substr_count($supplierSection, '<cbc:CompanyID>RO12345678</cbc:CompanyID>'))->toBe(1);
+        // PartyLegalEntity should have the raw CUI
+        $legalEntityPos = strpos($supplierSection, '<cac:PartyLegalEntity>');
+        $legalEntitySection = substr($supplierSection, $legalEntityPos);
+        expect($legalEntitySection)->toContain('<cbc:CompanyID>12345678</cbc:CompanyID>');
     });
 
     it('keeps existing RO prefix', function () {
@@ -674,7 +704,7 @@ describe('VAT number normalization', function () {
 
         $xml = $builder->buildInvoiceXml($invoice);
 
-        // Should use default RO prefix
+        // PartyTaxScheme should use default RO prefix
         expect($xml)->toContain('<cbc:CompanyID>RO12345678</cbc:CompanyID>');
     });
 
@@ -696,8 +726,108 @@ describe('VAT number normalization', function () {
 
         $xml = $builder->buildInvoiceXml($invoice);
 
-        // Should use AT prefix
+        // PartyTaxScheme should use AT prefix
         expect($xml)->toContain('<cbc:CompanyID>AT12345678</cbc:CompanyID>');
+    });
+});
+
+describe('non-VAT payer CIUS-RO compliance', function () {
+    it('omits PartyTaxScheme for non-VAT payer supplier', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
+        $supplier = new PartyData(
+            registrationName: 'Non-VAT Company',
+            companyId: '12345678',
+            address: $address,
+            isVatPayer: false,
+        );
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+        ], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // PartyTaxScheme should not be present for supplier
+        expect($xml)->toContain('<cac:AccountingSupplierParty>');
+        // Extract supplier section and check no PartyTaxScheme
+        $supplierSection = substr($xml,
+            strpos($xml, '<cac:AccountingSupplierParty>'),
+            strpos($xml, '</cac:AccountingSupplierParty>') - strpos($xml, '<cac:AccountingSupplierParty>')
+        );
+        expect($supplierSection)->not->toContain('<cac:PartyTaxScheme>');
+    });
+
+    it('omits PartyTaxScheme for non-VAT payer customer', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
+        $customer = new PartyData(
+            registrationName: 'Non-VAT Customer',
+            companyId: '87654321',
+            address: $address,
+            isVatPayer: false,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Extract customer section and check no PartyTaxScheme
+        $customerSection = substr($xml,
+            strpos($xml, '<cac:AccountingCustomerParty>'),
+            strpos($xml, '</cac:AccountingCustomerParty>') - strpos($xml, '<cac:AccountingCustomerParty>')
+        );
+        expect($customerSection)->not->toContain('<cac:PartyTaxScheme>');
+    });
+
+    it('includes PartyTaxScheme for VAT payer', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder();
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cac:PartyTaxScheme>');
+    });
+
+    it('emits VATEX-EU-O exemption reason code for non-VAT payer', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
+        $supplier = new PartyData(
+            registrationName: 'Non-VAT Company',
+            companyId: '12345678',
+            address: $address,
+            isVatPayer: false,
+        );
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+        ], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:TaxExemptionReasonCode>VATEX-EU-O</cbc:TaxExemptionReasonCode>');
+    });
+
+    it('uses raw CUI in PartyLegalEntity for non-VAT payer', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
+        $supplier = new PartyData(
+            registrationName: 'Non-VAT Company',
+            companyId: '12345678',
+            address: $address,
+            isVatPayer: false,
+        );
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+        ], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        $supplierSection = substr($xml,
+            strpos($xml, '<cac:AccountingSupplierParty>'),
+            strpos($xml, '</cac:AccountingSupplierParty>') - strpos($xml, '<cac:AccountingSupplierParty>')
+        );
+        $legalEntityPos = strpos($supplierSection, '<cac:PartyLegalEntity>');
+        $legalEntitySection = substr($supplierSection, $legalEntityPos);
+        expect($legalEntitySection)->toContain('<cbc:CompanyID>12345678</cbc:CompanyID>');
+        expect($legalEntitySection)->toContain('<cbc:RegistrationName>Non-VAT Company</cbc:RegistrationName>');
     });
 });
 

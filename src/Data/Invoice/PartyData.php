@@ -16,7 +16,7 @@ class PartyData extends Data
     public function __construct(
         /** The legal name of the party as registered */
         public string $registrationName,
-        /** CIF/CUI with "RO" prefix for VAT payers (e.g., "RO12345678") */
+        /** CIF/CUI number (e.g., "49296198"). The builder handles RO prefix automatically for VAT payers. */
         public string $companyId,
         /** Address of the party */
         public AddressData $address,
