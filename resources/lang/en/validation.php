@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 return [
     // Invoice header
     'invoice_number_required' => 'Invoice number is required',

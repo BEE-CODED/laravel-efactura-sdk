@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 return [
     // Antet factură
     'invoice_number_required' => 'Numărul facturii este obligatoriu',
