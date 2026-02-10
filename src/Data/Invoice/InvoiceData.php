@@ -26,6 +26,7 @@ class InvoiceData extends Data
      * @param  string  $currency  Currency code (ISO 4217)
      * @param  string|null  $paymentIban  IBAN for payment
      * @param  InvoiceTypeCode|null  $invoiceTypeCode  Type of invoice (default: CommercialInvoice)
+     * @param  string|null  $precedingInvoiceNumber  Preceding invoice number for credit notes (BT-25, used in BillingReference)
      */
     public function __construct(
         public string $invoiceNumber,
@@ -38,6 +39,7 @@ class InvoiceData extends Data
         public string $currency = 'RON',
         public ?string $paymentIban = null,
         public ?InvoiceTypeCode $invoiceTypeCode = null,
+        public ?string $precedingInvoiceNumber = null,
     ) {}
 
     /**

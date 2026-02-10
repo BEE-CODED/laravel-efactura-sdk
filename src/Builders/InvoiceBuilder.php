@@ -141,7 +141,7 @@ class InvoiceBuilder
         $this->writeElement($writer, self::NS_CBC, 'IssueDate', $input->getIssueDateAsCarbon()->format('Y-m-d'));
 
         // DueDate is only valid in Invoice schema, not in CreditNote
-        if ($input->dueDate !== null && !$isCreditNote) {
+        if ($input->dueDate !== null && ! $isCreditNote) {
             /** @var \Carbon\Carbon $dueDate PHPStan: guaranteed non-null by guard clause above */
             $dueDate = $input->getDueDateAsCarbon();
             $this->writeElement($writer, self::NS_CBC, 'DueDate', $dueDate->format('Y-m-d'));
@@ -155,6 +155,11 @@ class InvoiceBuilder
         // BR-RO-030: If currency is not RON, TaxCurrencyCode must be RON
         if ($currency !== self::DEFAULT_CURRENCY) {
             $this->writeElement($writer, self::NS_CBC, 'TaxCurrencyCode', self::DEFAULT_CURRENCY);
+        }
+
+        // BillingReference for credit notes (BG-3: Preceding invoice reference)
+        if ($input->precedingInvoiceNumber !== null && $input->precedingInvoiceNumber !== '') {
+            $this->buildBillingReferenceXml($writer, $input->precedingInvoiceNumber);
         }
 
         // Write supplier party
@@ -210,32 +215,37 @@ class InvoiceBuilder
     private function validateInvoiceInput(InvoiceData $input): void
     {
         if (empty($input->invoiceNumber)) {
-            throw new ValidationException('Invoice number is required');
+            throw new ValidationException(__('efactura-sdk::validation.invoice_number_required'));
         }
 
         // BR-RO-010: Invoice number must contain at least one digit
         if (! preg_match('/[0-9]/', $input->invoiceNumber)) {
-            throw new ValidationException('Invoice number must contain at least one numeric character (BR-RO-010)');
+            throw new ValidationException(__('efactura-sdk::validation.invoice_number_must_contain_digit'));
         }
 
         // BR-RO-L200: Invoice number max 200 characters
         if (mb_strlen($input->invoiceNumber) > 200) {
-            throw new ValidationException('Invoice number must not exceed 200 characters (BR-RO-L200)');
+            throw new ValidationException(__('efactura-sdk::validation.invoice_number_max_length'));
         }
 
         if (empty($input->issueDate)) {
-            throw new ValidationException('Issue date is required');
+            throw new ValidationException(__('efactura-sdk::validation.issue_date_required'));
         }
 
         $this->validateParty($input->supplier, 'Supplier');
         $this->validateParty($input->customer, 'Customer');
 
         if (empty($input->lines)) {
-            throw new ValidationException('At least one invoice line is required');
+            throw new ValidationException(__('efactura-sdk::validation.at_least_one_line_required'));
         }
 
         foreach ($input->lines as $index => $line) {
             $this->validateLine($line, $index);
+        }
+
+        // BR-RO-L200: Preceding invoice number max 200 characters
+        if ($input->precedingInvoiceNumber !== null && mb_strlen($input->precedingInvoiceNumber) > 200) {
+            throw new ValidationException(__('efactura-sdk::validation.preceding_invoice_number_max_length'));
         }
     }
 
@@ -247,16 +257,16 @@ class InvoiceBuilder
     private function validateParty(PartyData $party, string $role): void
     {
         if (empty($party->registrationName)) {
-            throw new ValidationException("{$role} registration name is required");
+            throw new ValidationException(__('efactura-sdk::validation.party_registration_name_required', ['role' => $role]));
         }
 
         // BR-RO-L200: Registration name max 200 characters
         if (mb_strlen($party->registrationName) > 200) {
-            throw new ValidationException("{$role} registration name must not exceed 200 characters (BR-RO-L200)");
+            throw new ValidationException(__('efactura-sdk::validation.party_registration_name_max_length', ['role' => $role]));
         }
 
         if (empty($party->companyId)) {
-            throw new ValidationException("{$role} company ID (CIF/CUI) is required");
+            throw new ValidationException(__('efactura-sdk::validation.party_company_id_required', ['role' => $role]));
         }
 
         $this->validateAddress($party->address, $role);
@@ -270,31 +280,31 @@ class InvoiceBuilder
     private function validateAddress(AddressData $address, string $role): void
     {
         if (empty($address->street)) {
-            throw new ValidationException("{$role} street address is required");
+            throw new ValidationException(__('efactura-sdk::validation.party_street_required', ['role' => $role]));
         }
 
         // BR-RO-L150: Address line 1 max 150 characters
         if (mb_strlen($address->street) > 150) {
-            throw new ValidationException("{$role} street address must not exceed 150 characters (BR-RO-L150)");
+            throw new ValidationException(__('efactura-sdk::validation.party_street_max_length', ['role' => $role]));
         }
 
         if (empty($address->city)) {
-            throw new ValidationException("{$role} city is required");
+            throw new ValidationException(__('efactura-sdk::validation.party_city_required', ['role' => $role]));
         }
 
         // BR-RO-L050: City name max 50 characters
         if (mb_strlen($address->city) > 50) {
-            throw new ValidationException("{$role} city must not exceed 50 characters (BR-RO-L050)");
+            throw new ValidationException(__('efactura-sdk::validation.party_city_max_length', ['role' => $role]));
         }
 
         // BR-RO-L020: Postal code max 20 characters (optional field)
         if ($address->postalZone !== null && $address->postalZone !== '' && mb_strlen($address->postalZone) > 20) {
-            throw new ValidationException("{$role} postal code must not exceed 20 characters (BR-RO-L020)");
+            throw new ValidationException(__('efactura-sdk::validation.party_postal_code_max_length', ['role' => $role]));
         }
 
         // BR-RO-110/111: Romanian addresses require CountrySubentity (county)
         if ($address->countryCode === 'RO' && empty($address->county)) {
-            throw new ValidationException("{$role} county is required for Romanian addresses (BR-RO-110)");
+            throw new ValidationException(__('efactura-sdk::validation.party_county_required_ro', ['role' => $role]));
         }
     }
 
@@ -308,30 +318,30 @@ class InvoiceBuilder
         $lineNum = $index + 1;
 
         if (empty($line->name)) {
-            throw new ValidationException("Line {$lineNum}: Item name is required");
+            throw new ValidationException(__('efactura-sdk::validation.line_item_name_required', ['lineNum' => $lineNum]));
         }
 
         // BR-RO-L100: Item name max 100 characters
         if (mb_strlen($line->name) > 100) {
-            throw new ValidationException("Line {$lineNum}: Item name must not exceed 100 characters (BR-RO-L100)");
+            throw new ValidationException(__('efactura-sdk::validation.line_item_name_max_length', ['lineNum' => $lineNum]));
         }
 
         // BR-RO-L200: Item description max 200 characters
         if ($line->description !== null && mb_strlen($line->description) > 200) {
-            throw new ValidationException("Line {$lineNum}: Item description must not exceed 200 characters (BR-RO-L200)");
+            throw new ValidationException(__('efactura-sdk::validation.line_item_description_max_length', ['lineNum' => $lineNum]));
         }
 
         // Allow negative quantities for credit notes, but not zero
         if ($line->quantity == 0) {
-            throw new ValidationException("Line {$lineNum}: Quantity cannot be zero");
+            throw new ValidationException(__('efactura-sdk::validation.line_quantity_cannot_be_zero', ['lineNum' => $lineNum]));
         }
 
         if ($line->unitPrice < 0) {
-            throw new ValidationException("Line {$lineNum}: Unit price cannot be negative");
+            throw new ValidationException(__('efactura-sdk::validation.line_unit_price_not_negative', ['lineNum' => $lineNum]));
         }
 
         if ($line->taxPercent < 0 || $line->taxPercent > 100) {
-            throw new ValidationException("Line {$lineNum}: Tax percent must be between 0 and 100");
+            throw new ValidationException(__('efactura-sdk::validation.line_tax_percent_range', ['lineNum' => $lineNum]));
         }
     }
 
@@ -558,11 +568,7 @@ class InvoiceBuilder
             // For Romanian addresses, fail fast if county cannot be mapped to ISO code
             // This prevents ANAF BR-RO-111 validation errors at submission time
             throw new ValidationException(
-                sprintf(
-                    'County "%s" could not be mapped to a valid ISO 3166-2:RO code. '.
-                    'Romanian addresses require valid county codes (e.g., "RO-AB" for Alba, "RO-B" for Bucharest).',
-                    $address->county
-                )
+                __('efactura-sdk::validation.county_invalid_iso_code', ['county' => $address->county])
             );
         }
 
@@ -585,6 +591,18 @@ class InvoiceBuilder
 
         // Add country code prefix
         return $countryCode.$vatNumber;
+    }
+
+    /**
+     * Build BillingReference XML for credit notes (BG-3: Preceding invoice reference).
+     */
+    private function buildBillingReferenceXml(Writer $writer, string $invoiceNumber): void
+    {
+        $writer->startElement('{'.self::NS_CAC.'}BillingReference');
+        $writer->startElement('{'.self::NS_CAC.'}InvoiceDocumentReference');
+        $this->writeElement($writer, self::NS_CBC, 'ID', $invoiceNumber);
+        $writer->endElement(); // InvoiceDocumentReference
+        $writer->endElement(); // BillingReference
     }
 
     /**

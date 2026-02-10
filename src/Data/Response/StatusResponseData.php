@@ -17,7 +17,7 @@ class StatusResponseData extends Data
         /** Processing status (ok, nok, in prelucrare) */
         public ?UploadStatusValue $stare = null,
 
-        /** Download ID (only present when stare = ok) */
+        /** Download ID (present for both ok and nok responses) */
         public ?string $idDescarcare = null,
 
         /** Error messages */

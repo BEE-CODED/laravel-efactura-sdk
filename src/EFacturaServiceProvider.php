@@ -98,10 +98,16 @@ final class EFacturaServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        $this->loadTranslationsFrom(__DIR__.'/../resources/lang', 'efactura-sdk');
+
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__.'/../config/efactura-sdk.php' => config_path('efactura-sdk.php'),
             ], 'efactura-sdk-config');
+
+            $this->publishes([
+                __DIR__.'/../resources/lang' => $this->app->langPath('vendor/efactura-sdk'),
+            ], 'efactura-sdk-translations');
         }
     }
 }

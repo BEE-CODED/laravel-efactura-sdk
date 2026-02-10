@@ -63,6 +63,7 @@ function createTestInvoiceForBuilder(array $lines = [], array $overrides = []): 
         currency: $overrides['currency'] ?? 'RON',
         paymentIban: array_key_exists('paymentIban', $overrides) ? $overrides['paymentIban'] : 'RO49AAAA1B31007593840000',
         invoiceTypeCode: $overrides['invoiceTypeCode'] ?? null,
+        precedingInvoiceNumber: $overrides['precedingInvoiceNumber'] ?? null,
     );
 }
 
@@ -456,7 +457,7 @@ describe('address sanitization', function () {
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
-    })->throws(ValidationException::class, 'County "UnknownCounty" could not be mapped to a valid ISO 3166-2:RO code');
+    })->throws(ValidationException::class, 'County "UnknownCounty" could not be mapped to a valid ISO 3166-2:RO code. Romanian addresses require valid county codes (e.g., "RO-AB" for Alba, "RO-B" for Bucharest).');
 
     it('throws exception for Romanian customer address with unmappable county', function () {
         $builder = new InvoiceBuilder;
@@ -476,7 +477,7 @@ describe('address sanitization', function () {
         $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
 
         $builder->buildInvoiceXml($invoice);
-    })->throws(ValidationException::class, 'County "InvalidCounty" could not be mapped to a valid ISO 3166-2:RO code');
+    })->throws(ValidationException::class, 'County "InvalidCounty" could not be mapped to a valid ISO 3166-2:RO code. Romanian addresses require valid county codes (e.g., "RO-AB" for Alba, "RO-B" for Bucharest).');
 
     it('passes through county for non-Romanian addresses without validation', function () {
         $builder = new InvoiceBuilder;
@@ -1026,6 +1027,54 @@ describe('BR-RO-L string length validations', function () {
 
         $builder->buildInvoiceXml($invoice);
     })->throws(ValidationException::class, 'Line 1: Item description must not exceed 200 characters (BR-RO-L200)');
+});
+
+describe('BillingReference for credit notes', function () {
+    it('includes BillingReference for credit notes with preceding invoice number', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'precedingInvoiceNumber' => 'LD-000123',
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cac:BillingReference>');
+        expect($xml)->toContain('<cac:InvoiceDocumentReference>');
+        expect($xml)->toContain('<cbc:ID>LD-000123</cbc:ID>');
+    });
+
+    it('omits BillingReference when preceding invoice number is null', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder();
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->not->toContain('<cac:BillingReference>');
+    });
+
+    it('places BillingReference before AccountingSupplierParty', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'precedingInvoiceNumber' => 'LD-000123',
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        $billingPos = strpos($xml, 'BillingReference');
+        $supplierPos = strpos($xml, 'AccountingSupplierParty');
+        expect($billingPos)->toBeLessThan($supplierPos);
+    });
+
+    it('throws exception for preceding invoice number over 200 chars', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([], [
+            'precedingInvoiceNumber' => str_repeat('A', 201),
+        ]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'The preceding invoice number must not exceed 200 characters (BR-RO-L200)');
 });
 
 describe('BR-RO-030 multi-currency support', function () {
