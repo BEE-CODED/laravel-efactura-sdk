@@ -106,7 +106,14 @@ abstract class BaseApiClient implements HasLogger
             $response = $request->withBody($data, $contentType)->$method($url);
         } else {
             if (strtolower($method) === 'get') {
-                $response = $request->$method($url, $data);
+                // When $data is empty, call with only the URL to avoid Guzzle
+                // overwriting URL query params with an empty query string.
+                // Laravel's PendingRequest::get($url, []) passes ['query' => []]
+                // to Guzzle, which builds '' and calls $uri->withQuery(''),
+                // stripping any query params already embedded in the URL.
+                $response = empty($data)
+                    ? $request->$method($url)
+                    : $request->$method($url, $data);
             } else {
                 if ($asMultipart) {
                     $response = $request->asMultipart()->$method($url, $data);
@@ -123,6 +130,24 @@ abstract class BaseApiClient implements HasLogger
         $timeDiff = $startTime->diffInMilliseconds($endTime);
         $this->lastRequestDurationMilliseconds = $timeDiff;
 
+        $logContext = array_merge(
+            $context instanceof Closure ? $context() : $context,
+            [
+                'requestBodyLength' => is_string($data) ? strlen($data) : strlen(json_encode($data) ?: ''),
+                'responseBodyLength' => strlen($response->body()),
+            ]
+        );
+
+        if (config('efactura-sdk.logging.debug')) {
+            $logContext['requestHeaders'] = $this->getDefaultHeaders() + $headers;
+            $logContext['responseHeaders'] = $response->headers();
+            $logContext['responseBody'] = $response->body();
+
+            if (is_string($data)) {
+                $logContext['requestBody'] = $data;
+            }
+        }
+
         $this->logger->debug(
             sprintf(
                 '%s %s. Response %s. Duration: %d ms.',
@@ -131,13 +156,7 @@ abstract class BaseApiClient implements HasLogger
                 $response->status(),
                 $timeDiff
             ),
-            array_merge(
-                $context instanceof Closure ? $context() : $context,
-                [
-                    'requestBodyLength' => is_string($data) ? strlen($data) : strlen(json_encode($data) ?: ''),
-                    'responseBodyLength' => strlen($response->body()),
-                ]
-            )
+            $logContext
         );
 
         return $response;

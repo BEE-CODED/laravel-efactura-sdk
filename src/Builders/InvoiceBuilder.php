@@ -140,7 +140,8 @@ class InvoiceBuilder
         $this->writeElement($writer, self::NS_CBC, 'ID', $input->invoiceNumber);
         $this->writeElement($writer, self::NS_CBC, 'IssueDate', $input->getIssueDateAsCarbon()->format('Y-m-d'));
 
-        if ($input->dueDate !== null) {
+        // DueDate is only valid in Invoice schema, not in CreditNote
+        if ($input->dueDate !== null && !$isCreditNote) {
             /** @var \Carbon\Carbon $dueDate PHPStan: guaranteed non-null by guard clause above */
             $dueDate = $input->getDueDateAsCarbon();
             $this->writeElement($writer, self::NS_CBC, 'DueDate', $dueDate->format('Y-m-d'));

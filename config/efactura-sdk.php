@@ -61,6 +61,7 @@ return [
     */
     'logging' => [
         'channel' => env('EFACTURA_LOG_CHANNEL', 'efactura-sdk'),
+        'debug' => env('EFACTURA_DEBUG', false),
     ],
 
     /*

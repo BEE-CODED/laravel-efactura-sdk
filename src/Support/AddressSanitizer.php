@@ -258,6 +258,11 @@ class AddressSanitizer
         // Normalize: uppercase, trim, remove diacritics
         $normalized = self::normalizeInput($county);
 
+        // If already a valid ISO 3166-2:RO code, return as-is
+        if (in_array($normalized, self::RO_ISO_3166_2_RO_MAP, true)) {
+            return $normalized;
+        }
+
         // Direct lookup
         if (isset(self::RO_ISO_3166_2_RO_MAP[$normalized])) {
             return self::RO_ISO_3166_2_RO_MAP[$normalized];

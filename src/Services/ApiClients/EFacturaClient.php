@@ -216,7 +216,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     {
         return [
             'Content-Type' => 'application/xml',
-            'Accept' => 'application/json',
         ];
     }
 
@@ -665,8 +664,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     ): Response {
         $token = $this->getValidAccessToken();
 
-        $headers = $this->getHeaders();
-        $headers['Authorization'] = 'Bearer '.$token;
+        // GET requests should not include Content-Type (no request body)
+        $headers = strtolower($method) === 'get'
+            ? ['Authorization' => 'Bearer '.$token]
+            : array_merge($this->getHeaders(), ['Authorization' => 'Bearer '.$token]);
 
         if ($expectBinary) {
             $headers['Accept'] = 'application/octet-stream, application/zip, application/json';
@@ -707,8 +708,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $headers = [
             'Authorization' => 'Bearer '.$token,
             'Content-Type' => 'application/xml',
-            'Accept' => $expectBinary ? 'application/octet-stream, application/zip, application/json' : 'application/json',
         ];
+
+        if ($expectBinary) {
+            $headers['Accept'] = 'application/octet-stream, application/zip, application/json';
+        }
 
         try {
             $response = $this->callRaw($route, $method, $xmlBody, 'application/xml', $headers);

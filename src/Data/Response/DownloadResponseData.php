@@ -35,12 +35,17 @@ class DownloadResponseData extends Data
     public static function fromHttpResponse(string $content, array $headers = []): self
     {
         $contentType = $headers['Content-Type'] ?? $headers['content-type'] ?? 'application/zip';
-        $contentLength = isset($headers['Content-Length'])
-            ? (int) $headers['Content-Length']
-            : (isset($headers['content-length']) ? (int) $headers['content-length'] : null);
+        $rawLength = $headers['Content-Length'] ?? $headers['content-length'] ?? null;
+        if (is_array($rawLength)) {
+            $rawLength = $rawLength[0] ?? null;
+        }
+        $contentLength = $rawLength !== null ? (int) $rawLength : null;
 
         $filename = null;
         $contentDisposition = $headers['Content-Disposition'] ?? $headers['content-disposition'] ?? null;
+        if (is_array($contentDisposition)) {
+            $contentDisposition = $contentDisposition[0] ?? null;
+        }
         if ($contentDisposition && preg_match('/filename[^;=\n]*=([\"\']?)([^\"\';\n]*)/', $contentDisposition, $matches)) {
             $filename = $matches[2];
         }
