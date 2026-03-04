@@ -94,7 +94,7 @@ class InvoiceBuilder
         $isCreditNote = $input->getInvoiceTypeCode()->isCreditNote();
 
         // Group lines by tax percentage
-        $taxGroups = $this->groupLinesByTax($input->lines, $isSupplierVatPayer);
+        $taxGroups = $this->groupLinesByTax($input->lines, $isSupplierVatPayer, $isCreditNote);
 
         // Calculate totals
         $lineExtensionAmount = 0.0;
@@ -103,7 +103,7 @@ class InvoiceBuilder
         $totalTaxAmount = 0.0;
 
         foreach ($input->lines as $line) {
-            $lineExtensionAmount += $this->calculateLineExtension($line);
+            $lineExtensionAmount += $this->calculateLineExtension($line, $isCreditNote);
         }
 
         foreach ($taxGroups as $group) {
@@ -356,7 +356,7 @@ class InvoiceBuilder
      * @param  bool  $isSupplierVatPayer  Whether the supplier is a VAT payer
      * @return array<int, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: float, taxAmount: float}> Grouped tax data
      */
-    private function groupLinesByTax(array $lines, bool $isSupplierVatPayer): array
+    private function groupLinesByTax(array $lines, bool $isSupplierVatPayer, bool $isCreditNote = false): array
     {
         /** @var array<string, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: float, taxAmount: float}> $groups */
         $groups = [];
@@ -377,7 +377,7 @@ class InvoiceBuilder
             }
 
             // Accumulate line amounts without intermediate rounding
-            $lineAmount = $this->calculateLineExtension($line);
+            $lineAmount = $this->calculateLineExtension($line, $isCreditNote);
             $groups[$key]['taxableAmount'] += $lineAmount;
         }
 
@@ -419,10 +419,17 @@ class InvoiceBuilder
 
     /**
      * Calculate line extension amount (quantity * unit price).
+     *
+     * For credit notes, quantities are negated (sign-flipped) because ANAF treats
+     * credit notes as inherently negative. This correctly handles mixed signs:
+     * - Normal lines (qty=-1) → become +1 (ANAF credits it)
+     * - Discount lines (qty=+1) → become -1 (ANAF debits the discount back)
      */
-    private function calculateLineExtension(InvoiceLineData $line): float
+    private function calculateLineExtension(InvoiceLineData $line, bool $isCreditNote = false): float
     {
-        return round($line->quantity * $line->unitPrice, 2);
+        $quantity = $isCreditNote ? -$line->quantity : $line->quantity;
+
+        return round($quantity * $line->unitPrice, 2);
     }
 
     /**
@@ -770,18 +777,19 @@ class InvoiceBuilder
         // Line ID
         $this->writeElement($writer, self::NS_CBC, 'ID', (string) ($line->id ?? $lineId));
 
-        // Invoiced/Credited quantity
+        // Invoiced/Credited quantity — negate for credit notes (ANAF treats CN as inherently negative)
+        $quantity = $isCreditNote ? -$line->quantity : $line->quantity;
         $unitCode = $line->unitCode ?: self::DEFAULT_UNIT_CODE;
         $this->writeElementWithAttributes(
             $writer,
             self::NS_CBC,
             $quantityElement,
-            $this->formatAmount($line->quantity),
+            $this->formatAmount($quantity),
             ['unitCode' => $unitCode]
         );
 
         // Line extension amount
-        $lineAmount = $this->calculateLineExtension($line);
+        $lineAmount = $this->calculateLineExtension($line, $isCreditNote);
         $this->writeElementWithAttributes(
             $writer,
             self::NS_CBC,

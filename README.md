@@ -528,7 +528,8 @@ $creditNote = new InvoiceData(
     invoiceNumber: 'CN-2024-001',
     issueDate: now(),
     currency: 'RON',
-    invoiceTypeCode: InvoiceTypeCode::CreditNote,  // Generates <CreditNote> XML
+    invoiceTypeCode: InvoiceTypeCode::CreditNote,
+    precedingInvoiceNumber: 'INV-2024-001',  // BT-25: reference to the original invoice
 
     supplier: $supplier,
     customer: $customer,
@@ -536,16 +537,62 @@ $creditNote = new InvoiceData(
     lines: [
         new InvoiceLineData(
             name: 'Returned product',
-            quantity: -2,      // Negative for credit
+            quantity: -2,      // Negative = items being credited/returned
             unitPrice: 100.00,
             taxPercent: 19,
         ),
     ],
 );
 
-// Generates UBL CreditNote document with <CreditNoteTypeCode>381</CreditNoteTypeCode>
 $xml = UblBuilder::generateInvoiceXml($creditNote);
 ```
+
+##### Credit Note Quantity Handling (Breaking Change in v1.1)
+
+**The SDK automatically negates quantities for credit notes.** ANAF treats the `<CreditNote>` document type as inherently negative, so line quantities must be positive in the XML. The SDK handles this sign-flip internally.
+
+**How it works:** pass quantities with their business meaning, and the SDK converts them for ANAF:
+
+| You pass | SDK sends to ANAF | Meaning |
+|----------|-------------------|---------|
+| `quantity: -2` | `+2` | Crediting 2 returned items |
+| `quantity: 1` | `-1` | Debiting back a discount line |
+
+**Example — credit note with a discount reversal:**
+
+```php
+$creditNote = new InvoiceData(
+    invoiceNumber: 'CN-2024-002',
+    issueDate: now(),
+    currency: 'RON',
+    invoiceTypeCode: InvoiceTypeCode::CreditNote,
+    precedingInvoiceNumber: 'INV-2024-050',
+
+    supplier: $supplier,
+    customer: $customer,
+
+    lines: [
+        // Crediting 3 returned items (negative → becomes positive for ANAF)
+        new InvoiceLineData(
+            name: 'Returned product',
+            quantity: -3,
+            unitPrice: 150.00,
+            taxPercent: 19,
+        ),
+        // Reversing a discount that was on the original invoice (positive → becomes negative for ANAF)
+        new InvoiceLineData(
+            name: 'Discount reversal',
+            quantity: 1,
+            unitPrice: 50.00,
+            taxPercent: 19,
+        ),
+    ],
+);
+
+$xml = UblBuilder::generateInvoiceXml($creditNote);
+```
+
+> **Upgrading from v1.0:** If your code was passing positive quantities for credit note lines and relying on them going to ANAF as-is, you must now pass **negative** quantities instead (the SDK will negate them to positive). If you were already passing negative quantities (as documented), no changes are needed — the SDK now correctly converts them for ANAF.
 
 #### Invoice Calculations
 
