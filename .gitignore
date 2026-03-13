@@ -22,3 +22,9 @@ coverage/
 .env
 .env.local
 .env.*.local
+
+# Superpowers specs
+docs/superpowers/
+
+# MCP server
+mcp/node_modules/

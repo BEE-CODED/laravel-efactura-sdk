@@ -884,6 +884,35 @@ $this->mock(AnafAuthenticatorInterface::class, function ($mock) {
 });
 ```
 
+## AI Assistant Integration (MCP)
+
+This package includes an MCP server that helps AI coding assistants understand the SDK's DTOs, API methods, and conventions.
+
+**Setup:** Add to your AI tool's MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "efactura-sdk": {
+      "command": "node",
+      "args": ["vendor/bee-coded/laravel-efactura-sdk/mcp/dist/index.js"]
+    }
+  }
+}
+```
+
+Requires Node.js 18+.
+
+The MCP server provides these tools:
+
+| Tool | Description |
+|------|-------------|
+| `get-sdk-docs` | Documentation for topics: overview, invoice-flow, credit-notes, tax-calculation, oauth-flow, error-handling, address-sanitization, rate-limiting, company-lookup |
+| `get-dto-structure` | Complete structure of any DTO (InvoiceData, InvoiceLineData, PartyData, etc.) |
+| `get-enum-values` | All values for any enum (InvoiceTypeCode, MessageFilter, etc.) |
+| `get-config-reference` | Full configuration schema with env vars and defaults |
+| `get-api-reference` | API documentation for services (EFacturaClient, AnafAuthenticator, etc.) |
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

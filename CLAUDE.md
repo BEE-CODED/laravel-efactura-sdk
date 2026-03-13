@@ -217,6 +217,11 @@ class ApiException extends EFacturaException
 }
 ```
 
+### Workflow Rules
+
+- **No auto-commit**: Do NOT run `git add` or `git commit` unless explicitly asked. The user decides when to commit.
+- **No Co-Authored-By**: Do NOT add `Co-Authored-By` lines to commit messages.
+
 ### e-Factura API Context
 
 The package interacts with ANAF's e-Factura system which:
