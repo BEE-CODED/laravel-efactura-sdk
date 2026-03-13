@@ -24,6 +24,10 @@ class InvoiceLineData extends Data
         public float $quantity,
         /** Unit price (excluding VAT) */
         public float $unitPrice,
+        /** Pre-computed tax amount for this line. The builder sums per-line tax
+         *  amounts instead of recalculating from taxableAmount × rate.
+         *  Sign should follow quantity (negative for negative-qty lines). */
+        public float $taxAmount,
         /** Line item identifier (auto-generated if not provided) */
         public string|int|null $id = null,
         /** Additional description */
@@ -45,14 +49,12 @@ class InvoiceLineData extends Data
     }
 
     /**
-     * Calculate the tax amount for this line (for display purposes).
-     *
-     * Note: For invoice totals, use InvoiceData::getTotalVat() which groups
-     * lines by tax rate before calculating to match UBL XML output.
+     * Get the pre-computed tax amount for this line.
+     * Returns the value passed at construction, rounded to 2 decimal places.
      */
     public function getTaxAmount(): float
     {
-        return round($this->getLineTotal() * ($this->taxPercent / 100), 2);
+        return round($this->taxAmount, 2);
     }
 
     /**

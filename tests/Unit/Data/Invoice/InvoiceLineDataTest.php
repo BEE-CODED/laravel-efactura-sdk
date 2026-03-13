@@ -10,6 +10,7 @@ describe('InvoiceLineData construction', function () {
             name: 'Test Product',
             quantity: 1,
             unitPrice: 100.00,
+            taxAmount: 0.00,
         );
 
         expect($line->id)->toBeNull();
@@ -25,6 +26,7 @@ describe('getLineTotal', function () {
             name: 'Product',
             quantity: 2,
             unitPrice: 100.00,
+            taxAmount: 0.00,
         );
 
         expect($line->getLineTotal())->toBe(200.00);
@@ -35,6 +37,7 @@ describe('getLineTotal', function () {
             name: 'Product',
             quantity: 3,
             unitPrice: 33.333,
+            taxAmount: 0.00,
         );
 
         expect($line->getLineTotal())->toBe(100.00);
@@ -45,6 +48,7 @@ describe('getLineTotal', function () {
             name: 'Product',
             quantity: 1.5,
             unitPrice: 100.00,
+            taxAmount: 0.00,
         );
 
         expect($line->getLineTotal())->toBe(150.00);
@@ -55,6 +59,7 @@ describe('getLineTotal', function () {
             name: 'Product',
             quantity: 0,
             unitPrice: 100.00,
+            taxAmount: 0.00,
         );
 
         expect($line->getLineTotal())->toBe(0.00);
@@ -65,6 +70,7 @@ describe('getLineTotal', function () {
             name: 'Product',
             quantity: 2,
             unitPrice: 0,
+            taxAmount: 0.00,
         );
 
         expect($line->getLineTotal())->toBe(0.00);
@@ -72,22 +78,24 @@ describe('getLineTotal', function () {
 });
 
 describe('getTaxAmount', function () {
-    it('calculates tax based on line total', function () {
+    it('returns pre-computed tax amount', function () {
         $line = new InvoiceLineData(
             name: 'Product',
             quantity: 1,
             unitPrice: 100.00,
+            taxAmount: 19.00,
             taxPercent: 19,
         );
 
         expect($line->getTaxAmount())->toBe(19.00);
     });
 
-    it('returns zero for zero tax percent', function () {
+    it('returns zero for zero tax', function () {
         $line = new InvoiceLineData(
             name: 'Product',
             quantity: 1,
             unitPrice: 100.00,
+            taxAmount: 0.00,
             taxPercent: 0,
         );
 
@@ -99,10 +107,11 @@ describe('getTaxAmount', function () {
             name: 'Product',
             quantity: 1,
             unitPrice: 33.33,
+            taxAmount: 6.3327,
             taxPercent: 19,
         );
 
-        // 33.33 * 0.19 = 6.3327 -> 6.33
+        // Pre-computed 6.3327 rounds to 6.33
         expect($line->getTaxAmount())->toBe(6.33);
     });
 
@@ -111,6 +120,7 @@ describe('getTaxAmount', function () {
             name: 'Product',
             quantity: 1,
             unitPrice: 100.00,
+            taxAmount: 9.00,
             taxPercent: 9,
         );
 
@@ -118,11 +128,26 @@ describe('getTaxAmount', function () {
             name: 'Product',
             quantity: 1,
             unitPrice: 100.00,
+            taxAmount: 5.00,
             taxPercent: 5,
         );
 
         expect($line9->getTaxAmount())->toBe(9.00);
         expect($line5->getTaxAmount())->toBe(5.00);
+    });
+
+    it('preserves pre-computed value that differs from calculated', function () {
+        // Simulates tax-included scenario: total=100, base=82.64, vat=17.36
+        // But round(82.64 * 0.21, 2) = 17.35 — our pre-computed 17.36 wins
+        $line = new InvoiceLineData(
+            name: 'Tax-included product',
+            quantity: 1,
+            unitPrice: 82.64,
+            taxAmount: 17.36,
+            taxPercent: 21,
+        );
+
+        expect($line->getTaxAmount())->toBe(17.36);
     });
 });
 
@@ -132,6 +157,7 @@ describe('getRawLineTotal', function () {
             name: 'Product',
             quantity: 3,
             unitPrice: 33.333,
+            taxAmount: 0.00,
         );
 
         expect($line->getRawLineTotal())->toBe(99.999);
@@ -142,6 +168,7 @@ describe('getRawLineTotal', function () {
             name: 'Product',
             quantity: 3,
             unitPrice: 33.333,
+            taxAmount: 0.00,
         );
 
         // Raw total preserves precision for grouping
@@ -155,6 +182,7 @@ describe('negative values', function () {
             name: 'Returned Product',
             quantity: -2,
             unitPrice: 100.00,
+            taxAmount: -38.00,
             taxPercent: 19,
         );
 
@@ -168,6 +196,7 @@ describe('negative values', function () {
             'name' => 'Product',
             'quantity' => 1,
             'unitPrice' => 100.00,
+            'taxAmount' => 0.00,
             'taxPercent' => -5,
         ]);
     })->throws(Illuminate\Validation\ValidationException::class, 'The tax percent field must be at least 0.');
@@ -177,6 +206,7 @@ describe('negative values', function () {
             'name' => 'Exempt Product',
             'quantity' => 1,
             'unitPrice' => 100.00,
+            'taxAmount' => 0.00,
             'taxPercent' => 0,
         ]);
 
@@ -190,6 +220,7 @@ describe('getLineTotalWithTax', function () {
             name: 'Product',
             quantity: 1,
             unitPrice: 100.00,
+            taxAmount: 19.00,
             taxPercent: 19,
         );
 
@@ -201,6 +232,7 @@ describe('getLineTotalWithTax', function () {
             name: 'Product',
             quantity: 1,
             unitPrice: 100.00,
+            taxAmount: 0.00,
             taxPercent: 0,
         );
 
@@ -212,6 +244,7 @@ describe('getLineTotalWithTax', function () {
             name: 'Product',
             quantity: 1,
             unitPrice: 33.33,
+            taxAmount: 6.33,
             taxPercent: 19,
         );
 

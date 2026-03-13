@@ -379,14 +379,17 @@ class InvoiceBuilder
             // Accumulate line amounts without intermediate rounding
             $lineAmount = $this->calculateLineExtension($line, $isCreditNote);
             $groups[$key]['taxableAmount'] += $lineAmount;
+
+            // Accumulate pre-computed per-line tax (negate for credit notes, matching quantity sign handling)
+            $lineTax = $isCreditNote ? -$line->taxAmount : $line->taxAmount;
+            $groups[$key]['taxAmount'] += $lineTax;
         }
 
-        // Calculate tax on group totals and round once at the end
-        // This ensures sum(line taxes) matches group tax subtotal
+        // Round group totals once at the end
         foreach ($groups as &$group) {
             $group['taxableAmount'] = round($group['taxableAmount'], 2);
-            // Calculate tax on the rounded taxable amount, then round the tax
-            $group['taxAmount'] = round($group['taxableAmount'] * ($group['taxPercent'] / 100), 2);
+            // Use accumulated per-line tax amounts instead of recalculating from group totals
+            $group['taxAmount'] = round($group['taxAmount'], 2);
         }
 
         return array_values($groups);

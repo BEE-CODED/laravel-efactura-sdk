@@ -501,16 +501,18 @@ $invoice = new InvoiceData(
             name: 'Servicii consultanta',
             quantity: 10,
             unitPrice: 100.00,
+            taxAmount: 190.00,   // Pre-computed: 10 * 100.00 * 0.19
             taxPercent: 19,
-            unitCode: 'HUR',  // Hours
+            unitCode: 'HUR',     // Hours
             description: 'Consultanta IT luna ianuarie',
         ),
         new InvoiceLineData(
             name: 'Licenta software',
             quantity: 1,
             unitPrice: 500.00,
+            taxAmount: 95.00,    // Pre-computed: 1 * 500.00 * 0.19
             taxPercent: 19,
-            unitCode: 'C62',  // Each
+            unitCode: 'C62',     // Each
         ),
     ],
 );
@@ -537,8 +539,9 @@ $creditNote = new InvoiceData(
     lines: [
         new InvoiceLineData(
             name: 'Returned product',
-            quantity: -2,      // Negative = items being credited/returned
+            quantity: -2,       // Negative = items being credited/returned
             unitPrice: 100.00,
+            taxAmount: -38.00,  // Negative — sign follows quantity
             taxPercent: 19,
         ),
     ],
@@ -577,6 +580,7 @@ $creditNote = new InvoiceData(
             name: 'Returned product',
             quantity: -3,
             unitPrice: 150.00,
+            taxAmount: -85.50,  // Pre-computed: -3 * 150.00 * 0.19 — sign follows quantity
             taxPercent: 19,
         ),
         // Reversing a discount that was on the original invoice (positive → becomes negative for ANAF)
@@ -584,6 +588,7 @@ $creditNote = new InvoiceData(
             name: 'Discount reversal',
             quantity: 1,
             unitPrice: 50.00,
+            taxAmount: 9.50,    // Pre-computed: 1 * 50.00 * 0.19
             taxPercent: 19,
         ),
     ],
@@ -602,18 +607,64 @@ $line = new InvoiceLineData(
     name: 'Product',
     quantity: 5,
     unitPrice: 100.00,
+    taxAmount: 95.00,  // Pre-computed VAT for this line
     taxPercent: 19,
 );
 
 $line->getLineTotal();        // 500.00 (quantity * unitPrice)
-$line->getTaxAmount();        // 95.00 (lineTotal * taxPercent / 100)
+$line->getTaxAmount();        // 95.00 (returns the pre-computed taxAmount)
 $line->getLineTotalWithTax(); // 595.00
 
 // Invoice-level calculations
 $invoice->getTotalExcludingVat(); // Sum of all line totals
-$invoice->getTotalVat();          // Sum of all tax amounts
+$invoice->getTotalVat();          // Sum of all per-line taxAmount values
 $invoice->getTotalIncludingVat(); // Total with VAT
 ```
+
+#### Why `taxAmount` is Required (Breaking Change in v2.0)
+
+In v1.x, the SDK calculated VAT amounts internally by grouping lines by tax rate and multiplying `sum_of_base_amounts × tax_rate`. This caused **rounding discrepancies** when your application used tax-included pricing.
+
+**The problem:**
+
+When a line item has a tax-included price (e.g., 100.00 RON including 19% VAT), your application extracts the base price by subtraction:
+
+```
+base = round(100.00 / 1.19, 2) = 84.03
+vat  = 100.00 - 84.03 = 15.97
+```
+
+But when the SDK grouped multiple such lines and recalculated VAT from the grouped base:
+
+```
+grouped_base = 84.03 + 84.03 = 168.06
+grouped_vat  = round(168.06 × 0.19, 2) = 31.93
+```
+
+Your application computed `15.97 + 15.97 = 31.94`. The SDK computed `31.93`. This 0.01 RON difference meant the XML total sent to ANAF didn't match your local invoice total.
+
+**The fix:**
+
+Starting in v2.0, `taxAmount` is a **required** parameter on `InvoiceLineData`. You pass the VAT amount you already computed for each line, and the SDK uses it directly instead of recalculating. This guarantees the XML total matches your application's total exactly.
+
+**How to compute `taxAmount`:**
+
+| Pricing model | Formula | Example |
+|---------------|---------|---------|
+| Tax-exclusive (net price) | `round(quantity × unitPrice × taxPercent / 100, 2)` | qty=2, price=100, 19% → `38.00` |
+| Tax-inclusive (gross price) | `grossTotal - round(grossTotal / (1 + taxPercent / 100), 2)` | gross=200, 19% → `200 - 168.07 = 31.93` |
+
+The key rule: **whatever VAT amount your application stores for the line item, pass that exact value as `taxAmount`**. The SDK will use it as-is.
+
+**`taxAmount` sign convention:**
+
+The `taxAmount` sign must follow the quantity:
+- Positive quantity → positive `taxAmount`
+- Negative quantity (credit note lines) → negative `taxAmount`
+
+The SDK's credit note sign-flip (negating quantities for ANAF) also applies to `taxAmount` internally — you don't need to handle this yourself.
+
+> **Upgrading from v1.x:** Add `taxAmount` to every `new InvoiceLineData(...)` call. If you were using net pricing (tax-exclusive `unitPrice`), compute it as `round(round(quantity * unitPrice, 2) * taxPercent / 100, 2)`. If you were using tax-included pricing, pass the VAT amount you already extracted from the gross total.
 
 #### Address Sanitization
 

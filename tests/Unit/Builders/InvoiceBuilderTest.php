@@ -49,6 +49,7 @@ function createTestInvoiceForBuilder(array $lines = [], array $overrides = []): 
             name: 'Servicii consultanta',
             quantity: 10,
             unitPrice: 100.00,
+            taxAmount: 190.00,
             taxPercent: 19,
         ),
     ];
@@ -157,7 +158,7 @@ describe('buildInvoiceXml', function () {
     it('calculates tax totals correctly', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -168,9 +169,9 @@ describe('buildInvoiceXml', function () {
     it('groups lines by tax rate', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19),
-            new InvoiceLineData(name: 'Product 3', quantity: 1, unitPrice: 100.00, taxPercent: 9),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 3', quantity: 1, unitPrice: 100.00, taxAmount: 9.00, taxPercent: 9),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -182,7 +183,7 @@ describe('buildInvoiceXml', function () {
     it('includes monetary totals', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 2, unitPrice: 100.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 2, unitPrice: 100.00, taxAmount: 38.00, taxPercent: 19),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -200,6 +201,7 @@ describe('buildInvoiceXml', function () {
                 name: 'Test Product',
                 quantity: 5,
                 unitPrice: 50.00,
+                taxAmount: 47.50,
                 description: 'Product description',
                 unitCode: 'EA',
                 taxPercent: 19,
@@ -306,7 +308,7 @@ describe('validation', function () {
     it('throws exception for line with empty name', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: '', quantity: 1, unitPrice: 100),
+            new InvoiceLineData(name: '', quantity: 1, unitPrice: 100, taxAmount: 0.00),
         ]);
 
         $builder->buildInvoiceXml($invoice);
@@ -315,7 +317,7 @@ describe('validation', function () {
     it('throws exception for line with zero quantity', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 0, unitPrice: 100),
+            new InvoiceLineData(name: 'Product', quantity: 0, unitPrice: 100, taxAmount: 0.00),
         ]);
 
         $builder->buildInvoiceXml($invoice);
@@ -324,7 +326,7 @@ describe('validation', function () {
     it('allows negative quantity for credit notes', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Returned Product', quantity: -2, unitPrice: 100, taxPercent: 19),
+            new InvoiceLineData(name: 'Returned Product', quantity: -2, unitPrice: 100, taxAmount: -38.00, taxPercent: 19),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -336,7 +338,7 @@ describe('validation', function () {
     it('throws exception for line with negative price', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: -100),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: -100, taxAmount: 0.00),
         ]);
 
         $builder->buildInvoiceXml($invoice);
@@ -345,7 +347,7 @@ describe('validation', function () {
     it('throws exception for line with invalid tax percent', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 150),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 150.00, taxPercent: 150),
         ]);
 
         $builder->buildInvoiceXml($invoice);
@@ -356,7 +358,7 @@ describe('tax category handling', function () {
     it('uses Standard (S) for VAT payer with non-zero tax', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 19.00, taxPercent: 19),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -367,7 +369,7 @@ describe('tax category handling', function () {
     it('uses ZeroRated (Z) for VAT payer with zero tax', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -385,7 +387,7 @@ describe('tax category handling', function () {
             isVatPayer: false,
         );
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
         ], ['supplier' => $supplier]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -551,8 +553,8 @@ describe('tax grouping floating-point handling', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
             // These represent the same 19% tax but as different float values
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.0),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.00),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.0),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.00),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -603,8 +605,8 @@ describe('tax grouping floating-point handling', function () {
             supplier: $supplier,
             customer: $customer,
             lines: [
-                new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.001),
-                new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.004),
+                new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.001),
+                new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.004),
             ],
         );
 
@@ -617,9 +619,9 @@ describe('tax grouping floating-point handling', function () {
     it('correctly separates genuinely different tax rates', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.0),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 9.0),
-            new InvoiceLineData(name: 'Product 3', quantity: 1, unitPrice: 100.00, taxPercent: 5.0),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.0),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 9.00, taxPercent: 9.0),
+            new InvoiceLineData(name: 'Product 3', quantity: 1, unitPrice: 100.00, taxAmount: 5.00, taxPercent: 5.0),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -743,7 +745,7 @@ describe('non-VAT payer CIUS-RO compliance', function () {
             isVatPayer: false,
         );
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
         ], ['supplier' => $supplier]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -798,7 +800,7 @@ describe('non-VAT payer CIUS-RO compliance', function () {
             isVatPayer: false,
         );
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
         ], ['supplier' => $supplier]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -816,7 +818,7 @@ describe('non-VAT payer CIUS-RO compliance', function () {
             isVatPayer: false,
         );
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxPercent: 0),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
         ], ['supplier' => $supplier]);
 
         $xml = $builder->buildInvoiceXml($invoice);
@@ -1008,7 +1010,7 @@ describe('BR-RO-L string length validations', function () {
     it('throws exception for item name over 100 chars', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: str_repeat('A', 101), quantity: 1, unitPrice: 100),
+            new InvoiceLineData(name: str_repeat('A', 101), quantity: 1, unitPrice: 100, taxAmount: 0.00),
         ]);
 
         $builder->buildInvoiceXml($invoice);
@@ -1021,6 +1023,7 @@ describe('BR-RO-L string length validations', function () {
                 name: 'Test Product',
                 quantity: 1,
                 unitPrice: 100,
+                taxAmount: 0.00,
                 description: str_repeat('A', 201),
             ),
         ]);

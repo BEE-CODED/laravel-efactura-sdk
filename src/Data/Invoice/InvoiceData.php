@@ -118,35 +118,12 @@ class InvoiceData extends Data
     /**
      * Calculate the total VAT amount.
      *
-     * Groups lines by tax rate first, then calculates tax on group totals.
-     * This matches InvoiceBuilder's approach and ensures consistency with UBL XML output.
+     * Sums pre-computed per-line tax amounts. This matches the values passed
+     * by the application and avoids recalculation discrepancies.
      */
     public function getTotalVat(): float
     {
-        // Group line amounts by tax percentage
-        // Round to 2 decimal places to match InvoiceBuilder::groupLinesByTax() and avoid
-        // floating-point precision issues (e.g., 19.0 vs 19.00000001 producing different keys)
-        $taxGroups = [];
-        foreach ($this->lines as $line) {
-            $key = (string) round($line->taxPercent, 2);
-            if (! isset($taxGroups[$key])) {
-                $taxGroups[$key] = [
-                    'taxableAmount' => 0.0,
-                    'taxPercent' => $line->taxPercent,
-                ];
-            }
-            $taxGroups[$key]['taxableAmount'] += $line->getRawLineTotal();
-        }
-
-        // Calculate tax on group totals (single rounding per group)
-        $totalTax = 0.0;
-        foreach ($taxGroups as $group) {
-            $taxableAmount = round($group['taxableAmount'], 2);
-            $taxAmount = round($taxableAmount * ($group['taxPercent'] / 100), 2);
-            $totalTax += $taxAmount;
-        }
-
-        return round($totalTax, 2);
+        return round(array_sum(array_map(fn (InvoiceLineData $line) => $line->taxAmount, $this->lines)), 2);
     }
 
     /**

@@ -37,6 +37,7 @@ function createTestInvoice(array $lines = [], array $overrides = []): InvoiceDat
             name: 'Product 1',
             quantity: 2,
             unitPrice: 100.00,
+            taxAmount: 38.00,
             taxPercent: 19,
         ),
     ];
@@ -142,7 +143,7 @@ describe('getDueDateAsCarbon', function () {
         $invoice = createTestInvoice([], ['dueDate' => 'not-a-valid-date']);
 
         $invoice->getDueDateAsCarbon();
-    })->throws(\InvalidArgumentException::class, 'Invalid due date format');
+    })->throws(InvalidArgumentException::class, 'Invalid due date format');
 });
 
 describe('getIssueDateAsCarbon exception handling', function () {
@@ -150,20 +151,20 @@ describe('getIssueDateAsCarbon exception handling', function () {
         $invoice = createTestInvoice([], ['issueDate' => 'invalid-date-format']);
 
         $invoice->getIssueDateAsCarbon();
-    })->throws(\InvalidArgumentException::class, 'Invalid issue date format');
+    })->throws(InvalidArgumentException::class, 'Invalid issue date format');
 
     it('throws exception for malformed date', function () {
         $invoice = createTestInvoice([], ['issueDate' => '2024-13-45']);
 
         $invoice->getIssueDateAsCarbon();
-    })->throws(\InvalidArgumentException::class, 'Invalid issue date format');
+    })->throws(InvalidArgumentException::class, 'Invalid issue date format');
 
     it('includes original value in exception message', function () {
         $invoice = createTestInvoice([], ['issueDate' => 'foobar']);
 
         try {
             $invoice->getIssueDateAsCarbon();
-        } catch (\InvalidArgumentException $e) {
+        } catch (InvalidArgumentException $e) {
             expect($e->getMessage())->toContain('foobar');
             expect($e->getPrevious())->not->toBeNull();
         }
@@ -187,7 +188,7 @@ describe('getInvoiceTypeCode', function () {
 describe('getTotalExcludingVat', function () {
     it('calculates total for single line', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product', quantity: 2, unitPrice: 100.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 2, unitPrice: 100.00, taxAmount: 38.00, taxPercent: 19),
         ];
         $invoice = createTestInvoice($lines);
 
@@ -196,8 +197,8 @@ describe('getTotalExcludingVat', function () {
 
     it('calculates total for multiple lines', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 2, unitPrice: 100.00, taxPercent: 19),
-            new InvoiceLineData(name: 'Product 2', quantity: 3, unitPrice: 50.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 1', quantity: 2, unitPrice: 100.00, taxAmount: 38.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 3, unitPrice: 50.00, taxAmount: 28.50, taxPercent: 19),
         ];
         $invoice = createTestInvoice($lines);
 
@@ -206,7 +207,7 @@ describe('getTotalExcludingVat', function () {
 
     it('rounds to 2 decimal places', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product', quantity: 3, unitPrice: 33.333, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 3, unitPrice: 33.333, taxAmount: 19.00, taxPercent: 19),
         ];
         $invoice = createTestInvoice($lines);
 
@@ -217,38 +218,38 @@ describe('getTotalExcludingVat', function () {
 describe('getTotalVat', function () {
     it('calculates VAT for single tax rate', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
         ];
         $invoice = createTestInvoice($lines);
 
         expect($invoice->getTotalVat())->toBe(19.00);
     });
 
-    it('groups lines by tax rate before calculating', function () {
+    it('sums per-line tax amounts', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
         ];
         $invoice = createTestInvoice($lines);
 
-        // 200 * 0.19 = 38.00 (grouped calculation)
+        // 19.00 + 19.00 = 38.00 (per-line sum)
         expect($invoice->getTotalVat())->toBe(38.00);
     });
 
     it('handles multiple tax rates', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 9),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 9.00, taxPercent: 9),
         ];
         $invoice = createTestInvoice($lines);
 
-        // 100 * 0.19 = 19.00, 100 * 0.09 = 9.00
+        // 19.00 + 9.00 = 28.00
         expect($invoice->getTotalVat())->toBe(28.00);
     });
 
     it('handles zero tax rate', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxPercent: 0),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxAmount: 0.00, taxPercent: 0),
         ];
         $invoice = createTestInvoice($lines);
 
@@ -257,51 +258,44 @@ describe('getTotalVat', function () {
 
     it('rounds correctly', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product', quantity: 3, unitPrice: 33.33, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 3, unitPrice: 33.33, taxAmount: 19.00, taxPercent: 19),
         ];
         $invoice = createTestInvoice($lines);
 
-        // Raw: 3 * 33.33 = 99.99, Tax: 99.99 * 0.19 = 18.9981 -> 19.00
+        // Pre-computed taxAmount: round(99.99 * 0.19, 2) = 19.00
         expect($invoice->getTotalVat())->toBe(19.00);
     });
 
-    it('groups lines with floating-point precision differences together', function () {
-        // Lines with tax rates that differ only due to floating-point precision
-        // should be grouped together (both round to 19.00)
+    it('sums lines with floating-point precision differences in tax rate', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.0),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.001),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.0),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.001),
         ];
         $invoice = createTestInvoice($lines);
 
-        // Both should be grouped as 19% tax rate: 200 * 0.19 = 38.00
-        // Not treated as separate groups which would give different results
+        // 19.00 + 19.00 = 38.00
         expect($invoice->getTotalVat())->toBe(38.00);
     });
 
-    it('groups rates that round to same 2-decimal value', function () {
-        // Tax rates 19.001 and 19.004 should both round to 19.00 and be grouped together
+    it('sums lines with rates that round to same 2-decimal value', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.001),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.004),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.001),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.004),
         ];
         $invoice = createTestInvoice($lines);
 
-        // Both round to 19.00, so: 200 * 0.19 = 38.00
+        // 19.00 + 19.00 = 38.00
         expect($invoice->getTotalVat())->toBe(38.00);
     });
 
-    it('keeps different tax rates separate when they round to different values', function () {
-        // Tax rates that round to different values should remain separate
+    it('keeps different tax amounts separate when rates round to different values', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxPercent: 19.004),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxPercent: 19.006),
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.004),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.01, taxPercent: 19.006),
         ];
         $invoice = createTestInvoice($lines);
 
-        // 19.004 rounds to 19.00, 19.006 rounds to 19.01
-        // So: 100 * 0.19 = 19.00, 100 * 0.1901 = 19.01
-        // Total: 38.01
+        // 19.00 + 19.01 = 38.01
         expect($invoice->getTotalVat())->toBe(38.01);
     });
 });
@@ -309,7 +303,7 @@ describe('getTotalVat', function () {
 describe('getTotalIncludingVat', function () {
     it('calculates total with VAT', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19),
         ];
         $invoice = createTestInvoice($lines);
 
@@ -318,14 +312,14 @@ describe('getTotalIncludingVat', function () {
 
     it('handles multiple lines and rates', function () {
         $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 2, unitPrice: 100.00, taxPercent: 19),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 50.00, taxPercent: 9),
+            new InvoiceLineData(name: 'Product 1', quantity: 2, unitPrice: 100.00, taxAmount: 38.00, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 50.00, taxAmount: 4.50, taxPercent: 9),
         ];
         $invoice = createTestInvoice($lines);
 
         // Excluding VAT: 200 + 50 = 250
-        // VAT: 200 * 0.19 + 50 * 0.09 = 38 + 4.5 = 42.5
-        // Total: 250 + 42.5 = 292.5
+        // VAT: 38.00 + 4.50 = 42.50
+        // Total: 250 + 42.50 = 292.50
         expect($invoice->getTotalIncludingVat())->toBe(292.50);
     });
 });
