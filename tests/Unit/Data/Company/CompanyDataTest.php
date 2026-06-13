@@ -2,10 +2,13 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Data\Company\AddressData;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyData;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
 use BeeCoded\EFacturaSdk\Data\Company\SplitVatData;
+use BeeCoded\EFacturaSdk\Data\Company\VatPeriodData;
 use BeeCoded\EFacturaSdk\Data\Company\VatRegistrationData;
+use BeeCoded\EFacturaSdk\Enums\RegistrationStatus;
 use Carbon\Carbon;
 
 describe('CompanyData', function () {
@@ -151,6 +154,288 @@ describe('CompanyData', function () {
             expect($company->isDeregistered)->toBeFalse();
             expect($company->deregistrationDate)->toBeNull();
         });
+    });
+
+    describe('registration status (stare_inregistrare)', function () {
+        it('parses RADIERE status and flips isDeregistered (live radiated CUI 3432305 shape)', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => [
+                    'cui' => 3432305,
+                    'denumire' => 'B & C SRL',
+                    'stare_inregistrare' => 'RADIERE din data 29.03.2024',
+                ],
+                'stare_inactiv' => [
+                    'dataInactivare' => '', 'dataReactivare' => '', 'dataPublicare' => '',
+                    'dataRadiere' => '', 'statusInactivi' => false,
+                ],
+            ]);
+
+            expect($company->registrationStatusRaw)->toBe('RADIERE din data 29.03.2024');
+            expect($company->registrationStatus)->toBe(RegistrationStatus::Deregistered);
+            expect($company->registrationStatusDate->format('Y-m-d'))->toBe('2024-03-29');
+            expect($company->isDeregistered)->toBeTrue();
+            expect($company->deregistrationDate->format('Y-m-d'))->toBe('2024-03-29');
+            expect($company->isActive())->toBeFalse();
+            expect($company->isRegistered())->toBeFalse();
+        });
+
+        it('parses INREGISTRAT status as registered and active', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => [
+                    'cui' => 41318860,
+                    'denumire' => 'OSIRIS INVESTMENT S.R.L.',
+                    'stare_inregistrare' => 'INREGISTRAT din data 26.06.2019',
+                ],
+            ]);
+
+            expect($company->registrationStatus)->toBe(RegistrationStatus::Registered);
+            expect($company->registrationStatusDate->format('Y-m-d'))->toBe('2019-06-26');
+            expect($company->isRegistered())->toBeTrue();
+            expect($company->isDeregistered)->toBeFalse();
+            expect($company->isActive())->toBeTrue();
+        });
+
+        it('defaults to Unknown when stare_inregistrare is missing or empty', function () {
+            $missing = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+            ]);
+            $empty = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test', 'stare_inregistrare' => ''],
+            ]);
+
+            foreach ([$missing, $empty] as $company) {
+                expect($company->registrationStatusRaw)->toBeNull();
+                expect($company->registrationStatus)->toBe(RegistrationStatus::Unknown);
+                expect($company->registrationStatusDate)->toBeNull();
+                expect($company->isRegistered())->toBeFalse();
+                expect($company->isDeregistered)->toBeFalse();
+                expect($company->isActive())->toBeTrue();
+            }
+        });
+
+        it('keeps unrecognized statuses fail-open with raw preserved', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => [
+                    'cui' => '12345678', 'denumire' => 'Test',
+                    'stare_inregistrare' => 'INTRERUPERE TEMPORARA DE ACTIVITATE din data 01.01.2020',
+                ],
+            ]);
+
+            expect($company->registrationStatus)->toBe(RegistrationStatus::Unknown);
+            expect($company->registrationStatusRaw)->toContain('INTRERUPERE');
+            expect($company->registrationStatusDate->format('Y-m-d'))->toBe('2020-01-01');
+            expect($company->isDeregistered)->toBeFalse();
+            expect($company->isActive())->toBeTrue();
+        });
+
+        it('trusts RADIERE status even when its date is unparseable', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => [
+                    'cui' => '12345678', 'denumire' => 'Test',
+                    'stare_inregistrare' => 'RADIERE din data necunoscuta',
+                ],
+            ]);
+
+            expect($company->isDeregistered)->toBeTrue();
+            expect($company->registrationStatusDate)->toBeNull();
+            expect($company->deregistrationDate)->toBeNull();
+            expect($company->isActive())->toBeFalse();
+        });
+
+        it('prefers stare_inactiv dataRadiere over the status-string date', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => [
+                    'cui' => '12345678', 'denumire' => 'Test',
+                    'stare_inregistrare' => 'RADIERE din data 29.03.2024',
+                ],
+                'stare_inactiv' => ['dataRadiere' => '2023-06-15'],
+            ]);
+
+            expect($company->isDeregistered)->toBeTrue();
+            expect($company->deregistrationDate->format('Y-m-d'))->toBe('2023-06-15');
+        });
+    });
+
+    describe('e-Factura registry and fiscal registration date', function () {
+        it('parses statusRO_e_Factura and enrollment date', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => [
+                    'cui' => '12345678', 'denumire' => 'Test',
+                    'statusRO_e_Factura' => true,
+                    'data_inreg_Reg_RO_e_Factura' => '2022-07-01',
+                    'data_inregistrare' => '1993-03-02',
+                ],
+            ]);
+
+            expect($company->isRegisteredInEFactura)->toBeTrue();
+            expect($company->eFacturaRegistrationDate->format('Y-m-d'))->toBe('2022-07-01');
+            expect($company->registrationDate->format('Y-m-d'))->toBe('1993-03-02');
+        });
+
+        it('defaults when fields are missing or empty', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => [
+                    'cui' => '12345678', 'denumire' => 'Test',
+                    'statusRO_e_Factura' => false,
+                    'data_inreg_Reg_RO_e_Factura' => '',
+                ],
+            ]);
+
+            expect($company->isRegisteredInEFactura)->toBeFalse();
+            expect($company->eFacturaRegistrationDate)->toBeNull();
+            expect($company->registrationDate)->toBeNull();
+        });
+    });
+
+    describe('VAT periods (perioade_TVA)', function () {
+        it('derives VAT dates from the latest period (live radiated CUI shape)', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => 3432305, 'denumire' => 'B & C SRL'],
+                'inregistrare_scop_Tva' => [
+                    'scpTVA' => false,
+                    'perioade_TVA' => [
+                        ['data_inceput_ScpTVA' => '2007-07-01', 'data_sfarsit_ScpTVA' => '2018-08-01', 'data_anul_imp_ScpTVA' => '2018-08-01', 'mesaj_ScpTVA' => 'Anulare din oficiu'],
+                        ['data_inceput_ScpTVA' => '1996-03-01', 'data_sfarsit_ScpTVA' => '1999-04-01', 'data_anul_imp_ScpTVA' => '', 'mesaj_ScpTVA' => 'Anulare la cerere'],
+                    ],
+                ],
+            ]);
+
+            expect($company->vatPeriods)->toHaveCount(2);
+            expect($company->vatRegistrationDate->format('Y-m-d'))->toBe('2007-07-01');
+            expect($company->vatDeregistrationDate->format('Y-m-d'))->toBe('2018-08-01');
+            expect($company->vatPeriods[0]->message)->toBe('Anulare din oficiu');
+        });
+
+        it('leaves vatDeregistrationDate null for an open period (live active CUI shape)', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => 41318860, 'denumire' => 'OSIRIS INVESTMENT S.R.L.'],
+                'inregistrare_scop_Tva' => [
+                    'scpTVA' => true,
+                    'perioade_TVA' => [
+                        ['data_inceput_ScpTVA' => '2020-09-01', 'data_sfarsit_ScpTVA' => '', 'data_anul_imp_ScpTVA' => '', 'mesaj_ScpTVA' => ''],
+                    ],
+                ],
+            ]);
+
+            expect($company->isVatPayer)->toBeTrue();
+            expect($company->vatRegistrationDate->format('Y-m-d'))->toBe('2020-09-01');
+            expect($company->vatDeregistrationDate)->toBeNull();
+        });
+
+        it('picks the latest period regardless of response order', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+                'inregistrare_scop_Tva' => [
+                    'perioade_TVA' => [
+                        ['data_inceput_ScpTVA' => '1996-03-01', 'data_sfarsit_ScpTVA' => '1999-04-01'],
+                        ['data_inceput_ScpTVA' => '2007-07-01', 'data_sfarsit_ScpTVA' => '2018-08-01'],
+                    ],
+                ],
+            ]);
+
+            expect($company->vatRegistrationDate->format('Y-m-d'))->toBe('2007-07-01');
+        });
+
+        it('prefers flat keys over periods when both are present (legacy shape)', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+                'inregistrare_scop_Tva' => [
+                    'data_inceput_ScpTVA' => '2020-01-15',
+                    'perioade_TVA' => [
+                        ['data_inceput_ScpTVA' => '2007-07-01'],
+                    ],
+                ],
+            ]);
+
+            expect($company->vatRegistrationDate->format('Y-m-d'))->toBe('2020-01-15');
+        });
+
+        it('defaults to empty vatPeriods when absent', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+            ]);
+
+            expect($company->vatPeriods)->toBe([]);
+            expect($company->vatRegistrationDate)->toBeNull();
+        });
+    });
+
+    it('parses the complete live v9 response for a radiated company end-to-end', function () {
+        $company = CompanyData::fromAnafResponse([
+            'date_generale' => [
+                'data' => '2026-06-12',
+                'cui' => 3432305,
+                'denumire' => 'B & C SRL',
+                'adresa' => 'JUD. PRAHOVA, MUN. PLOIEŞTI, STR. BRÂNCOVEANU VODĂ, NR.2A',
+                'telefon' => '0244510775',
+                'fax' => '',
+                'codPostal' => '100400',
+                'act' => '',
+                'stare_inregistrare' => 'RADIERE din data 29.03.2024',
+                'data_inreg_Reg_RO_e_Factura' => '',
+                'organFiscalCompetent' => 'Administraţia Judeţeană a Finanţelor Publice Prahova',
+                'forma_de_proprietate' => 'PROPR.PRIVATA-CAPITAL PRIVAT AUTOHTON',
+                'forma_organizare' => 'PERSOANA JURIDICA',
+                'forma_juridica' => 'SOCIETATE COMERCIALĂ CU RĂSPUNDERE LIMITATĂ',
+                'statusRO_e_Factura' => false,
+                'data_inregistrare' => '1993-03-02',
+                'nrRegCom' => 'J29/3210/1992',
+                'cod_CAEN' => '6202',
+                'iban' => '',
+            ],
+            'inregistrare_scop_Tva' => [
+                'scpTVA' => false,
+                'perioade_TVA' => [
+                    ['data_inceput_ScpTVA' => '2007-07-01', 'data_sfarsit_ScpTVA' => '2018-08-01', 'data_anul_imp_ScpTVA' => '2018-08-01', 'mesaj_ScpTVA' => 'Anularea înregistrarii în scopuri de TVA a fost efectuata din oficiu'],
+                    ['data_inceput_ScpTVA' => '1996-03-01', 'data_sfarsit_ScpTVA' => '1999-04-01', 'data_anul_imp_ScpTVA' => '', 'mesaj_ScpTVA' => 'Anularea înregistrarii în scopuri de TVA a fost efectuata la cererea persoanei impozabile'],
+                ],
+            ],
+            'inregistrare_RTVAI' => [
+                'dataSfarsitTvaInc' => '2018-08-01',
+                'dataInceputTvaInc' => '2013-01-01',
+                'tipActTvaInc' => 'Radiere',
+                'statusTvaIncasare' => false,
+                'dataActualizareTvaInc' => '2018-08-01',
+                'dataPublicareTvaInc' => '2018-08-02',
+            ],
+            'stare_inactiv' => [
+                'dataInactivare' => '', 'dataReactivare' => '', 'dataPublicare' => '',
+                'dataRadiere' => '', 'statusInactivi' => false,
+            ],
+            'inregistrare_SplitTVA' => [
+                'statusSplitTVA' => false, 'dataInceputSplitTVA' => '', 'dataAnulareSplitTVA' => '',
+            ],
+            'adresa_sediu_social' => [
+                'sdenumire_Strada' => 'Str. BRÂNCOVEANU VODĂ', 'snumar_Strada' => '2A',
+                'scod_Localitate' => '323', 'sdenumire_Judet' => 'PRAHOVA',
+                'sdenumire_Localitate' => 'Mun. Ploieşti', 'scod_Judet' => '29',
+                'scod_JudetAuto' => 'PH', 'sdetalii_Adresa' => '', 'scod_Postal' => '', 'stara' => '',
+            ],
+            'adresa_domiciliu_fiscal' => [
+                'ddenumire_Strada' => 'Str. Brâncoveanu Vodă', 'dnumar_Strada' => '2A',
+                'dcod_Localitate' => '323', 'ddenumire_Judet' => 'PRAHOVA',
+                'dcod_Judet' => '29', 'dcod_JudetAuto' => 'PH', 'ddetalii_Adresa' => '',
+                'dcod_Postal' => '100400', 'dtara' => '', 'ddenumire_Localitate' => 'Mun. Ploieşti',
+            ],
+        ]);
+
+        // The bug this feature fixes: radiated company must NOT be active
+        expect($company->isActive())->toBeFalse();
+        expect($company->isDeregistered)->toBeTrue();
+        expect($company->deregistrationDate->format('Y-m-d'))->toBe('2024-03-29');
+        expect($company->isRegistered())->toBeFalse();
+        // Untouched behavior still intact
+        expect($company->cui)->toBe('3432305');
+        expect($company->name)->toBe('B & C SRL');
+        expect($company->isInactive)->toBeFalse();
+        expect($company->isRtvai)->toBeFalse();
+        expect($company->rtvaiDetails->actType)->toBe('Radiere');
+        // New surface
+        expect($company->isRegisteredInEFactura)->toBeFalse();
+        expect($company->registrationDate->format('Y-m-d'))->toBe('1993-03-02');
+        expect($company->vatPeriods)->toHaveCount(2);
+        expect($company->vatRegistrationDate->format('Y-m-d'))->toBe('2007-07-01');
+        expect($company->getPrimaryAddress())->not->toBeNull();
     });
 
     describe('getPrimaryAddress', function () {
@@ -476,10 +761,48 @@ describe('VatRegistrationData', function () {
     });
 });
 
+describe('VatPeriodData', function () {
+    it('parses a closed period from ANAF response', function () {
+        $period = VatPeriodData::fromAnafResponse([
+            'data_inceput_ScpTVA' => '2007-07-01',
+            'data_sfarsit_ScpTVA' => '2018-08-01',
+            'data_anul_imp_ScpTVA' => '2018-08-01',
+            'mesaj_ScpTVA' => 'Anularea înregistrarii în scopuri de TVA a fost efectuata din oficiu',
+        ]);
+
+        expect($period->startDate->format('Y-m-d'))->toBe('2007-07-01');
+        expect($period->endDate->format('Y-m-d'))->toBe('2018-08-01');
+        expect($period->cancellationDate->format('Y-m-d'))->toBe('2018-08-01');
+        expect($period->message)->toContain('din oficiu');
+    });
+
+    it('parses an open period with empty end fields', function () {
+        $period = VatPeriodData::fromAnafResponse([
+            'data_inceput_ScpTVA' => '2020-09-01',
+            'data_sfarsit_ScpTVA' => '',
+            'data_anul_imp_ScpTVA' => '',
+            'mesaj_ScpTVA' => '',
+        ]);
+
+        expect($period->startDate->format('Y-m-d'))->toBe('2020-09-01');
+        expect($period->endDate)->toBeNull();
+        expect($period->cancellationDate)->toBeNull();
+        expect($period->message)->toBeNull();
+    });
+
+    it('handles empty and invalid input', function () {
+        $period = VatPeriodData::fromAnafResponse([]);
+        expect($period->startDate)->toBeNull();
+
+        $period = VatPeriodData::fromAnafResponse(['data_inceput_ScpTVA' => 'not-a-date']);
+        expect($period->startDate)->toBeNull();
+    });
+});
+
 describe('AddressData', function () {
     describe('getFullAddress', function () {
         it('formats address with all parts', function () {
-            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+            $address = new AddressData(
                 street: 'Str. Exemplu',
                 streetNumber: '123',
                 details: 'Bl. A, Sc. 1',
@@ -500,7 +823,7 @@ describe('AddressData', function () {
         });
 
         it('skips null and empty values', function () {
-            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+            $address = new AddressData(
                 street: 'Str. Test',
                 streetNumber: null,
                 city: 'Bucuresti',
@@ -514,7 +837,7 @@ describe('AddressData', function () {
 
         it('preserves zero string values', function () {
             // Edge case: '0' should not be filtered out by array_filter
-            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+            $address = new AddressData(
                 street: '0',
                 city: 'Test City',
             );
@@ -526,7 +849,7 @@ describe('AddressData', function () {
         });
 
         it('handles street number zero correctly', function () {
-            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData(
+            $address = new AddressData(
                 street: 'Strada Zero',
                 streetNumber: '0',
                 city: 'Bucuresti',
@@ -538,7 +861,7 @@ describe('AddressData', function () {
         });
 
         it('returns empty string when all fields are null', function () {
-            $address = new \BeeCoded\EFacturaSdk\Data\Company\AddressData;
+            $address = new AddressData;
 
             expect($address->getFullAddress())->toBe('');
         });

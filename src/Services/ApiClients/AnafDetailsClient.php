@@ -8,6 +8,8 @@ use BeeCoded\EFacturaSdk\Contracts\AnafDetailsClientInterface;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyData;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
+use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use BeeCoded\EFacturaSdk\Support\DateHelper;
 use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use Illuminate\Support\Facades\Log;
@@ -26,12 +28,16 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 {
     /**
      * Maximum number of CUIs that can be queried in a single batch request.
+     * ANAF v9 documents a hard limit of 100 CUIs per request (1 request/second).
      */
-    private const MAX_BATCH_SIZE = 500;
+    private const MAX_BATCH_SIZE = 100;
+
+    private readonly RateLimiter $rateLimiter;
 
     public function __construct()
     {
         parent::__construct();
+        $this->rateLimiter = app(RateLimiter::class);
     }
 
     /**
@@ -73,6 +79,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
     /**
      * {@inheritdoc}
+     *
+     * @throws RateLimitExceededException When the 1 req/sec lookup limit is exceeded
      */
     public function getCompanyData(string $vatCode): CompanyLookupResultData
     {
@@ -81,6 +89,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
     /**
      * {@inheritdoc}
+     *
+     * @throws RateLimitExceededException When the 1 req/sec lookup limit is exceeded
      */
     public function batchGetCompanyData(array $vatCodes): CompanyLookupResultData
     {
@@ -137,6 +147,11 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             $requestDate
         ));
 
+        // Enforce ANAF's 1 req/sec limit. Outside the try/catch below so a breach
+        // propagates as RateLimitExceededException (consistent with EFacturaClient),
+        // rather than being swallowed into a failure() result.
+        $this->rateLimiter->checkCompanyLookup();
+
         try {
             // Make the API call - the endpoint URL is the base URL itself
             // Use callRaw because the ANAF API expects a JSON array body, not key-value pairs
@@ -165,6 +180,19 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
             return $this->transformResponse($data, $invalidCodes);
         } catch (ApiException $e) {
+            // ANAF returns HTTP 404 with a {found, notFound} body when NONE of the
+            // queried CUIs exist. That is a documented "not found" response, not an
+            // error — parse the preserved body and surface the notFound CUIs.
+            if ($e->statusCode === 404 && $e->details !== null) {
+                $decoded = json_decode($e->details, true);
+                if (is_array($decoded)
+                    && (isset($decoded['found']) || isset($decoded['notFound']) || isset($decoded['notfound']))) {
+                    $this->logger->info('ANAF API 404 with not-found body for batch request');
+
+                    return $this->transformResponse($decoded, $invalidCodes);
+                }
+            }
+
             $this->logger->error(sprintf(
                 'ANAF Details API error: %s (status: %d)',
                 $e->getMessage(),
@@ -269,10 +297,15 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             }
         }
 
-        // Process not found CUIs
-        if (isset($response['notfound']) && is_array($response['notfound'])) {
-            foreach ($response['notfound'] as $item) {
-                if (isset($item['cui'])) {
+        // Process not found CUIs.
+        // Live v9 returns "notFound" with plain integer entries; older shapes
+        // used lowercase "notfound" with {cui: int} objects. Accept both.
+        $notFoundRaw = $response['notFound'] ?? $response['notfound'] ?? null;
+        if (is_array($notFoundRaw)) {
+            foreach ($notFoundRaw as $item) {
+                if (is_int($item) || (is_string($item) && ctype_digit($item))) {
+                    $notFound[] = (int) $item;
+                } elseif (is_array($item) && isset($item['cui'])) {
                     $notFound[] = (int) $item['cui'];
                 }
             }
@@ -281,7 +314,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
         // Handle case where nothing was found and nothing in notfound
         if (empty($companies) && empty($notFound) && empty($invalidCodes)) {
             // Check if response has unexpected structure
-            if (! isset($response['found']) && ! isset($response['notfound'])) {
+            if (! isset($response['found']) && ! isset($response['notFound']) && ! isset($response['notfound'])) {
                 return CompanyLookupResultData::failure(
                     'Unexpected response structure from ANAF API: '.json_encode($response),
                     $invalidCodes
@@ -289,14 +322,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             }
         }
 
-        // If we only have not found results, return as failure for single lookups
-        if (empty($companies) && ! empty($notFound) && count($notFound) === 1 && empty($invalidCodes)) {
-            return CompanyLookupResultData::failure(
-                'Company not found for the provided VAT code.',
-                $invalidCodes
-            );
-        }
-
+        // notFound CUIs surface on a success result (via hasNotFound()); consumers
+        // distinguish outcomes by hasCompanies()/hasNotFound(), not the success flag.
         return CompanyLookupResultData::success($companies, $notFound, $invalidCodes);
     }
 

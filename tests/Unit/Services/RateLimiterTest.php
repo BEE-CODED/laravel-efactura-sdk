@@ -14,6 +14,7 @@ beforeEach(function () {
     LaravelRateLimiter::clear('efactura-sdk:daily:list_simple:12345678');
     LaravelRateLimiter::clear('efactura-sdk:daily:list_paginated:12345678');
     LaravelRateLimiter::clear('efactura-sdk:daily:download:MSG123');
+    LaravelRateLimiter::clear('efactura-sdk:second:company_lookup');
 });
 
 describe('isEnabled', function () {
@@ -216,5 +217,40 @@ describe('getRemainingQuota', function () {
         $quota = $limiter->getRemainingQuota('global', '');
 
         expect($quota)->toHaveKeys(['limit', 'remaining', 'resetsIn']);
+    });
+});
+
+describe('checkCompanyLookup', function () {
+    it('allows the first call and blocks the second within the same second', function () {
+        $limiter = new RateLimiter;
+
+        $limiter->checkCompanyLookup(); // first: allowed
+
+        expect(fn () => $limiter->checkCompanyLookup())
+            ->toThrow(RateLimitExceededException::class);
+    });
+
+    it('reports a retryAfterSeconds of at least 1', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkCompanyLookup();
+
+        try {
+            $limiter->checkCompanyLookup();
+            $this->fail('expected RateLimitExceededException');
+        } catch (RateLimitExceededException $e) {
+            expect($e->retryAfterSeconds)->toBeGreaterThanOrEqual(1);
+            expect($e->getCode())->toBe(429);
+        }
+    });
+
+    it('is bypassed entirely when rate limiting is disabled', function () {
+        config()->set('efactura-sdk.rate_limits.enabled', false);
+        $limiter = new RateLimiter;
+
+        $limiter->checkCompanyLookup();
+        $limiter->checkCompanyLookup();
+        $limiter->checkCompanyLookup();
+
+        expect(true)->toBeTrue(); // no exception thrown
     });
 });

@@ -250,4 +250,41 @@ match ($status) {
 };
 \`\`\`
 `,
+
+  RegistrationStatus: `# RegistrationStatus
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\RegistrationStatus\`
+
+Company registration status at the trade registry, derived from ANAF's free-text \`date_generale.stare_inregistrare\` field. ANAF does not document the full value set; observed values are \`"INREGISTRAT din data dd.mm.yyyy"\` and \`"RADIERE din data dd.mm.yyyy"\`.
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`Registered\` | \`'registered'\` | Trade-registry status is "INREGISTRAT" (active registration) |
+| \`Deregistered\` | \`'deregistered'\` | Trade-registry status is "RADIERE"/"RADIAT*" (struck off) |
+| \`Unknown\` | \`'unknown'\` | Unrecognized, missing, or empty status — **no verdict** |
+
+## Static Methods
+
+### \`fromAnafStatus(?string $status): self\`
+Parses a \`stare_inregistrare\` string. Prefix-matches (case-insensitive, diacritic-tolerant): \`INREGISTRAT\`/\`ÎNREGISTRAT\` → \`Registered\`, \`RADIERE\`/\`RADIAT\` → \`Deregistered\`, everything else (including \`null\`/empty) → \`Unknown\`.
+
+## Usage Notes
+
+- **\`Unknown\` is fail-open:** treat it as "no verdict", never as deregistered. It does **not** flip \`CompanyData::$isDeregistered\` and does **not** make \`isActive()\` return false.
+- Only \`Deregistered\` flips \`CompanyData::$isDeregistered\` to \`true\`. The raw string is always preserved in \`CompanyData::$registrationStatusRaw\`.
+
+## Usage example
+
+\`\`\`php
+use BeeCoded\\EFacturaSdk\\Enums\\RegistrationStatus;
+
+$status = RegistrationStatus::fromAnafStatus($data['date_generale']['stare_inregistrare'] ?? null);
+
+if ($status === RegistrationStatus::Deregistered) {
+    throw new \\Exception('Company is struck off (radiat)');
+}
+\`\`\`
+`,
 };

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
+use BeeCoded\EFacturaSdk\Enums\RegistrationStatus;
 use Carbon\Carbon;
 use Spatie\LaravelData\Data;
 
@@ -108,6 +109,46 @@ class CompanyData extends Data
         public ?Carbon $deregistrationDate = null,
 
         /**
+         * Raw trade-registry status string (date_generale.stare_inregistrare),
+         * e.g. "INREGISTRAT din data 26.06.2019" / "RADIERE din data 29.03.2024".
+         */
+        public ?string $registrationStatusRaw = null,
+
+        /**
+         * Parsed trade-registry status. Unknown = no verdict (fail-open).
+         */
+        public RegistrationStatus $registrationStatus = RegistrationStatus::Unknown,
+
+        /**
+         * Date extracted from the stare_inregistrare "din data dd.mm.yyyy" suffix.
+         */
+        public ?Carbon $registrationStatusDate = null,
+
+        /**
+         * Fiscal registration date (date_generale.data_inregistrare).
+         */
+        public ?Carbon $registrationDate = null,
+
+        /**
+         * Whether the company is enrolled in the RO e-Factura registry
+         * (date_generale.statusRO_e_Factura) at the queried date.
+         */
+        public bool $isRegisteredInEFactura = false,
+
+        /**
+         * RO e-Factura registry enrollment date (data_inreg_Reg_RO_e_Factura).
+         */
+        public ?Carbon $eFacturaRegistrationDate = null,
+
+        /**
+         * VAT registration periods (inregistrare_scop_Tva.perioade_TVA),
+         * in ANAF response order.
+         *
+         * @var list<VatPeriodData>
+         */
+        public array $vatPeriods = [],
+
+        /**
          * Headquarters address (sediu social).
          */
         public ?AddressData $headquartersAddress = null,
@@ -161,6 +202,30 @@ class CompanyData extends Data
         $headquartersAddress = ! empty($headquarters) ? AddressData::fromHeadquartersResponse($headquarters) : null;
         $fiscalDomicileAddress = ! empty($fiscalDomicile) ? AddressData::fromFiscalDomicileResponse($fiscalDomicile) : null;
 
+        // Parse trade-registry status (stare_inregistrare)
+        $rawStatus = $generalData['stare_inregistrare'] ?? null;
+        $registrationStatusRaw = is_string($rawStatus) && trim($rawStatus) !== '' ? $rawStatus : null;
+        $registrationStatus = RegistrationStatus::fromAnafStatus($registrationStatusRaw);
+        $registrationStatusDate = self::parseStatusDate($registrationStatusRaw);
+
+        // Deregistered when the inactive registry says so (dataRadiere) OR the
+        // trade-registry status is RADIERE. Date prefers the inactive registry
+        // (pinned by existing tests), falling back to the status-string date.
+        $inactiveRadiereDate = $inactiveStatusDetails?->deregistrationDate;
+        $isDeregistered = $inactiveRadiereDate !== null
+            || $registrationStatus === RegistrationStatus::Deregistered;
+        $deregistrationDate = $inactiveRadiereDate
+            ?? ($registrationStatus === RegistrationStatus::Deregistered ? $registrationStatusDate : null);
+
+        // Parse VAT periods (v9 nests dates in perioade_TVA; flat keys are the legacy shape)
+        $vatPeriods = [];
+        foreach (($vatScope['perioade_TVA'] ?? []) as $period) {
+            if (is_array($period)) {
+                $vatPeriods[] = VatPeriodData::fromAnafResponse($period);
+            }
+        }
+        $latestVatPeriod = self::latestVatPeriod($vatPeriods);
+
         return new self(
             cui: (string) ($generalData['cui'] ?? ''),
             name: $generalData['denumire'] ?? '',
@@ -170,18 +235,23 @@ class CompanyData extends Data
             fax: $generalData['fax'] ?? null,
             postalCode: $generalData['codPostal'] ?? null,
             isVatPayer: (bool) ($vatScope['scpTVA'] ?? false),
-            vatRegistrationDate: self::parseDate($vatScope['data_inceput_ScpTVA'] ?? null),
-            vatDeregistrationDate: self::parseDate($vatScope['data_sfarsit_ScpTVA'] ?? null),
+            vatRegistrationDate: self::parseDate($vatScope['data_inceput_ScpTVA'] ?? null) ?? $latestVatPeriod?->startDate,
+            vatDeregistrationDate: self::parseDate($vatScope['data_sfarsit_ScpTVA'] ?? null) ?? $latestVatPeriod?->endDate,
             isSplitVat: (bool) ($splitVat['statusSplitTVA'] ?? false),
             splitVatStartDate: $splitVatDetails?->startDate,
             isRtvai: (bool) ($rtvai['statusTvaIncasare'] ?? false),
             rtvaiStartDate: $rtvaiDetails?->startDate,
             isInactive: (bool) ($inactive['statusInactivi'] ?? false),
             inactiveDate: $inactiveStatusDetails?->inactiveDate,
-            // isDeregistered should be true only when we have a valid parsed deregistration date
-            // This ensures consistency between the flag and the actual date value
-            isDeregistered: $inactiveStatusDetails?->deregistrationDate !== null,
-            deregistrationDate: $inactiveStatusDetails?->deregistrationDate,
+            isDeregistered: $isDeregistered,
+            deregistrationDate: $deregistrationDate,
+            registrationStatusRaw: $registrationStatusRaw,
+            registrationStatus: $registrationStatus,
+            registrationStatusDate: $registrationStatusDate,
+            registrationDate: self::parseDate($generalData['data_inregistrare'] ?? null),
+            isRegisteredInEFactura: (bool) ($generalData['statusRO_e_Factura'] ?? false),
+            eFacturaRegistrationDate: self::parseDate($generalData['data_inreg_Reg_RO_e_Factura'] ?? null),
+            vatPeriods: $vatPeriods,
             headquartersAddress: $headquartersAddress,
             fiscalDomicileAddress: $fiscalDomicileAddress,
             rtvaiDetails: $rtvaiDetails,
@@ -207,6 +277,15 @@ class CompanyData extends Data
     }
 
     /**
+     * Whether the trade-registry status is a confirmed "INREGISTRAT".
+     * Unknown status returns false — inspect registrationStatusRaw for details.
+     */
+    public function isRegistered(): bool
+    {
+        return $this->registrationStatus === RegistrationStatus::Registered;
+    }
+
+    /**
      * Get the primary address (headquarters or fiscal domicile).
      */
     public function getPrimaryAddress(): ?AddressData
@@ -228,5 +307,39 @@ class CompanyData extends Data
         } catch (\Exception) {
             return null;
         }
+    }
+
+    /**
+     * Extract the date from a stare_inregistrare value ("... din data dd.mm.yyyy").
+     */
+    private static function parseStatusDate(?string $status): ?Carbon
+    {
+        if ($status === null || preg_match('/din data\s+(\d{2})\.(\d{2})\.(\d{4})/u', $status, $matches) !== 1) {
+            return null;
+        }
+
+        try {
+            return Carbon::create((int) $matches[3], (int) $matches[2], (int) $matches[1]);
+        } catch (\Exception) {
+            return null;
+        }
+    }
+
+    /**
+     * The period with the most recent start date (no ordering assumption).
+     *
+     * @param  list<VatPeriodData>  $periods
+     */
+    private static function latestVatPeriod(array $periods): ?VatPeriodData
+    {
+        $latest = null;
+        foreach ($periods as $period) {
+            if ($latest === null
+                || ($period->startDate?->getTimestamp() ?? PHP_INT_MIN) > ($latest->startDate?->getTimestamp() ?? PHP_INT_MIN)) {
+                $latest = $period;
+            }
+        }
+
+        return $latest;
     }
 }

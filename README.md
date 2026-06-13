@@ -714,9 +714,23 @@ if ($result->success) {
     $company->isRtvai;         // VAT on collection
 
     // Status
-    $company->isActive();      // Not inactive and not deregistered
+    $company->isActive();      // Not inactive and not deregistered (radiat)
     $company->isInactive;
     $company->isDeregistered;
+
+    // Trade-registry status (stare_inregistrare)
+    $company->isRegistered();           // status is "INREGISTRAT"
+    $company->registrationStatus;       // RegistrationStatus enum (Registered|Deregistered|Unknown)
+    $company->registrationStatusRaw;    // e.g. "RADIERE din data 29.03.2024"
+    $company->registrationStatusDate;   // Carbon date parsed from the status string
+    $company->registrationDate;         // Fiscal registration date (data_inregistrare)
+
+    // RO e-Factura registry
+    $company->isRegisteredInEFactura;   // enrolled in Registrul RO e-Factura
+    $company->eFacturaRegistrationDate;
+
+    // VAT registration history
+    $company->vatPeriods;               // VatPeriodData[] (perioade_TVA)
 
     // Detailed addresses
     $company->headquartersAddress;     // AddressData object
@@ -724,7 +738,7 @@ if ($result->success) {
     $company->getPrimaryAddress();     // Returns headquarters or fiscal
 }
 
-// Batch lookup (up to 500 companies)
+// Batch lookup (up to 100 companies — ANAF v9 limit)
 $result = AnafDetails::batchGetCompanyData([
     'RO12345678',
     'RO87654321',
@@ -743,6 +757,23 @@ foreach ($result->notFound as $cui) {
 // Validate VAT code format
 $isValid = AnafDetails::isValidVatCode('RO12345678'); // true
 ```
+
+> **Note (v2.2.0):** a lookup whose CUIs are all not-found now returns `success === true`
+> with the CUIs in `$result->notFound` (previously a single not-found CUI returned a
+> failure result). Branch on `hasNotFound()` / `hasCompanies()`, not on `success`, to
+> distinguish outcomes. ANAF returns this case as **HTTP 404** with a `{found, notFound}`
+> body — the SDK treats that documented "none found" response as a not-found result, not an error.
+
+> **Detecting radiated (struck-off) companies:** ANAF reports trade-registry strike-off
+> in `date_generale.stare_inregistrare` ("RADIERE din data ..."), which the SDK maps to
+> `registrationStatus`, flips `isDeregistered` to `true`, and makes `isActive()` return
+> `false`. This is distinct from fiscal inactivity (`isInactive`) and from leaving the
+> TVA-la-încasare registry (`rtvaiDetails->actType === 'Radiere'`).
+
+> **Rate limit:** ANAF limits the company-lookup endpoint to **1 request/second**. The SDK
+> enforces this and throws `BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException`
+> (HTTP 429, with `->retryAfterSeconds`) when exceeded. This is independent of the
+> per-request **payload** cap of 100 CUIs. Disable via `efactura-sdk.rate_limits.enabled = false`.
 
 ### Validators
 

@@ -797,8 +797,15 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 | \`$rtvaiStartDate\` | \`?Carbon\` | no | \`null\` | RTVAI start date |
 | \`$isInactive\` | \`bool\` | no | \`false\` | Whether the company is fiscally inactive |
 | \`$inactiveDate\` | \`?Carbon\` | no | \`null\` | Date when company became inactive |
-| \`$isDeregistered\` | \`bool\` | no | \`false\` | Whether the company has been deregistered (radiat) |
+| \`$isDeregistered\` | \`bool\` | no | \`false\` | Whether the company has been deregistered/struck off (radiat) |
 | \`$deregistrationDate\` | \`?Carbon\` | no | \`null\` | Deregistration date |
+| \`$registrationStatusRaw\` | \`?string\` | no | \`null\` | Raw trade-registry status string (\`date_generale.stare_inregistrare\`), e.g. \`'RADIERE din data 29.03.2024'\` |
+| \`$registrationStatus\` | \`RegistrationStatus\` | no | \`Unknown\` | Parsed trade-registry status enum (Registered\\|Deregistered\\|Unknown) |
+| \`$registrationStatusDate\` | \`?Carbon\` | no | \`null\` | Date parsed from the \`stare_inregistrare\` "din data dd.mm.yyyy" suffix |
+| \`$registrationDate\` | \`?Carbon\` | no | \`null\` | Fiscal registration date (\`date_generale.data_inregistrare\`) |
+| \`$isRegisteredInEFactura\` | \`bool\` | no | \`false\` | Whether enrolled in the RO e-Factura registry (\`date_generale.statusRO_e_Factura\`) |
+| \`$eFacturaRegistrationDate\` | \`?Carbon\` | no | \`null\` | RO e-Factura registry enrollment date (\`data_inreg_Reg_RO_e_Factura\`) |
+| \`$vatPeriods\` | \`VatPeriodData[]\` | no | \`[]\` | VAT registration periods (\`inregistrare_scop_Tva.perioade_TVA\`), in response order |
 | \`$headquartersAddress\` | \`?AddressData\` | no | \`null\` | Headquarters address (Company\\AddressData) |
 | \`$fiscalDomicileAddress\` | \`?AddressData\` | no | \`null\` | Fiscal domicile address (Company\\AddressData) |
 | \`$rtvaiDetails\` | \`?VatRegistrationData\` | no | \`null\` | Detailed RTVAI registration data |
@@ -810,6 +817,10 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 ### \`fromAnafResponse(array $data): self\`
 Parses the full ANAF found company response structure. Processes nested keys: \`date_generale\`, \`inregistrare_scop_Tva\`, \`inregistrare_RTVAI\`, \`stare_inactiv\`, \`inregistrare_SplitTVA\`, \`adresa_sediu_social\`, \`adresa_domiciliu_fiscal\`.
 
+**Deregistration derivation:** \`isDeregistered\` is \`true\` when \`stare_inactiv.dataRadiere\` parses to a valid date **OR** \`stare_inregistrare\` parses to \`RegistrationStatus::Deregistered\` (a "RADIERE ..." string). \`deregistrationDate\` prefers the \`stare_inactiv.dataRadiere\` value and falls back to the date parsed from the \`stare_inregistrare\` string. \`isActive()\` returns \`false\` for any deregistered company.
+
+**VAT date derivation:** \`vatRegistrationDate\`/\`vatDeregistrationDate\` come from the legacy flat \`data_inceput_ScpTVA\`/\`data_sfarsit_ScpTVA\` keys when present, otherwise from the latest \`perioade_TVA\` entry (the one with the most recent \`startDate\`).
+
 ## Public Methods
 
 ### \`getVatNumber(): string\`
@@ -817,6 +828,9 @@ Returns \`'RO' . $this->cui\`.
 
 ### \`isActive(): bool\`
 Returns \`true\` if the company is neither inactive nor deregistered.
+
+### \`isRegistered(): bool\`
+Returns \`true\` if \`registrationStatus === RegistrationStatus::Registered\` (a confirmed "INREGISTRAT" trade-registry status). \`Unknown\` returns \`false\` — inspect \`registrationStatusRaw\` for details.
 
 ### \`getPrimaryAddress(): ?AddressData\`
 Returns \`$headquartersAddress ?? $fiscalDomicileAddress\`.
@@ -1038,7 +1052,7 @@ Creates from ANAF \`stare_inactiv\` data. Date strings are parsed with \`Carbon:
 
 ## Usage Notes
 
-- \`$deregistrationDate\` being non-null drives \`CompanyData::$isDeregistered\`. The \`CompanyData\` builder sets \`isDeregistered = inactiveStatusDetails->deregistrationDate !== null\`.
+- \`stare_inactiv.dataRadiere\` is **only one of two** sources for \`CompanyData::$isDeregistered\`. The \`CompanyData\` builder sets \`isDeregistered = (inactiveStatusDetails->deregistrationDate !== null) || (registrationStatus === RegistrationStatus::Deregistered)\` — so a company struck off via the trade registry (\`stare_inregistrare\` = "RADIERE ...") is flagged deregistered even when this \`stare_inactiv\` block is empty.
 - An inactive company can still transact but may face tax consequences. A deregistered (radiat) company should not be issued invoices.
 
 ## Example
@@ -1052,6 +1066,41 @@ if ($details?->isInactive) {
 }
 if ($company->isDeregistered) {
     throw new \\Exception('Cannot issue invoice to deregistered company');
+}
+\`\`\`
+`,
+
+  VatPeriodData: `# VatPeriodData
+
+**Namespace:** \`BeeCoded\\EFacturaSdk\\Data\\Company\\VatPeriodData\`
+
+A single VAT registration period from ANAF's \`inregistrare_scop_Tva.perioade_TVA\` array (v9 response shape). Extends \`Spatie\\LaravelData\\Data\`.
+
+## Constructor Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| \`$startDate\` | \`?Carbon\` | no | \`null\` | Period start date (data_inceput_ScpTVA) |
+| \`$endDate\` | \`?Carbon\` | no | \`null\` | Period end date (data_sfarsit_ScpTVA); \`null\` for an open period |
+| \`$cancellationDate\` | \`?Carbon\` | no | \`null\` | VAT registration cancellation date (data_anul_imp_ScpTVA) |
+| \`$message\` | \`?string\` | no | \`null\` | ANAF's explanatory message for the period (mesaj_ScpTVA) |
+
+## Static Factory Methods
+
+### \`fromAnafResponse(array $data): self\`
+Creates from a single \`perioade_TVA\` entry. Date strings are parsed with \`Carbon::parse()\`; empty/whitespace/invalid strings produce \`null\`. An empty/whitespace \`message\` becomes \`null\`.
+
+## Usage Notes
+
+- \`CompanyData\` collects every period into \`$vatPeriods\` (response order) and derives \`vatRegistrationDate\`/\`vatDeregistrationDate\` from the period with the most recent \`startDate\` — unless the legacy flat keys are present, which take precedence.
+
+## Example
+
+\`\`\`php
+$company = CompanyData::fromAnafResponse($data);
+
+foreach ($company->vatPeriods as $period) {
+    echo $period->startDate?->format('Y-m-d') . ' → ' . ($period->endDate?->format('Y-m-d') ?? 'open');
 }
 \`\`\`
 `,

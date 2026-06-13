@@ -127,5 +127,8 @@ return [
 
         // Downloads per message ID per day (ANAF limit: 10)
         'download_per_day_message' => env('EFACTURA_RATE_LIMIT_DOWNLOAD', 5),
+
+        // Company details lookup (PlatitorTvaRest) — ANAF limit: 1 request/second
+        'company_lookup_per_second' => env('EFACTURA_RATE_LIMIT_COMPANY_LOOKUP', 1),
     ],
 ];

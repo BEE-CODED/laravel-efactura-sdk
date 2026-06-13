@@ -29,6 +29,7 @@ const VALID_ENUMS = [
   "StandardType",
   "TaxCategoryId",
   "UploadStatusValue",
+  "RegistrationStatus",
 ];
 
 describe("get-enum-values", () => {
@@ -52,6 +53,7 @@ const VALID_DTOS = [
   "PaginatedMessagesResponseData", "MessageDetailsData",
   "CompanyData", "CompanyLookupResultData", "CompanyAddressData",
   "VatRegistrationData", "SplitVatData", "InactiveStatusData",
+  "VatPeriodData",
 ];
 
 describe("get-dto-structure", () => {

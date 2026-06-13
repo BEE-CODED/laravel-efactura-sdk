@@ -2,8 +2,18 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
+use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Illuminate\Support\Facades\Http;
+
+beforeEach(function () {
+    // Bind a no-op rate limiter so the HTTP-fake tests below are isolated from
+    // the real 1/sec per-second window (which would otherwise trip across tests).
+    $rateLimiter = Mockery::mock(RateLimiter::class);
+    $rateLimiter->shouldReceive('checkCompanyLookup')->andReturnNull()->byDefault();
+    app()->instance(RateLimiter::class, $rateLimiter);
+});
 
 describe('AnafDetailsClient', function () {
     describe('getCompanyData', function () {
@@ -27,7 +37,7 @@ describe('AnafDetailsClient', function () {
                             ],
                         ],
                     ],
-                    'notfound' => [],
+                    'notFound' => [],
                 ], 200),
             ]);
 
@@ -50,21 +60,66 @@ describe('AnafDetailsClient', function () {
             expect($result->error)->toContain('invalid');
         });
 
-        it('returns failure for not found CUI', function () {
+        it('returns success with notFound for a nonexistent CUI (live v9 shape: camelCase key, int items)', function () {
             Http::fake([
                 '*' => Http::response([
                     'found' => [],
-                    'notfound' => [
-                        ['cui' => 99999999],
-                    ],
+                    'notFound' => [99999999],
                 ], 200),
             ]);
 
             $client = new AnafDetailsClient;
             $result = $client->getCompanyData('99999999');
 
+            expect($result->success)->toBeTrue();
+            expect($result->hasCompanies())->toBeFalse();
+            expect($result->hasNotFound())->toBeTrue();
+            expect($result->notFound)->toBe([99999999]);
+        });
+
+        it('still parses the legacy notfound shape (lowercase key, object items)', function () {
+            Http::fake([
+                '*' => Http::response([
+                    'found' => [],
+                    'notfound' => [['cui' => 99999999]],
+                ], 200),
+            ]);
+
+            $client = new AnafDetailsClient;
+            $result = $client->getCompanyData('99999999');
+
+            expect($result->success)->toBeTrue();
+            expect($result->notFound)->toBe([99999999]);
+        });
+
+        it('treats ANAF HTTP 404 with a notFound body as a not-found result, not a failure', function () {
+            // ANAF returns 404 (not 200) with a {found, notFound} body when NONE of the
+            // queried CUIs exist — a documented "not found" response, not an error.
+            Http::fake([
+                '*' => Http::response([
+                    'found' => [],
+                    'notFound' => [99999999],
+                ], 404),
+            ]);
+
+            $client = new AnafDetailsClient;
+            $result = $client->getCompanyData('99999999');
+
+            expect($result->success)->toBeTrue();
+            expect($result->hasCompanies())->toBeFalse();
+            expect($result->hasNotFound())->toBeTrue();
+            expect($result->notFound)->toBe([99999999]);
+        });
+
+        it('still fails on a 404 without a recognizable ANAF body', function () {
+            Http::fake([
+                '*' => Http::response('Not Found', 404),
+            ]);
+
+            $client = new AnafDetailsClient;
+            $result = $client->getCompanyData('12345678');
+
             expect($result->success)->toBeFalse();
-            expect($result->error)->toContain('not found');
         });
 
         it('handles empty VAT code', function () {
@@ -103,7 +158,7 @@ describe('AnafDetailsClient', function () {
                             ],
                         ],
                     ],
-                    'notfound' => [],
+                    'notFound' => [],
                 ], 200),
             ]);
 
@@ -139,7 +194,7 @@ describe('AnafDetailsClient', function () {
                             ],
                         ],
                     ],
-                    'notfound' => [],
+                    'notFound' => [],
                 ], 200),
             ]);
 
@@ -246,5 +301,43 @@ describe('AnafDetailsClient', function () {
 
             expect($client->isValidVatCode('0000000000000'))->toBeTrue();
         });
+    });
+});
+
+describe('rate limiting', function () {
+    it('checks the company-lookup limit before issuing the HTTP request', function () {
+        $rateLimiter = Mockery::mock(RateLimiter::class);
+        $rateLimiter->shouldReceive('checkCompanyLookup')->once();
+        app()->instance(RateLimiter::class, $rateLimiter);
+
+        Http::fake(['*' => Http::response(['found' => [], 'notFound' => [12345678]], 200)]);
+
+        (new AnafDetailsClient)->getCompanyData('12345678');
+
+        Http::assertSentCount(1);
+    });
+
+    it('propagates RateLimitExceededException and sends no HTTP request', function () {
+        $rateLimiter = Mockery::mock(RateLimiter::class);
+        $rateLimiter->shouldReceive('checkCompanyLookup')
+            ->andThrow(new RateLimitExceededException('limit', remaining: 0, retryAfterSeconds: 1));
+        app()->instance(RateLimiter::class, $rateLimiter);
+
+        Http::preventStrayRequests();
+
+        expect(fn () => (new AnafDetailsClient)->getCompanyData('12345678'))
+            ->toThrow(RateLimitExceededException::class);
+    });
+
+    it('does not consume a lookup token when all codes are invalid (never reaches ANAF)', function () {
+        $rateLimiter = Mockery::mock(RateLimiter::class);
+        $rateLimiter->shouldReceive('checkCompanyLookup')->never();
+        app()->instance(RateLimiter::class, $rateLimiter);
+
+        Http::preventStrayRequests();
+
+        $result = (new AnafDetailsClient)->batchGetCompanyData(['abc', 'xyz']);
+
+        expect($result->success)->toBeFalse();
     });
 });

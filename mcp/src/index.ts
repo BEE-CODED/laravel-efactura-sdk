@@ -20,6 +20,7 @@ const VALID_ENUMS = [
   "StandardType",
   "TaxCategoryId",
   "UploadStatusValue",
+  "RegistrationStatus",
 ] as const;
 
 server.tool(
@@ -61,6 +62,7 @@ const VALID_DTOS = [
   "PaginatedMessagesResponseData", "MessageDetailsData",
   "CompanyData", "CompanyLookupResultData", "CompanyAddressData",
   "VatRegistrationData", "SplitVatData", "InactiveStatusData",
+  "VatPeriodData",
 ] as const;
 
 server.tool(

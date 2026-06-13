@@ -26,6 +26,8 @@ class RateLimiter
 
     private RateLimitStore $dailyStore;
 
+    private RateLimitStore $secondStore;
+
     private int $globalPerMinute;
 
     private int $raspUploadPerDayCui;
@@ -38,10 +40,13 @@ class RateLimiter
 
     private int $downloadPerDayMessage;
 
+    private int $companyLookupPerSecond;
+
     public function __construct()
     {
         $this->minuteStore = new RateLimitStore('minute', 60);
         $this->dailyStore = new RateLimitStore('daily', 86400); // 24 hours
+        $this->secondStore = new RateLimitStore('second', 1);
 
         // Load from config with conservative defaults (50% of ANAF limits)
         $this->globalPerMinute = $this->validateLimit(
@@ -67,6 +72,10 @@ class RateLimiter
         $this->downloadPerDayMessage = $this->validateLimit(
             (int) config('efactura-sdk.rate_limits.download_per_day_message', 5),
             'download_per_day_message'
+        );
+        $this->companyLookupPerSecond = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.company_lookup_per_second', 1),
+            'company_lookup_per_second'
         );
 
         // Warn about cache driver requirements for rate limiting
@@ -154,6 +163,34 @@ class RateLimiter
                 "Global rate limit exceeded ({$this->globalPerMinute}/minute). Please wait before retrying.",
                 remaining: 0,
                 retryAfterSeconds: $this->minuteStore->availableIn($key)
+            );
+        }
+    }
+
+    /**
+     * Check and record a company-lookup API call (atomic, 1/second).
+     *
+     * ANAF limits the public company-details endpoint (PlatitorTvaRest) to
+     * 1 request/second. Unlike the per-CUI/per-message limits, this is a
+     * single global bucket — the limit is per request, not per CUI.
+     *
+     * @throws RateLimitExceededException
+     */
+    public function checkCompanyLookup(): void
+    {
+        if (! $this->isEnabled()) {
+            return;
+        }
+
+        $key = 'company_lookup';
+
+        if (! $this->secondStore->attemptOrFail($key, $this->companyLookupPerSecond)) {
+            throw new RateLimitExceededException(
+                "Company lookup rate limit exceeded ({$this->companyLookupPerSecond}/second). Please wait before retrying.",
+                remaining: 0,
+                // A freshly-tripped 1s window can report availableIn=0; clamp to 1
+                // so retryAfterSeconds is never the misleading 0.
+                retryAfterSeconds: max($this->secondStore->availableIn($key), 1),
             );
         }
     }

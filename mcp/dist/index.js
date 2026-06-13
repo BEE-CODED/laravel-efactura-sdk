@@ -21546,6 +21546,42 @@ match ($status) {
     UploadStatusValue::InProgress => $this->scheduleRetry($uploadId),
 };
 \`\`\`
+`,
+  RegistrationStatus: `# RegistrationStatus
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\RegistrationStatus\`
+
+Company registration status at the trade registry, derived from ANAF's free-text \`date_generale.stare_inregistrare\` field. ANAF does not document the full value set; observed values are \`"INREGISTRAT din data dd.mm.yyyy"\` and \`"RADIERE din data dd.mm.yyyy"\`.
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`Registered\` | \`'registered'\` | Trade-registry status is "INREGISTRAT" (active registration) |
+| \`Deregistered\` | \`'deregistered'\` | Trade-registry status is "RADIERE"/"RADIAT*" (struck off) |
+| \`Unknown\` | \`'unknown'\` | Unrecognized, missing, or empty status \u2014 **no verdict** |
+
+## Static Methods
+
+### \`fromAnafStatus(?string $status): self\`
+Parses a \`stare_inregistrare\` string. Prefix-matches (case-insensitive, diacritic-tolerant): \`INREGISTRAT\`/\`\xCENREGISTRAT\` \u2192 \`Registered\`, \`RADIERE\`/\`RADIAT\` \u2192 \`Deregistered\`, everything else (including \`null\`/empty) \u2192 \`Unknown\`.
+
+## Usage Notes
+
+- **\`Unknown\` is fail-open:** treat it as "no verdict", never as deregistered. It does **not** flip \`CompanyData::$isDeregistered\` and does **not** make \`isActive()\` return false.
+- Only \`Deregistered\` flips \`CompanyData::$isDeregistered\` to \`true\`. The raw string is always preserved in \`CompanyData::$registrationStatusRaw\`.
+
+## Usage example
+
+\`\`\`php
+use BeeCoded\\EFacturaSdk\\Enums\\RegistrationStatus;
+
+$status = RegistrationStatus::fromAnafStatus($data['date_generale']['stare_inregistrare'] ?? null);
+
+if ($status === RegistrationStatus::Deregistered) {
+    throw new \\Exception('Company is struck off (radiat)');
+}
+\`\`\`
 `
 };
 
@@ -22333,8 +22369,15 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 | \`$rtvaiStartDate\` | \`?Carbon\` | no | \`null\` | RTVAI start date |
 | \`$isInactive\` | \`bool\` | no | \`false\` | Whether the company is fiscally inactive |
 | \`$inactiveDate\` | \`?Carbon\` | no | \`null\` | Date when company became inactive |
-| \`$isDeregistered\` | \`bool\` | no | \`false\` | Whether the company has been deregistered (radiat) |
+| \`$isDeregistered\` | \`bool\` | no | \`false\` | Whether the company has been deregistered/struck off (radiat) |
 | \`$deregistrationDate\` | \`?Carbon\` | no | \`null\` | Deregistration date |
+| \`$registrationStatusRaw\` | \`?string\` | no | \`null\` | Raw trade-registry status string (\`date_generale.stare_inregistrare\`), e.g. \`'RADIERE din data 29.03.2024'\` |
+| \`$registrationStatus\` | \`RegistrationStatus\` | no | \`Unknown\` | Parsed trade-registry status enum (Registered\\|Deregistered\\|Unknown) |
+| \`$registrationStatusDate\` | \`?Carbon\` | no | \`null\` | Date parsed from the \`stare_inregistrare\` "din data dd.mm.yyyy" suffix |
+| \`$registrationDate\` | \`?Carbon\` | no | \`null\` | Fiscal registration date (\`date_generale.data_inregistrare\`) |
+| \`$isRegisteredInEFactura\` | \`bool\` | no | \`false\` | Whether enrolled in the RO e-Factura registry (\`date_generale.statusRO_e_Factura\`) |
+| \`$eFacturaRegistrationDate\` | \`?Carbon\` | no | \`null\` | RO e-Factura registry enrollment date (\`data_inreg_Reg_RO_e_Factura\`) |
+| \`$vatPeriods\` | \`VatPeriodData[]\` | no | \`[]\` | VAT registration periods (\`inregistrare_scop_Tva.perioade_TVA\`), in response order |
 | \`$headquartersAddress\` | \`?AddressData\` | no | \`null\` | Headquarters address (Company\\AddressData) |
 | \`$fiscalDomicileAddress\` | \`?AddressData\` | no | \`null\` | Fiscal domicile address (Company\\AddressData) |
 | \`$rtvaiDetails\` | \`?VatRegistrationData\` | no | \`null\` | Detailed RTVAI registration data |
@@ -22346,6 +22389,10 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 ### \`fromAnafResponse(array $data): self\`
 Parses the full ANAF found company response structure. Processes nested keys: \`date_generale\`, \`inregistrare_scop_Tva\`, \`inregistrare_RTVAI\`, \`stare_inactiv\`, \`inregistrare_SplitTVA\`, \`adresa_sediu_social\`, \`adresa_domiciliu_fiscal\`.
 
+**Deregistration derivation:** \`isDeregistered\` is \`true\` when \`stare_inactiv.dataRadiere\` parses to a valid date **OR** \`stare_inregistrare\` parses to \`RegistrationStatus::Deregistered\` (a "RADIERE ..." string). \`deregistrationDate\` prefers the \`stare_inactiv.dataRadiere\` value and falls back to the date parsed from the \`stare_inregistrare\` string. \`isActive()\` returns \`false\` for any deregistered company.
+
+**VAT date derivation:** \`vatRegistrationDate\`/\`vatDeregistrationDate\` come from the legacy flat \`data_inceput_ScpTVA\`/\`data_sfarsit_ScpTVA\` keys when present, otherwise from the latest \`perioade_TVA\` entry (the one with the most recent \`startDate\`).
+
 ## Public Methods
 
 ### \`getVatNumber(): string\`
@@ -22353,6 +22400,9 @@ Returns \`'RO' . $this->cui\`.
 
 ### \`isActive(): bool\`
 Returns \`true\` if the company is neither inactive nor deregistered.
+
+### \`isRegistered(): bool\`
+Returns \`true\` if \`registrationStatus === RegistrationStatus::Registered\` (a confirmed "INREGISTRAT" trade-registry status). \`Unknown\` returns \`false\` \u2014 inspect \`registrationStatusRaw\` for details.
 
 ### \`getPrimaryAddress(): ?AddressData\`
 Returns \`$headquartersAddress ?? $fiscalDomicileAddress\`.
@@ -22569,7 +22619,7 @@ Creates from ANAF \`stare_inactiv\` data. Date strings are parsed with \`Carbon:
 
 ## Usage Notes
 
-- \`$deregistrationDate\` being non-null drives \`CompanyData::$isDeregistered\`. The \`CompanyData\` builder sets \`isDeregistered = inactiveStatusDetails->deregistrationDate !== null\`.
+- \`stare_inactiv.dataRadiere\` is **only one of two** sources for \`CompanyData::$isDeregistered\`. The \`CompanyData\` builder sets \`isDeregistered = (inactiveStatusDetails->deregistrationDate !== null) || (registrationStatus === RegistrationStatus::Deregistered)\` \u2014 so a company struck off via the trade registry (\`stare_inregistrare\` = "RADIERE ...") is flagged deregistered even when this \`stare_inactiv\` block is empty.
 - An inactive company can still transact but may face tax consequences. A deregistered (radiat) company should not be issued invoices.
 
 ## Example
@@ -22583,6 +22633,40 @@ if ($details?->isInactive) {
 }
 if ($company->isDeregistered) {
     throw new \\Exception('Cannot issue invoice to deregistered company');
+}
+\`\`\`
+`,
+  VatPeriodData: `# VatPeriodData
+
+**Namespace:** \`BeeCoded\\EFacturaSdk\\Data\\Company\\VatPeriodData\`
+
+A single VAT registration period from ANAF's \`inregistrare_scop_Tva.perioade_TVA\` array (v9 response shape). Extends \`Spatie\\LaravelData\\Data\`.
+
+## Constructor Parameters
+
+| Parameter | Type | Required | Default | Description |
+|---|---|---|---|---|
+| \`$startDate\` | \`?Carbon\` | no | \`null\` | Period start date (data_inceput_ScpTVA) |
+| \`$endDate\` | \`?Carbon\` | no | \`null\` | Period end date (data_sfarsit_ScpTVA); \`null\` for an open period |
+| \`$cancellationDate\` | \`?Carbon\` | no | \`null\` | VAT registration cancellation date (data_anul_imp_ScpTVA) |
+| \`$message\` | \`?string\` | no | \`null\` | ANAF's explanatory message for the period (mesaj_ScpTVA) |
+
+## Static Factory Methods
+
+### \`fromAnafResponse(array $data): self\`
+Creates from a single \`perioade_TVA\` entry. Date strings are parsed with \`Carbon::parse()\`; empty/whitespace/invalid strings produce \`null\`. An empty/whitespace \`message\` becomes \`null\`.
+
+## Usage Notes
+
+- \`CompanyData\` collects every period into \`$vatPeriods\` (response order) and derives \`vatRegistrationDate\`/\`vatDeregistrationDate\` from the period with the most recent \`startDate\` \u2014 unless the legacy flat keys are present, which take precedence.
+
+## Example
+
+\`\`\`php
+$company = CompanyData::fromAnafResponse($data);
+
+foreach ($company->vatPeriods as $period) {
+    echo $period->startDate?->format('Y-m-d') . ' \u2192 ' . ($period->endDate?->format('Y-m-d') ?? 'open');
 }
 \`\`\`
 `
@@ -24367,8 +24451,10 @@ Can be instantiated directly with \`new AnafDetailsClient()\` or used via the \`
 ## Notes
 
 - No authentication required \u2014 uses the public ANAF company details API
-- Maximum batch size: **500** VAT codes per request (\`MAX_BATCH_SIZE = 500\`)
-- Error handling: returns \`CompanyLookupResultData::failure()\` instead of throwing exceptions. Check \`$result->error\` for failures.
+- Maximum batch size: **100** VAT codes per request (\`MAX_BATCH_SIZE = 100\`, ANAF v9 payload limit)
+- Rate limit: **1 request/second** (\`company_lookup_per_second\`, ANAF limit). Throws \`RateLimitExceededException\` (HTTP 429, \`->retryAfterSeconds\`) when exceeded \u2014 independent of the 100-CUI payload cap. Gated by \`rate_limits.enabled\`.
+- Error handling: API/network errors return \`CompanyLookupResultData::failure()\` (check \`$result->error\`). The rate-limit breach is the exception \u2014 it **throws** \`RateLimitExceededException\` rather than returning a failure result.
+- **Not-found CUIs are not failures:** a lookup whose CUIs are all not-found returns \`success === true\` with the CUIs in \`$result->notFound\`. Branch on \`hasNotFound()\` / \`hasCompanies()\`, not on \`success\`, to distinguish outcomes. (Changed in v2.2.0 \u2014 previously a single not-found CUI returned a failure result.)
 
 ## Public Methods
 
@@ -24380,11 +24466,11 @@ public function isValidVatCode(string $vatCode): bool
 
 ### getCompanyData
 
-Looks up a single company by VAT code. Returns a \`CompanyLookupResultData\` object containing company details, address, VAT registration status, and more.
+Looks up a single company by VAT code. Returns a \`CompanyLookupResultData\` object containing company details, address, VAT registration status, and more. Throws \`RateLimitExceededException\` if the 1 req/sec limit is exceeded.
 
 ### batchGetCompanyData
 
-Looks up multiple companies in a single API call. The \`$vatCodes\` array must contain at most 500 entries. Returns a \`CompanyLookupResultData\` object.
+Looks up multiple companies in a single API call. The \`$vatCodes\` array must contain at most 100 entries. Returns a \`CompanyLookupResultData\` object whose \`$companies\` holds found companies and \`$notFound\` holds the CUIs ANAF did not find. Throws \`RateLimitExceededException\` if the 1 req/sec limit is exceeded (the per-second limit is per request, not per CUI).
 
 ### isValidVatCode
 
@@ -24430,7 +24516,8 @@ var VALID_ENUMS = [
   "DocumentStandardType",
   "StandardType",
   "TaxCategoryId",
-  "UploadStatusValue"
+  "UploadStatusValue",
+  "RegistrationStatus"
 ];
 server.tool(
   "get-config-reference",
@@ -24482,7 +24569,8 @@ var VALID_DTOS = [
   "CompanyAddressData",
   "VatRegistrationData",
   "SplitVatData",
-  "InactiveStatusData"
+  "InactiveStatusData",
+  "VatPeriodData"
 ];
 server.tool(
   "get-dto-structure",

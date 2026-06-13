@@ -314,8 +314,10 @@ Can be instantiated directly with \`new AnafDetailsClient()\` or used via the \`
 ## Notes
 
 - No authentication required — uses the public ANAF company details API
-- Maximum batch size: **500** VAT codes per request (\`MAX_BATCH_SIZE = 500\`)
-- Error handling: returns \`CompanyLookupResultData::failure()\` instead of throwing exceptions. Check \`$result->error\` for failures.
+- Maximum batch size: **100** VAT codes per request (\`MAX_BATCH_SIZE = 100\`, ANAF v9 payload limit)
+- Rate limit: **1 request/second** (\`company_lookup_per_second\`, ANAF limit). Throws \`RateLimitExceededException\` (HTTP 429, \`->retryAfterSeconds\`) when exceeded — independent of the 100-CUI payload cap. Gated by \`rate_limits.enabled\`.
+- Error handling: API/network errors return \`CompanyLookupResultData::failure()\` (check \`$result->error\`). The rate-limit breach is the exception — it **throws** \`RateLimitExceededException\` rather than returning a failure result.
+- **Not-found CUIs are not failures:** a lookup whose CUIs are all not-found returns \`success === true\` with the CUIs in \`$result->notFound\`. Branch on \`hasNotFound()\` / \`hasCompanies()\`, not on \`success\`, to distinguish outcomes. (Changed in v2.2.0 — previously a single not-found CUI returned a failure result.)
 
 ## Public Methods
 
@@ -327,11 +329,11 @@ public function isValidVatCode(string $vatCode): bool
 
 ### getCompanyData
 
-Looks up a single company by VAT code. Returns a \`CompanyLookupResultData\` object containing company details, address, VAT registration status, and more.
+Looks up a single company by VAT code. Returns a \`CompanyLookupResultData\` object containing company details, address, VAT registration status, and more. Throws \`RateLimitExceededException\` if the 1 req/sec limit is exceeded.
 
 ### batchGetCompanyData
 
-Looks up multiple companies in a single API call. The \`$vatCodes\` array must contain at most 500 entries. Returns a \`CompanyLookupResultData\` object.
+Looks up multiple companies in a single API call. The \`$vatCodes\` array must contain at most 100 entries. Returns a \`CompanyLookupResultData\` object whose \`$companies\` holds found companies and \`$notFound\` holds the CUIs ANAF did not find. Throws \`RateLimitExceededException\` if the 1 req/sec limit is exceeded (the per-second limit is per request, not per CUI).
 
 ### isValidVatCode
 
