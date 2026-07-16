@@ -5,6 +5,7 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 
 describe('OAuthTokensData', function () {
     it('creates with required fields', function () {
@@ -33,6 +34,24 @@ describe('OAuthTokensData', function () {
 
         expect($tokens->expiresAt)->toBe($expiresAt);
         expect($tokens->expiresIn)->toBe(3600);
+    });
+
+    it('accepts an immutable date for expiresAt', function () {
+        // Apps that call Date::use(CarbonImmutable) hydrate the token's expires_at as a
+        // CarbonImmutable, which is not a Carbon subclass. The type hint must accept it.
+        $expiresAt = CarbonImmutable::create(2024, 12, 31, 23, 59, 59);
+
+        $tokens = new OAuthTokensData(
+            accessToken: 'access_token',
+            refreshToken: 'refresh_token',
+            expiresAt: $expiresAt,
+        );
+
+        expect($tokens->expiresAt)->toBe($expiresAt)
+            ->and($tokens->expiresAt)->toBeInstanceOf(CarbonImmutable::class);
+
+        // The read path (->copy()->subSeconds()) must work on an immutable date too.
+        expect($tokens->isExpired())->toBeBool();
     });
 
     describe('fromAnafResponse', function () {

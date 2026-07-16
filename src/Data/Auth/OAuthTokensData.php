@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Auth;
 
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Spatie\LaravelData\Data;
 
 /**
@@ -15,7 +16,7 @@ class OAuthTokensData extends Data
     public function __construct(
         public string $accessToken,
         public string $refreshToken,
-        public ?Carbon $expiresAt = null,
+        public ?CarbonInterface $expiresAt = null,
         public ?int $expiresIn = null,
         public string $tokenType = 'Bearer',
     ) {}

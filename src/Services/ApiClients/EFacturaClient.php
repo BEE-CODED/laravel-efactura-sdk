@@ -25,6 +25,7 @@ use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -97,7 +98,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     /**
      * Token expiration time (may be updated after refresh).
      */
-    private ?Carbon $expiresAt;
+    private ?CarbonInterface $expiresAt;
 
     /**
      * Whether the token was refreshed during operations.
@@ -136,7 +137,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         private readonly string $vatNumber,
         string $accessToken,
         string $refreshToken,
-        ?Carbon $expiresAt = null,
+        ?CarbonInterface $expiresAt = null,
         ?AnafAuthenticatorInterface $authenticator = null,
     ) {
         parent::__construct();
