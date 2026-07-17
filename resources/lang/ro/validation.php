@@ -28,9 +28,16 @@ return [
     'line_quantity_cannot_be_zero' => 'Linia :lineNum: Cantitatea nu poate fi zero',
     'line_unit_price_not_negative' => 'Linia :lineNum: Prețul unitar nu poate fi negativ',
     'line_tax_percent_range' => 'Linia :lineNum: Procentul de taxă trebuie să fie între 0 și 100',
+    'line_tax_not_allowed_for_non_vat_payer' => 'Linia :lineNum: Un furnizor neînregistrat în scopuri de TVA nu poate factura TVA (BR-O-09)',
+    'line_tax_amount_must_be_zero_for_zero_rate' => 'Linia :lineNum: O linie cu cotă zero de TVA nu poate avea o valoare a TVA (BR-Z-09)',
 
     // Referință facturare
     'preceding_invoice_number_max_length' => 'Numărul facturii precedente nu trebuie să depășească 200 de caractere (BR-RO-L200)',
+
+    // Moneda de contabilizare a TVA (BT-111)
+    'tax_amount_ron_required' => 'O factură în :currency trebuie să declare valoarea totală a TVA în RON: setați taxAmountRon la suma convertită (BT-111). ANAF nu poate verifica conversia, așa că o valoare incorectă ar fi depusă ca declarație reală a TVA datorate (BR-RO-030, BR-53).',
+    'tax_amount_ron_not_allowed_for_ron' => 'taxAmountRon nu trebuie setat pe o factură în RON: valoarea TVA este deja exprimată în RON, iar un al doilea total de TVA în RON nu este permis (BR-CO-15).',
+    'tax_amount_ron_sign_mismatch' => 'taxAmountRon trebuie să aibă același semn ca totalul TVA al facturii: o sumă creditată nu poate fi declarată drept TVA colectată, și invers (BT-111).',
 
     // Mapare județ
     'county_invalid_iso_code' => 'Județul ":county" nu a putut fi mapat la un cod ISO 3166-2:RO valid. Adresele din România necesită coduri de județ valide (ex: "RO-AB" pentru Alba, "RO-B" pentru București).',

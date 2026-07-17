@@ -122,6 +122,34 @@ describe('getCurrentDateForAnaf', function () {
     it('returns current date in ANAF format', function () {
         expect(DateHelper::getCurrentDateForAnaf())->toBe('2024-06-15');
     });
+
+    // ANAF evaluates the company-lookup "data" field against the Romanian
+    // calendar. A UTC server between midnight and 02:00/03:00 Bucharest is still
+    // on yesterday's date, so it would ask ANAF about the wrong day and get a
+    // stale scpTVA back -- VAT registrations take effect on the 1st, exactly when
+    // that matters. The SDK picks this date itself, so there is only one correct
+    // answer: ANAF's today.
+
+    it('uses the Romanian date when the server clock is still on yesterday (summer, UTC+3)', function () {
+        // 22:30 UTC on the 14th is already 01:30 on the 15th in Bucharest.
+        Carbon::setTestNow(Carbon::create(2024, 6, 14, 22, 30, 0, 'UTC'));
+
+        expect(DateHelper::getCurrentDateForAnaf())->toBe('2024-06-15');
+    });
+
+    it('uses the Romanian date across the winter offset too (UTC+2)', function () {
+        // Not a hardcoded +3: in January Bucharest is UTC+2, and 22:30 UTC on the
+        // 14th is 00:30 on the 15th.
+        Carbon::setTestNow(Carbon::create(2024, 1, 14, 22, 30, 0, 'UTC'));
+
+        expect(DateHelper::getCurrentDateForAnaf())->toBe('2024-01-15');
+    });
+
+    it('leaves the date alone when both zones agree', function () {
+        Carbon::setTestNow(Carbon::create(2024, 6, 15, 9, 0, 0, 'UTC'));
+
+        expect(DateHelper::getCurrentDateForAnaf())->toBe('2024-06-15');
+    });
 });
 
 describe('getDaysAgo', function () {
@@ -136,6 +164,46 @@ describe('getDaysAgo', function () {
         $daysAgo = DateHelper::getDaysAgo(0);
 
         expect($daysAgo->format('Y-m-d'))->toBe('2024-06-15');
+    });
+
+    it('anchors "now" to the Romanian day', function () {
+        // Same defect as getCurrentDateForAnaf(): the SDK picks "now" itself, and
+        // callers format the result as an ANAF date.
+        Carbon::setTestNow(Carbon::create(2024, 6, 14, 22, 30, 0, 'UTC'));
+
+        expect(DateHelper::getDaysAgo(0)->format('Y-m-d'))->toBe('2024-06-15');
+        expect(DateHelper::getDaysAgo(5)->format('Y-m-d'))->toBe('2024-06-10');
+    });
+
+    it('returns the same instant regardless of the display zone', function () {
+        // Re-zoning must not move the point in time.
+        Carbon::setTestNow(Carbon::create(2024, 6, 14, 22, 30, 0, 'UTC'));
+
+        expect(DateHelper::getDaysAgo(0)->getTimestamp())
+            ->toBe(Carbon::create(2024, 6, 14, 22, 30, 0, 'UTC')->getTimestamp());
+    });
+});
+
+describe('caller-supplied timezones', function () {
+    // getDayRange()/toTimestamp() deliberately do NOT force Europe/Bucharest: the
+    // caller supplies both the date and its zone, and silently re-anchoring an
+    // explicit timezone would override stated intent. Callers who want ANAF's
+    // business day say so with the exposed constant. These pin that contract.
+
+    it('exposes the ANAF timezone for callers to anchor their own dates', function () {
+        expect(DateHelper::ANAF_TIMEZONE)->toBe('Europe/Bucharest');
+    });
+
+    it('respects an explicit Bucharest date when building a day range', function () {
+        $range = DateHelper::getDayRange(Carbon::parse('2024-03-15', DateHelper::ANAF_TIMEZONE));
+
+        expect($range['start'])->toBe(Carbon::create(2024, 3, 15, 0, 0, 0, DateHelper::ANAF_TIMEZONE)->getTimestamp() * 1000);
+        expect($range['end'])->toBe(Carbon::create(2024, 3, 15, 23, 59, 59, DateHelper::ANAF_TIMEZONE)->getTimestamp() * 1000 + 999);
+    });
+
+    it('respects an explicit Bucharest date when building a timestamp', function () {
+        expect(DateHelper::toTimestamp(Carbon::parse('2024-03-15', DateHelper::ANAF_TIMEZONE)))
+            ->toBe(Carbon::create(2024, 3, 15, 0, 0, 0, DateHelper::ANAF_TIMEZONE)->getTimestamp() * 1000);
     });
 });
 

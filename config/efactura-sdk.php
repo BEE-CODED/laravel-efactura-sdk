@@ -96,7 +96,9 @@ return [
     |--------------------------------------------------------------------------
     |
     | Configure rate limiting to prevent exceeding ANAF API quotas.
-    | All defaults are set to 50% of ANAF's actual limits for safety margin.
+    | Defaults are set to 50% of ANAF's actual limits for safety margin, with one
+    | exception: company_lookup_per_second is 1, which is 100% of ANAF's cap. A
+    | 50% margin cannot be expressed as an integer limit over a 1-second window.
     |
     | ANAF Official Limits:
     | - Global: 1000 calls/minute
@@ -105,6 +107,7 @@ return [
     | - Simple list: 1500/day/CUI
     | - Paginated list: 100,000/day/CUI
     | - Downloads: 10/day/message
+    | - Company lookup: 1 request/second (not halved - see above)
     |
     */
     'rate_limits' => [
@@ -128,7 +131,9 @@ return [
         // Downloads per message ID per day (ANAF limit: 10)
         'download_per_day_message' => env('EFACTURA_RATE_LIMIT_DOWNLOAD', 5),
 
-        // Company details lookup (PlatitorTvaRest) — ANAF limit: 1 request/second
+        // Company details lookup (PlatitorTvaRest) — ANAF limit: 1 request/second.
+        // This is the one default that is NOT halved: 1 is already ANAF's own cap,
+        // and any lower integer would disable lookups entirely.
         'company_lookup_per_second' => env('EFACTURA_RATE_LIMIT_COMPANY_LOOKUP', 1),
     ],
 ];

@@ -28,4 +28,6 @@ docs/superpowers/
 
 # MCP server
 mcp/node_modules/
-mcp/package-lock.json
+# mcp/package-lock.json is deliberately NOT ignored: the MCP server is a bundled
+# tool whose dist/index.js is committed and shipped to consumers, so its build
+# must be reproducible (and CI runs `npm ci`, which requires the lockfile).

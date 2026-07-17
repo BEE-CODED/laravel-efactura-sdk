@@ -325,7 +325,12 @@ final class XmlParser
         if ($statusValue === ExecutionStatus::Error->value) {
             $errors = $content['Errors'] ?? $content['errors'] ?? null;
             if ($errors !== null) {
-                $errorList = is_array($errors) ? $errors : [$errors];
+                // A single <Errors> element parses to one associative node
+                // ({"@": {...}, "_": ...}), not a list of errors. Guard with
+                // array_is_list so a lone node is wrapped and findErrorMessage()
+                // runs on the whole node, rather than array_map() walking its
+                // @/_ keys and leaking them into the result.
+                $errorList = is_array($errors) && array_is_list($errors) ? $errors : [$errors];
                 $result['errors'] = array_map(
                     fn ($err): string => self::findErrorMessage($err) ?? (is_string($err) ? $err : ''),
                     $errorList
@@ -368,7 +373,12 @@ final class XmlParser
             // Check for errors in header
             $errors = $content['Errors'] ?? $content['errors'] ?? $content['Error'] ?? $content['error'] ?? null;
             if ($errors !== null) {
-                $errorList = is_array($errors) ? $errors : [$errors];
+                // A single <Errors> element parses to one associative node
+                // ({"@": {...}, "_": ...}), not a list of errors. Guard with
+                // array_is_list so a lone node is wrapped and findErrorMessage()
+                // runs on the whole node, rather than array_map() walking its
+                // @/_ keys and leaking them into the result.
+                $errorList = is_array($errors) && array_is_list($errors) ? $errors : [$errors];
                 $errorMessages = array_map(
                     fn ($err): string => self::findErrorMessage($err) ?? 'Operation failed',
                     $errorList

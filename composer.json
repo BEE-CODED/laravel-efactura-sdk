@@ -64,7 +64,7 @@
                 "BeeCoded\\EFacturaSdk\\EFacturaServiceProvider"
             ],
             "aliases": {
-                "EFacturaSdk": "BeeCoded\\EFacturaSdk\\Facades\\EFactura"
+                "EFacturaSdkAuth": "BeeCoded\\EFacturaSdk\\Facades\\EFacturaSdkAuth"
             }
         }
     },

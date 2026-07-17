@@ -6,22 +6,12 @@ import { enumValuesContent } from "./content/enum-values.js";
 import { dtoStructuresContent } from "./content/dto-structures.js";
 import { sdkDocsContent } from "./content/sdk-docs.js";
 import { apiReferenceContent } from "./content/api-reference.js";
+import { VALID_ENUMS, VALID_DTOS, VALID_TOPICS, VALID_SERVICES } from "./registry.js";
 
 const server = new McpServer({
   name: "efactura-sdk",
   version: "1.0.0",
 });
-
-const VALID_ENUMS = [
-  "InvoiceTypeCode",
-  "MessageFilter",
-  "ExecutionStatus",
-  "DocumentStandardType",
-  "StandardType",
-  "TaxCategoryId",
-  "UploadStatusValue",
-  "RegistrationStatus",
-] as const;
 
 server.tool(
   "get-config-reference",
@@ -53,18 +43,6 @@ server.tool(
   }
 );
 
-const VALID_DTOS = [
-  "InvoiceData", "InvoiceLineData", "PartyData", "InvoiceAddressData",
-  "UploadOptionsData", "OAuthTokensData", "AuthUrlSettingsData",
-  "ListMessagesParamsData", "PaginatedMessagesParamsData",
-  "UploadResponseData", "StatusResponseData", "DownloadResponseData",
-  "ValidationResultData", "ListMessagesResponseData",
-  "PaginatedMessagesResponseData", "MessageDetailsData",
-  "CompanyData", "CompanyLookupResultData", "CompanyAddressData",
-  "VatRegistrationData", "SplitVatData", "InactiveStatusData",
-  "VatPeriodData",
-] as const;
-
 server.tool(
   "get-dto-structure",
   "Get the complete structure of a Laravel e-Factura SDK data transfer object",
@@ -81,12 +59,6 @@ server.tool(
   }
 );
 
-const VALID_TOPICS = [
-  "overview", "invoice-flow", "credit-notes", "tax-calculation",
-  "oauth-flow", "error-handling", "address-sanitization",
-  "rate-limiting", "company-lookup",
-] as const;
-
 server.tool(
   "get-sdk-docs",
   "Get documentation about the Laravel e-Factura SDK for a specific topic",
@@ -102,11 +74,6 @@ server.tool(
     return { content: [{ type: "text" as const, text: content }] };
   }
 );
-
-const VALID_SERVICES = [
-  "EFacturaClient", "AnafAuthenticator", "UblBuilder",
-  "InvoiceBuilder", "AnafDetailsClient",
-] as const;
 
 server.tool(
   "get-api-reference",

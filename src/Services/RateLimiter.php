@@ -15,7 +15,9 @@ use Illuminate\Support\Facades\Log;
  * - Global: 500/minute (ANAF limit: 1000)
  * - Per endpoint/CUI/message combinations
  *
- * All defaults are set to 50% of ANAF's actual limits for safety.
+ * Defaults are set to 50% of ANAF's actual limits for safety, with one exception:
+ * company_lookup_per_second is 1, which is 100% of ANAF's 1 req/sec cap. A 50%
+ * margin is unrepresentable as an integer limit over a 1-second window.
  *
  * Note: Uses atomic increment-then-check pattern via RateLimiter::attempt()
  * to prevent race conditions in concurrent environments.
@@ -48,7 +50,8 @@ class RateLimiter
         $this->dailyStore = new RateLimitStore('daily', 86400); // 24 hours
         $this->secondStore = new RateLimitStore('second', 1);
 
-        // Load from config with conservative defaults (50% of ANAF limits)
+        // Load from config with conservative defaults (50% of ANAF limits,
+        // except company_lookup_per_second - see the class docblock)
         $this->globalPerMinute = $this->validateLimit(
             (int) config('efactura-sdk.rate_limits.global_per_minute', 500),
             'global_per_minute'
@@ -318,8 +321,9 @@ class RateLimiter
     /**
      * Get remaining quota for various limits.
      *
-     * @param  string  $type  The rate limit type ('global', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download')
-     * @param  string  $identifier  The identifier (CUI or message ID) - required for all types except 'global'
+     * @param  string  $type  The rate limit type ('global', 'company_lookup', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download')
+     * @param  string  $identifier  The identifier (CUI or message ID) - required for all types
+     *                              except 'global' and 'company_lookup', which are single buckets
      * @return array{limit: int, remaining: int, resetsIn: int}
      *
      * @throws \InvalidArgumentException If type is unknown or identifier is empty for types that require it
@@ -327,13 +331,16 @@ class RateLimiter
     public function getRemainingQuota(string $type, string $identifier = ''): array
     {
         // Validate type first
-        $validTypes = ['global', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download'];
+        $validTypes = ['global', 'company_lookup', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download'];
         if (! in_array($type, $validTypes, true)) {
             throw new \InvalidArgumentException("Unknown rate limit type: {$type}");
         }
 
-        // Validate identifier for types that require it
-        if ($type !== 'global' && trim($identifier) === '') {
+        // Validate identifier for types that require it. 'global' and
+        // 'company_lookup' are single buckets - the limit is per request, not per
+        // CUI or message - so they take no identifier.
+        $singleBucketTypes = ['global', 'company_lookup'];
+        if (! in_array($type, $singleBucketTypes, true) && trim($identifier) === '') {
             throw new \InvalidArgumentException(
                 "Identifier is required for rate limit type: {$type}"
             );
@@ -344,6 +351,11 @@ class RateLimiter
                 'limit' => $this->globalPerMinute,
                 'remaining' => $this->minuteStore->getRemaining('global', $this->globalPerMinute),
                 'resetsIn' => $this->minuteStore->availableIn('global'),
+            ],
+            'company_lookup' => [
+                'limit' => $this->companyLookupPerSecond,
+                'remaining' => $this->secondStore->getRemaining('company_lookup', $this->companyLookupPerSecond),
+                'resetsIn' => $this->secondStore->availableIn('company_lookup'),
             ],
             'rasp_upload' => [
                 'limit' => $this->raspUploadPerDayCui,

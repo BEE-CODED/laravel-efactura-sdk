@@ -4,6 +4,27 @@ import { enumValuesContent } from "../src/content/enum-values.js";
 import { dtoStructuresContent } from "../src/content/dto-structures.js";
 import { sdkDocsContent } from "../src/content/sdk-docs.js";
 import { apiReferenceContent } from "../src/content/api-reference.js";
+import { VALID_ENUMS, VALID_DTOS, VALID_TOPICS, VALID_SERVICES } from "../src/registry.js";
+
+// Registry/content parity. These four assertions are the reason a topic can no
+// longer ship untested: previously each list below was re-declared in this file,
+// so `migration-v2-v3` was added to the server and silently skipped here.
+//
+// Checking both directions matters:
+//   registry \ content = server advertises a topic that returns an error
+//   content \ registry = documentation written but unreachable through the tool
+describe("registry/content parity", () => {
+  const cases: [string, readonly string[], Record<string, string>][] = [
+    ["VALID_ENUMS / enumValuesContent", VALID_ENUMS, enumValuesContent],
+    ["VALID_DTOS / dtoStructuresContent", VALID_DTOS, dtoStructuresContent],
+    ["VALID_TOPICS / sdkDocsContent", VALID_TOPICS, sdkDocsContent],
+    ["VALID_SERVICES / apiReferenceContent", VALID_SERVICES, apiReferenceContent],
+  ];
+
+  it.each(cases)("%s expose exactly the same keys", (_label, registry, content) => {
+    expect([...registry].sort()).toEqual(Object.keys(content).sort());
+  });
+});
 
 describe("get-config-reference", () => {
   it("returns non-empty markdown content", () => {
@@ -21,17 +42,6 @@ describe("get-config-reference", () => {
   });
 });
 
-const VALID_ENUMS = [
-  "InvoiceTypeCode",
-  "MessageFilter",
-  "ExecutionStatus",
-  "DocumentStandardType",
-  "StandardType",
-  "TaxCategoryId",
-  "UploadStatusValue",
-  "RegistrationStatus",
-];
-
 describe("get-enum-values", () => {
   it.each(VALID_ENUMS)("returns content for %s", (name) => {
     expect(enumValuesContent[name]).toBeTruthy();
@@ -43,18 +53,6 @@ describe("get-enum-values", () => {
     expect(enumValuesContent["FakeEnum"]).toBeUndefined();
   });
 });
-
-const VALID_DTOS = [
-  "InvoiceData", "InvoiceLineData", "PartyData", "InvoiceAddressData",
-  "UploadOptionsData", "OAuthTokensData", "AuthUrlSettingsData",
-  "ListMessagesParamsData", "PaginatedMessagesParamsData",
-  "UploadResponseData", "StatusResponseData", "DownloadResponseData",
-  "ValidationResultData", "ListMessagesResponseData",
-  "PaginatedMessagesResponseData", "MessageDetailsData",
-  "CompanyData", "CompanyLookupResultData", "CompanyAddressData",
-  "VatRegistrationData", "SplitVatData", "InactiveStatusData",
-  "VatPeriodData",
-];
 
 describe("get-dto-structure", () => {
   it.each(VALID_DTOS)("returns content for %s", (name) => {
@@ -71,12 +69,6 @@ describe("get-dto-structure", () => {
     expect(dtoStructuresContent["FakeDto"]).toBeUndefined();
   });
 });
-
-const VALID_TOPICS = [
-  "overview", "invoice-flow", "credit-notes", "tax-calculation",
-  "oauth-flow", "error-handling", "address-sanitization",
-  "rate-limiting", "company-lookup",
-];
 
 describe("get-sdk-docs", () => {
   it.each(VALID_TOPICS)("returns content for topic '%s'", (topic) => {
@@ -109,11 +101,6 @@ describe("get-sdk-docs", () => {
     expect(sdkDocsContent["fake-topic"]).toBeUndefined();
   });
 });
-
-const VALID_SERVICES = [
-  "EFacturaClient", "AnafAuthenticator", "UblBuilder",
-  "InvoiceBuilder", "AnafDetailsClient",
-];
 
 describe("get-api-reference", () => {
   it.each(VALID_SERVICES)("returns content for %s", (service) => {

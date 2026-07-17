@@ -14,6 +14,7 @@ public function __construct(
     string $refreshToken,
     ?CarbonInterface $expiresAt = null,
     ?AnafAuthenticatorInterface $authenticator = null,
+    ?Closure $tokenReloader = null,          // added in v3.0.0
 )
 \`\`\`
 
@@ -28,10 +29,40 @@ public static function fromTokens(
     string $vatNumber,
     OAuthTokensData $tokens,
     ?AnafAuthenticatorInterface $authenticator = null,
+    ?Closure $tokenReloader = null,          // added in v3.0.0
 ): self
 \`\`\`
 
 Use \`fromTokens()\` when you already have an \`OAuthTokensData\` object (e.g. loaded from storage).
+
+## \`$tokenReloader\` — multi-worker token rotation (new in v3.0.0, optional)
+
+\`(Closure(): ?OAuthTokensData)|null\`. Both parameters are **optional and additive** — existing
+call sites keep working unchanged. Strongly recommended for multi-worker deployments.
+
+ANAF **rotates** refresh tokens: refreshing invalidates the old one. When two workers hold the same
+tokens and both find them expired, one wins the refresh lock and rotates; the loser then wakes up
+holding a refresh token that is already dead and its refresh fails. The reloader is invoked **only
+after the lock is acquired**, so the loser re-reads whatever the winner just persisted and adopts
+it instead of spending a spent token.
+
+\`\`\`php
+$client = EFacturaClient::fromTokens(
+    vatNumber: '49296198',
+    tokens: $stored,
+    tokenReloader: fn () => EfacturaToken::where('cif', '49296198')->first()?->toOAuthTokensData(),
+);
+\`\`\`
+
+Contract:
+- Return the tokens **currently in your store**, or \`null\` if there are none.
+- The returned tokens are adopted **unconditionally**, even if themselves expired — the stored
+  refresh token is by definition at least as fresh as the in-memory one.
+- It must be cheap and side-effect free; it runs while the refresh lock is held.
+- It **never throws through**: an exception is caught and logged as a warning, and the client falls
+  back to its in-memory tokens (exactly the v2 behaviour).
+- It does **not** mark \`wasTokenRefreshed()\` — the tokens came out of your store, so there is
+  nothing new to write back.
 
 ## Public Methods
 
@@ -66,9 +97,50 @@ if ($client->wasTokenRefreshed()) {
 }
 \`\`\`
 
+## Retry Behaviour (changed in v3.0.0)
+
+Retries are governed by \`http.retry_times\` / \`http.retry_delay\`, but **uploads are deliberately
+excluded from most of it**. ANAF accepts no idempotency key and mints a fresh \`index_incarcare\`
+for every accepted POST, so a blind retry files the same invoice twice — a duplicate legal
+submission the recipient also receives twice.
+
+| Failure | \`uploadDocument()\` / \`uploadB2CDocument()\` | Reads (status, list, download) |
+|---|---|---|
+| HTTP 5xx | **no retry** — \`ApiException\` on attempt 1 | retried up to \`retry_times\` |
+| Read timeout (cURL errno 28) | **no retry** — \`ApiException\` on attempt 1 | retried |
+| Unclassifiable transport error | **no retry** — \`ApiException\` on attempt 1 | retried |
+| DNS / connect / TLS failure (errno 5, 6, 7, 35) | retried — provably never left the machine | retried |
+| HTTP 4xx (incl. 429) | never retried | never retried |
+
+An upload that fails is therefore **not proof the invoice was not filed**. Before re-submitting,
+reconcile with \`getMessages()\` — do not blindly re-upload.
+
+\`validateXml()\`, \`verifySignature()\` and \`convertXmlToPdf()\` retry unconditionally: they are pure
+functions of the posted XML and file nothing.
+
 ## Rate Limiting
 
 Built-in rate limiting is enforced via the \`RateLimiter\` class. When the limit is exceeded, a \`RateLimitExceededException\` is thrown. Access the limiter directly via \`getRateLimiter()\`.
+
+**Since v3.0.0 every retry attempt consumes global quota** (ANAF meters per HTTP request, so each
+retry calls \`checkGlobal()\` again). With a tight \`global_per_minute\`, a retrying read can now throw
+\`RateLimitExceededException\` part-way through where v2 raised \`ApiException\` after exhausting its
+attempts. Catch \`RateLimitExceededException\` **before** \`ApiException\` — it does not extend it.
+
+## \`downloadDocument()\` — non-ZIP bodies now throw (changed in v3.0.0)
+
+A \`200\` from \`/descarcare\` is not proof of success: ANAF reports some errors as \`200\` with a JSON
+body. v2 handed that body back as a "successful" download whose \`saveTo()\` wrote JSON into a
+\`.zip\`. v3 inspects the body and throws \`ApiException\` unless it is a real ZIP (\`PK\` signature):
+
+| Body | v2 | v3 |
+|---|---|---|
+| \`{"eroare":"Nu aveti dreptul"}\` (200) | returned as content ✗ | \`ApiException\` — message is ANAF's own, e.g. \`Nu aveti dreptul\`; \`->statusCode\` is \`200\` |
+| HTML maintenance page (200) | returned as content ✗ | \`ApiException: ANAF did not return a ZIP archive for download ID (content-type: text/html).\` |
+| plain text (200) | returned as content ✗ | \`ApiException: ANAF did not return a ZIP archive for download ID (content-type: text/plain).\` |
+| real ZIP (\`PK\\x03\\x04\` / empty \`PK\\x05\\x06\`) | returned | returned (unchanged) |
+
+\`->details\` carries the first 500 bytes of the offending body for the non-ZIP case.
 
 ## Usage Example
 
@@ -103,10 +175,22 @@ if ($client->wasTokenRefreshed()) {
 
 | Exception | When Thrown |
 |-----------|-------------|
-| \`ValidationException\` | XML validation fails |
+| \`ValidationException\` | An **argument** is unusable or an endpoint is unconfigured — empty XML; an empty/non-numeric upload or download ID; \`days\` outside 1–60; a non-positive/out-of-order timestamp or a range exceeding 60 days; \`page\` < 1; or a missing \`endpoints.services.*\` config value. **Not** thrown when a document fails ANAF validation. |
 | \`AuthenticationException\` | Token refresh fails or credentials are invalid |
 | \`ApiException\` | ANAF API returns an error response |
 | \`RateLimitExceededException\` | Rate limit is exceeded |
+
+> **\`validateXml()\` / \`verifySignature()\` never throw on an invalid document.** A document
+> that ANAF rejects comes back as a normal \`ValidationResultData\` with \`valid === false\`.
+> Check the flag — do not wrap the call in \`try/catch\` and assume success:
+>
+> \`\`\`php
+> $result = $client->validateXml($xml, DocumentStandardType::FACT1);
+>
+> if (! $result->valid) {
+>     // $result->details / $result->errors explain why
+> }
+> \`\`\`
 `,
 
   AnafAuthenticator: `# AnafAuthenticator
@@ -250,9 +334,16 @@ Validates the \`InvoiceData\` DTO and generates a CIUS-RO compliant UBL 2.1 XML 
 |-------|-------|
 | \`name\` | Required, max 100 chars |
 | \`description\` | Optional, max 200 chars |
-| \`quantity\` | Cannot be zero (negative values allowed for credit notes) |
-| \`unitPrice\` | Must be >= 0 |
+| \`quantity\` | Cannot be zero (negative values allowed for credit notes). Filed with 2–6 decimals |
+| \`unitPrice\` | Must be >= 0. Filed with 2–6 decimals |
 | \`taxPercent\` | Must be in range 0–100 |
+| \`taxPercent\` / \`taxAmount\` | When \`supplier->isVatPayer === false\`, **both must be zero** — otherwise \`ValidationException: Line N: A supplier that is not registered for VAT cannot charge VAT (BR-O-09)\` (v3.0.0) |
+
+### Tax Accounting Currency (v3.0.0)
+
+| Field | Rules |
+|-------|-------|
+| \`taxAmountRon\` | **Required** when \`currency !== 'RON'\`; **rejected** when \`currency === 'RON'\`; must match the sign of \`getTotalVat()\` |
 
 ### Party (Supplier / Customer)
 
@@ -260,6 +351,7 @@ Validates the \`InvoiceData\` DTO and generates a CIUS-RO compliant UBL 2.1 XML 
 |-------|-------|
 | \`registrationName\` | Required, max 200 chars |
 | \`companyId\` | Required |
+| \`isVatPayer\` | Required at construction — no default since v3.0.0 (an omission fails before the builder is reached) |
 
 ### Address
 
@@ -318,6 +410,7 @@ Can be instantiated directly with \`new AnafDetailsClient()\` or used via the \`
 ## Notes
 
 - No authentication required — uses the public ANAF company details API
+- **Honours \`efactura-sdk.http.retry_times\` and \`http.retry_delay\` (since v3.0.0).** Previously it ignored both and was pinned to \`BaseApiClient\`'s hardcoded \`MAX_TRY_COUNT = 3\` / \`RETRY_DELAY = 5\`. Company lookups are reads, so retrying is always safe and applies to transport failures and 5xx alike. If you had tuned these keys for \`EFacturaClient\`, they now also change lookup behaviour — a \`retry_times\` of \`6\` means up to six lookup attempts with a blocking \`sleep(retry_delay)\` between each.
 - Maximum batch size: **100** VAT codes per request (\`MAX_BATCH_SIZE = 100\`, ANAF v9 payload limit)
 - Rate limit: **1 request/second** (\`company_lookup_per_second\`, ANAF limit). Throws \`RateLimitExceededException\` (HTTP 429, \`->retryAfterSeconds\`) when exceeded — independent of the 100-CUI payload cap. Gated by \`rate_limits.enabled\`.
 - Error handling: API/network errors return \`CompanyLookupResultData::failure()\` (check \`$result->error\`). The rate-limit breach is the exception — it **throws** \`RateLimitExceededException\` rather than returning a failure result.
@@ -341,7 +434,7 @@ Looks up multiple companies in a single API call. The \`$vatCodes\` array must c
 
 ### isValidVatCode
 
-Performs **format validation only** — does not make an API call. Returns \`true\` if the VAT code matches the expected format.
+Performs **format *and* checksum validation** — does not make an API call. Delegates to \`VatNumberValidator::isValid()\`, which runs the mod-11 CUI checksum (or the full CNP check for 13-digit values), so a well-formed but bogus code like \`'RO12345678'\` returns \`false\`. If you want the format check on its own, call \`VatNumberValidator::isValidFormat()\` instead.
 
 ## Usage Example
 
@@ -354,8 +447,8 @@ $result = AnafDetails::getCompanyData('12345678');
 // Batch lookup
 $result = AnafDetails::batchGetCompanyData(['12345678', '87654321']);
 
-// Format validation (no API call)
-$isValid = AnafDetails::isValidVatCode('12345678');
+// Format + checksum validation (no API call)
+$isValid = AnafDetails::isValidVatCode('14399840');
 \`\`\`
 
 ## Error Handling

@@ -121,6 +121,59 @@ describe('OAuthTokensData', function () {
         expect($tokens)->toBeArray();
     });
 
+    describe('::from() round-trip', function () {
+        // fromAnafResponse() is a laravel-data MAGIC creation method, so it intercepts
+        // every array handed to ::from() -- including this DTO's own toArray() shape.
+        // Without a shape check that lands on $response['access_token'] and fatals.
+
+        it('round-trips its own toArray()', function () {
+            $original = new OAuthTokensData(
+                accessToken: 'AT',
+                refreshToken: 'RT',
+                expiresAt: Carbon::create(2024, 6, 15, 13, 0, 0),
+                expiresIn: 3600,
+                tokenType: 'Bearer',
+            );
+
+            $restored = OAuthTokensData::from($original->toArray());
+
+            expect($restored->accessToken)->toBe('AT');
+            expect($restored->refreshToken)->toBe('RT');
+            expect($restored->expiresIn)->toBe(3600);
+            expect($restored->tokenType)->toBe('Bearer');
+            expect($restored->expiresAt)->toBeInstanceOf(Carbon::class);
+            expect($restored->expiresAt->equalTo($original->expiresAt))->toBeTrue();
+        });
+
+        it('accepts a minimal camelCase payload', function () {
+            $tokens = OAuthTokensData::from(['accessToken' => 'AT', 'refreshToken' => 'RT']);
+
+            expect($tokens->accessToken)->toBe('AT');
+            expect($tokens->refreshToken)->toBe('RT');
+            expect($tokens->tokenType)->toBe('Bearer');
+            expect($tokens->expiresAt)->toBeNull();
+        });
+
+        it('still routes an ANAF wire payload through fromAnafResponse', function () {
+            // The snake_case wire shape must keep its expires_in -> expiresAt derivation.
+            Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));
+
+            $tokens = OAuthTokensData::from([
+                'access_token' => 'access_123',
+                'refresh_token' => 'refresh_456',
+                'expires_in' => 3600,
+                'token_type' => 'Bearer',
+            ]);
+
+            expect($tokens->accessToken)->toBe('access_123');
+            expect($tokens->refreshToken)->toBe('refresh_456');
+            expect($tokens->expiresIn)->toBe(3600);
+            expect($tokens->expiresAt->format('Y-m-d H:i:s'))->toBe('2024-06-15 13:00:00');
+
+            Carbon::setTestNow();
+        });
+    });
+
     describe('fromAnafResponse', function () {
         it('parses ANAF token response', function () {
             Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));

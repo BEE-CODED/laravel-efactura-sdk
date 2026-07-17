@@ -27,6 +27,13 @@ describe('UblBuilder', function () {
                     county: 'Bucuresti',
                     countryCode: 'RO',
                 ),
+                // This fixture is why isVatPayer carries no default. Both parties
+                // hold RO VAT numbers and the line charges 19%, but the flag used
+                // to default to false: the supplier was filed as "not subject to
+                // VAT", so every line came out as VAT category O carrying a 19%
+                // rate and a 19.00 VAT amount — a fatal BR-O-05/BR-O-09 pair — and
+                // the customer silently lost its VAT identifier (BT-48) too.
+                isVatPayer: true,
             ),
             customer: new PartyData(
                 registrationName: 'Customer SRL',
@@ -38,6 +45,7 @@ describe('UblBuilder', function () {
                     county: 'Cluj',
                     countryCode: 'RO',
                 ),
+                isVatPayer: true,
             ),
             lines: [
                 new InvoiceLineData(
@@ -79,6 +87,7 @@ describe('UblBuilder', function () {
                     county: 'County',
                     countryCode: 'RO',
                 ),
+                isVatPayer: true,
             ),
             customer: new PartyData(
                 registrationName: 'Customer',
@@ -90,6 +99,7 @@ describe('UblBuilder', function () {
                     county: 'County',
                     countryCode: 'RO',
                 ),
+                isVatPayer: true,
             ),
             lines: [
                 new InvoiceLineData(
@@ -124,6 +134,7 @@ describe('UblBuilder', function () {
                     county: 'County',
                     countryCode: 'RO',
                 ),
+                isVatPayer: true,
             ),
             customer: new PartyData(
                 registrationName: 'Customer',
@@ -135,6 +146,7 @@ describe('UblBuilder', function () {
                     county: 'County',
                     countryCode: 'RO',
                 ),
+                isVatPayer: true,
             ),
             lines: [], // Empty lines should fail
         );
@@ -163,6 +175,7 @@ describe('UblBuilder', function () {
                     county: 'County',
                     countryCode: 'RO',
                 ),
+                isVatPayer: true,
             ),
             customer: new PartyData(
                 registrationName: 'Customer',
@@ -174,6 +187,7 @@ describe('UblBuilder', function () {
                     county: 'County',
                     countryCode: 'RO',
                 ),
+                isVatPayer: true,
             ),
             lines: [
                 new InvoiceLineData(

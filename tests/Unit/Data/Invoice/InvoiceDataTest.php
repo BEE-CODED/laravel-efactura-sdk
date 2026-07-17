@@ -214,6 +214,21 @@ describe('getTotalExcludingVat', function () {
 
         expect($invoice->getTotalExcludingVat())->toBe(100.00);
     });
+
+    // The filed XML sums per-line ROUNDED net amounts (one cbc:LineExtensionAmount
+    // per line, each capped at 2 decimals by BR-DEC-*), so the helper must round
+    // per line too. Rounding a raw sum once at the end loses a bani per pair of
+    // sub-cent lines against the document the customer actually receives.
+    it('sums per-line rounded amounts, as the filed XML does', function () {
+        $lines = [
+            new InvoiceLineData(name: 'Product 1', quantity: 0.5, unitPrice: 0.01, taxAmount: 0.00, taxPercent: 0),
+            new InvoiceLineData(name: 'Product 2', quantity: 0.5, unitPrice: 0.01, taxAmount: 0.00, taxPercent: 0),
+        ];
+        $invoice = createTestInvoice($lines);
+
+        // Each line files as round(0.005, 2) = 0.01, so the document total is 0.02.
+        expect($invoice->getTotalExcludingVat())->toBe(0.02);
+    });
 });
 
 describe('getTotalVat', function () {
@@ -298,6 +313,34 @@ describe('getTotalVat', function () {
 
         // 19.00 + 19.01 = 38.01
         expect($invoice->getTotalVat())->toBe(38.01);
+    });
+
+    // The filed XML rounds VAT once PER TAX-RATE GROUP (each cac:TaxSubtotal
+    // carries its own cbc:TaxAmount) and the document total BT-110 is the sum of
+    // those rounded subtotals. Rounding the raw all-lines sum once therefore
+    // diverges as soon as two rate groups each carry a sub-cent residue.
+    it('sums per-tax-group rounded amounts, as the filed XML does', function () {
+        $lines = [
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 1.00, taxAmount: 0.005, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 1.00, taxAmount: 0.005, taxPercent: 5),
+        ];
+        $invoice = createTestInvoice($lines);
+
+        // Two groups, each rounding to 0.01 in its own cac:TaxSubtotal -> 0.02.
+        expect($invoice->getTotalVat())->toBe(0.02);
+    });
+
+    // ...but WITHIN one rate group the XML rounds the accumulated total once, so
+    // per-line rounding would be wrong here. This pins the distinction.
+    it('rounds once per group, not per line, when lines share a tax rate', function () {
+        $lines = [
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 1.00, taxAmount: 0.005, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 1.00, taxAmount: 0.005, taxPercent: 19),
+        ];
+        $invoice = createTestInvoice($lines);
+
+        // One group: round(0.005 + 0.005, 2) = 0.01 (NOT 0.01 + 0.01 = 0.02).
+        expect($invoice->getTotalVat())->toBe(0.01);
     });
 });
 
@@ -424,6 +467,7 @@ describe('InvoiceData serialisation contract', function () {
         expect(array_keys(createTestInvoice()->toArray()))->toBe([
             'invoiceNumber', 'issueDate', 'supplier', 'customer', 'lines',
             'dueDate', 'currency', 'paymentIban', 'invoiceTypeCode', 'precedingInvoiceNumber',
+            'taxAmountRon',
         ]);
     });
 
@@ -433,5 +477,17 @@ describe('InvoiceData serialisation contract', function () {
         expect(array_keys(InvoiceData::getValidationRules([])))
             ->not->toContain('currency')
             ->and(array_keys(InvoiceData::getValidationRules([])))->not->toContain('dueDate');
+    });
+
+    it('carries taxAmountRon through ::from() hydration', function () {
+        // taxAmountRon is body-declared like its siblings, so it must survive the
+        // ::from() path that direct-writes un-promoted properties.
+        $invoice = InvoiceData::from([
+            ...createTestInvoice()->toArray(),
+            'currency' => 'EUR',
+            'taxAmountRon' => 944.30,
+        ]);
+
+        expect($invoice->taxAmountRon)->toBe(944.30);
     });
 });

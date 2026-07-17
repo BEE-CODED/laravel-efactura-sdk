@@ -30,6 +30,143 @@ Publish the configuration file:
 php artisan vendor:publish --tag=efactura-sdk-config
 ```
 
+## Migrating from v2 to v3
+
+v3.0.0 is a major release with breaking changes. Some fail loudly; **several are silent** and
+change the document you file with ANAF. Work through the steps in order.
+
+> Using an AI assistant? The MCP server exposes this as a full topic with every exception message
+> and code change: `get-sdk-docs` with `topic: "migration-v2-v3"`. See
+> [AI Assistant Integration (MCP)](#ai-assistant-integration-mcp).
+
+### 1. Facade alias rename (loud)
+
+The auto-discovered alias `EFacturaSdk` → `BeeCoded\EFacturaSdk\Facades\EFactura` pointed at a
+class that **never existed**, so it was always broken. It is now `EFacturaSdkAuth` →
+`BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth`. Delete any hand-written alias for the old name and
+import the facade directly.
+
+### 2. `PartyData::$isVatPayer` is now required — and moved (loud, or silently wrong)
+
+It lost its `false` default and **moved from 5th to 4th constructor position**, ahead of
+`$registrationNumber`. A default let a caller who simply forgot the flag file a VAT-registered
+company as *not subject to VAT* — a document ANAF **accepts**, with no error to notice.
+
+```php
+$supplier = new PartyData(
+    registrationName: 'Acme SRL',
+    companyId: '49296198',
+    address: $address,
+    isVatPayer: true,                // ← REQUIRED, on BOTH supplier and customer
+    registrationNumber: 'J40/1234/2020',
+);
+```
+
+Every shape of the old call now fails loudly. Omitting the flag raises `ArgumentCountError` (direct
+construction), `CannotCreateData` (`::from()`), or `The is vat payer field is required.`
+(`::validate()`).
+
+A **positional v2 call** passes `$registrationNumber` into `$isVatPayer`, and that was the dangerous
+case. In a file without `declare(strict_types=1)` — the Laravel app default — the ONRC string
+coerced to `isVatPayer = true`, silently flipping a non-VAT-payer supplier to a VAT payer: every
+line moved from VAT category O to Z, and the party gained a BT-31 seller VAT id it does not hold.
+The document stayed internally consistent, so ANAF **accepted and filed** it. v2 defaulted this flag
+to `false`, so the population most exposed is exactly the one that relied on that default: Romanian
+non-VAT-payers. `$isVatPayer` is therefore typed `bool|string` and rejects a string:
+
+```php
+new PartyData('Acme SRL', '49296198', $address, 'J40/1234/2020');
+// InvalidArgumentException: PartyData::$isVatPayer must be a bool, received the string
+// "J40/1234/2020". Note that v3 moved $isVatPayer from the 5th constructor position to the
+// 4th and removed its `false` default...
+```
+
+Only `true`, `false`, `1`, `0`, `'1'` and `'0'` are accepted — exactly what Laravel's `boolean` rule
+accepts, so `::from()` and `::validateAndCreate()` payloads are unaffected. Grep for
+`new PartyData(` and convert every call to named arguments.
+
+### 3. Non-RON invoices must declare `taxAmountRon` (loud)
+
+`InvoiceData` gained an optional trailing `?float $taxAmountRon` (BT-111) that is **required when
+`currency !== 'RON'`** and **rejected when it is** — otherwise `ValidationException`.
+
+v2 emitted the document-currency amount unchanged under `currencyID="RON"`: a EUR invoice with
+190.00 EUR of VAT filed `190.00` RON instead of ~945. ANAF cannot verify a conversion, so it was
+**accepted and filed**. Pass the converted amount (not a rate — the rate is never transmitted):
+
+```php
+$invoice = new InvoiceData(
+    // ...
+    currency: 'EUR',
+    taxAmountRon: 944.30,   // your ledger's BNR-rate figure for the VAT total
+);
+```
+
+RON-only apps need no change.
+
+### 4. A non-VAT-payer supplier may not charge VAT (loud)
+
+Every line must be `taxPercent: 0`, `taxAmount: 0.0`, else
+`ValidationException: Line N: A supplier that is not registered for VAT cannot charge VAT (BR-O-09)`.
+
+### 5. XML output changes (silent — regenerate and diff)
+
+| Change | v2 | v3 |
+|---|---|---|
+| Line `cbc:Percent` under category `O` | emitted → ANAF rejected (BR-O-05) | omitted (document-level `TaxSubtotal` keeps it) |
+| Customer `PartyTaxScheme`, non-VAT supplier | emitted → rejected (BR-O-02) | suppressed |
+| `quantity` / `PriceAmount` decimals | always 2 — `1.375`→`1.38`, `0.0075`→`0.01` | 2–6 — filed exactly |
+| Credit-note `dueDate` | dropped entirely | filed as `PaymentMeans/PaymentDueDate` |
+| `PaymentMeans` emitted for | IBAN only | due date **or** IBAN |
+| Greek/NI VAT ids | `EL123456789` → `GREL123456789` | recognised, left alone |
+
+If you worked around the 2-decimal truncation or the double-prefixing, **remove the workaround** —
+it will now double-apply.
+
+### 6. Total helpers change at sub-cent boundaries (silent)
+
+`getTotalExcludingVat()`, `getTotalVat()` and `getTotalIncludingVat()` now reproduce the filed XML
+exactly (per-line rounding, and per-tax-group rounding respectively). Only sub-cent inputs move:
+two lines of `0.5 × 0.01` file as `0.02`, where v2's helper returned `0.01`. Re-reconcile any
+invoice with sub-cent line amounts.
+
+The credit-note **sign convention is unchanged**: the helpers report the positive sense the lines
+are supplied in, while the filed XML states the negation. Do not "fix" this by negating.
+
+### 7. Runtime behaviour (silent — bites in production)
+
+- **Uploads no longer auto-retry** on 5xx, read timeouts, or unclassifiable transport errors.
+  ANAF mints a fresh `index_incarcare` per accepted POST, so a blind retry files the invoice twice.
+  **A failed upload is not proof the invoice was not filed** — remove blind retries and reconcile
+  via `getMessages()` before re-sending. Reads still retry; only pre-send errors (DNS/connect/TLS)
+  retry an upload.
+- **Each retry consumes global rate-limit quota**, so a retrying read can throw
+  `RateLimitExceededException` where v2 raised `ApiException`. It does **not** extend
+  `ApiException` — catch it **first**.
+- **`downloadDocument()` throws `ApiException` on non-ZIP bodies.** ANAF reports some errors as
+  `200` + JSON; v2 handed that back as a "successful" download that wrote JSON into a `.zip`.
+- **`getCurrentDateForAnaf()` / `getDaysAgo()` now resolve in `Europe/Bucharest`** (new constant
+  `DateHelper::ANAF_TIMEZONE`). On a UTC server between midnight and 02:00/03:00 Bucharest, v2
+  reported yesterday. `toTimestamp()` / `getDayRange()` still honour **your** timezone — you supply
+  the date there.
+- **`AnafDetailsClient` now honours `http.retry_times` / `http.retry_delay`** (it ignored them
+  before). If you tuned those keys, lookups now retry differently.
+
+### 8. Additive — adopt if relevant
+
+- `EFacturaClient::__construct()` / `::fromTokens()` gained an optional `?Closure $tokenReloader`.
+  ANAF rotates refresh tokens; in multi-worker deployments the worker that loses the refresh race
+  otherwise spends a dead token. Recommended if you run more than one worker.
+- `RateLimiter::getRemainingQuota('company_lookup')` — new single-bucket arm, takes no identifier.
+- `validateXml()` / `verifySignature()` now populate `$result->errors` from ANAF's
+  `Messages[].message` and `$result->info` from `trace_id`. Both previously came back `null`.
+- `BaseApiClient::call()` / `callRaw()` gained `bool $idempotent = true` **before** `$tryCount` —
+  only relevant if you subclass, but a positional `$tryCount` now lands in `$idempotent`.
+
+**Not a v3 change:** `nesbot/carbon` was already in `require`; `taxAmount` became required on
+`InvoiceLineData` back in **v2.0**; `CompanyData::$isVatPayer` (the lookup DTO) still defaults to
+`false`.
+
 ## Configuration
 
 Add the following to your `.env` file:
@@ -42,6 +179,8 @@ EFACTURA_REDIRECT_URI=https://your-app.com/efactura/callback
 ```
 
 ### Configuration Options
+
+The keys you are most likely to change (**excerpt** — see below for the rest):
 
 ```php
 // config/efactura-sdk.php
@@ -56,14 +195,26 @@ return [
 
     'http' => [
         'timeout' => env('EFACTURA_TIMEOUT', 30),
+        // Read by EFacturaClient and AnafDetailsClient alike (since v3.0.0).
+        // Governs READS only — uploads do not auto-retry, see "Migrating from v2 to v3".
         'retry_times' => env('EFACTURA_RETRY_TIMES', 3),
         'retry_delay' => env('EFACTURA_RETRY_DELAY', 5),
     ],
 
     'logging' => [
         'channel' => env('EFACTURA_LOG_CHANNEL', 'efactura-sdk'),
+        'debug' => env('EFACTURA_DEBUG', false), // logs full request/response bodies
     ],
+
+    // ... plus 'endpoints' (ANAF base URLs — rarely changed) and 'rate_limits'
+    // (documented under "Rate Limiting Configuration" below).
 ];
+```
+
+Publish the file to see every key with its comments:
+
+```bash
+php artisan vendor:publish --tag=efactura-sdk-config
 ```
 
 ### Logging Channel (Recommended)
@@ -81,7 +232,7 @@ Add a dedicated logging channel in `config/logging.php`:
 
 ### Rate Limiting Configuration
 
-The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. All defaults are set to **50% of ANAF's actual limits** for safety.
+The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. Most defaults are set to **50% of ANAF's actual limits** for safety. The one exception is `company_lookup_per_second`, which defaults to **1 — 100% of ANAF's 1 request/second cap**, since that limit admits no lower positive value.
 
 ```env
 # Enable/disable rate limiting (default: true)
@@ -104,6 +255,9 @@ EFACTURA_RATE_LIMIT_PAGINATED_LIST=50000
 
 # Downloads per message per day (ANAF limit: 10, default: 5)
 EFACTURA_RATE_LIMIT_DOWNLOAD=5
+
+# Company lookups per second (ANAF limit: 1, default: 1 — per request, not per CUI)
+EFACTURA_RATE_LIMIT_COMPANY_LOOKUP=1
 ```
 
 **ANAF Official Rate Limits:**
@@ -116,6 +270,7 @@ EFACTURA_RATE_LIMIT_DOWNLOAD=5
 | `/lista` (simple) | 1,500/day | 750/day | Per CUI |
 | `/lista` (paginated) | 100,000/day | 50,000/day | Per CUI |
 | `/descarcare` (download) | 10/day | 5/day | Per message ID |
+| `PlatitorTvaRest` (company lookup) | 1/second | 1/second | Per request (global, not per CUI) |
 
 ## Usage
 
@@ -126,6 +281,7 @@ The SDK provides a stateless OAuth implementation. **You are responsible for sto
 #### Step 1: Redirect User to ANAF Authorization
 
 ```php
+use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth;
 
 // Generate authorization URL
@@ -615,7 +771,9 @@ $line->getLineTotal();        // 500.00 (quantity * unitPrice)
 $line->getTaxAmount();        // 95.00 (returns the pre-computed taxAmount)
 $line->getLineTotalWithTax(); // 595.00
 
-// Invoice-level calculations
+// Invoice-level calculations. These reproduce the filed XML totals exactly:
+// getTotalExcludingVat() sums per-line ROUNDED net amounts (as cac:LegalMonetaryTotal does),
+// and getTotalVat() rounds once per tax-rate group (as the cac:TaxSubtotal breakdown does).
 $invoice->getTotalExcludingVat(); // Sum of all line totals
 $invoice->getTotalVat();          // Sum of all per-line taxAmount values
 $invoice->getTotalIncludingVat(); // Total with VAT
@@ -754,8 +912,9 @@ foreach ($result->notFound as $cui) {
     echo "Company not found: $cui";
 }
 
-// Validate VAT code format
-$isValid = AnafDetails::isValidVatCode('RO12345678'); // true
+// Validate VAT code format + mod-11 checksum
+$isValid = AnafDetails::isValidVatCode('RO14399840'); // true
+$isValid = AnafDetails::isValidVatCode('RO12345678'); // false — checksum fails
 ```
 
 > **Note (v2.2.0):** a lookup whose CUIs are all not-found now returns `success === true`
@@ -782,12 +941,17 @@ $isValid = AnafDetails::isValidVatCode('RO12345678'); // true
 ```php
 use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 
-VatNumberValidator::isValid('RO12345678');  // true
-VatNumberValidator::isValid('12345678');    // true (2-10 digits)
+// isValid() checks format AND the mod-11 checksum
+VatNumberValidator::isValid('RO14399840');  // true
+VatNumberValidator::isValid('14399840');    // true (RO prefix is optional)
+VatNumberValidator::isValid('RO12345678');  // false — well-formed, but the checksum fails
 VatNumberValidator::isValid('invalid');     // false
 
-VatNumberValidator::normalize('12345678');  // 'RO12345678'
-VatNumberValidator::stripPrefix('RO12345678'); // '12345678'
+// isValidFormat() skips the checksum (2-10 digits, optional RO prefix)
+VatNumberValidator::isValidFormat('12345678'); // true
+
+VatNumberValidator::normalize('12345678');  // 'RO12345678' (format-checked only, no checksum)
+VatNumberValidator::stripPrefix('RO14399840'); // '14399840'
 ```
 
 #### CNP Validation
@@ -795,7 +959,8 @@ VatNumberValidator::stripPrefix('RO12345678'); // '12345678'
 ```php
 use BeeCoded\EFacturaSdk\Support\Validators\CnpValidator;
 
-CnpValidator::isValid('1234567890123'); // Validates checksum
+CnpValidator::isValid('1800101221144'); // true (valid date + checksum)
+CnpValidator::isValid('1234567890123'); // false (month '45' is not a valid date)
 CnpValidator::isValid('0000000000000'); // true (special ANAF case)
 ```
 
@@ -811,10 +976,15 @@ DateHelper::formatForAnaf('2024-01-15');    // '2024-01-15'
 // Timestamps in milliseconds (for paginated messages)
 DateHelper::toTimestamp(now());             // 1705312800000
 
-// Day range for queries
-[$start, $end] = DateHelper::getDayRange('2024-01-15');
-// $start = 1705269600000 (00:00:00.000)
-// $end = 1705355999999 (23:59:59.999)
+// Day range for queries — returns a STRING-KEYED array: ['start' => int, 'end' => int]
+['start' => $start, 'end' => $end] = DateHelper::getDayRange('2024-01-15');
+// Boundaries are resolved in your app's timezone (config/app.php 'timezone'),
+// so the exact millisecond values depend on it:
+//
+//   UTC (Laravel's default):  $start = 1705276800000, $end = 1705363199999
+//   Europe/Bucharest:         $start = 1705269600000, $end = 1705355999999
+//
+// $start is 00:00:00.000 and $end is 23:59:59.999 of that local day either way.
 
 // Validate days parameter
 DateHelper::isValidDaysParameter(30);  // true (1-60 allowed)

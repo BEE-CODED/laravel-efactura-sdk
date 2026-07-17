@@ -27,7 +27,15 @@ abstract class TestCase extends BaseTestCase
 
     protected function defineEnvironment($app): void
     {
-        $app['config']->set('efactura.sandbox', true);
-        $app['config']->set('efactura.cif', '12345678');
+        // This SDK merges its config under 'efactura-sdk' and reads only
+        // config('efactura-sdk.*'). These previously set 'efactura.sandbox' and
+        // 'efactura.cif' -- a copy-paste from the wrapper package's namespace that
+        // nothing in this SDK has ever read.
+        //
+        // Pinning sandbox is worth keeping once it points at the real key: it stops a
+        // developer's EFACTURA_SANDBOX=false leaking in and pointing the suite's URL
+        // assertions at the production endpoints. There is no 'cif' key to correct --
+        // the SDK takes the VAT number per client at construction, not from config.
+        $app['config']->set('efactura-sdk.sandbox', true);
     }
 }

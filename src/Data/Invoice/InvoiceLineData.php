@@ -59,7 +59,12 @@ class InvoiceLineData extends Data
 
     /**
      * Get the raw (unrounded) line extension amount.
-     * Used internally for tax grouping calculations.
+     *
+     * Exposed for callers that need the pre-rounding value. NOT what the invoice
+     * files: cbc:LineExtensionAmount is capped at 2 decimals, so getLineTotal()
+     * is the figure that reaches ANAF and the one the document totals are built
+     * from. Summing this across lines and rounding once at the end does NOT
+     * reproduce the filed total.
      */
     public function getRawLineTotal(): float
     {

@@ -15,6 +15,9 @@ use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Psr7\Request;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
@@ -27,6 +30,29 @@ class FastLockTimeoutClient extends EFacturaClient
     {
         return 1; // 1 second for fast tests
     }
+}
+
+/**
+ * Build a ConnectionException shaped exactly like the one Laravel raises for a
+ * real cURL failure: PendingRequest::marshalConnectionException() wraps Guzzle's
+ * ConnectException, preserving its message verbatim and keeping it as $previous.
+ */
+function curlFailure(int $errno, string $error): ConnectionException
+{
+    $message = sprintf(
+        'cURL error %d: %s (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for https://api.anaf.ro/test/FCTEL/rest/upload',
+        $errno,
+        $error
+    );
+
+    $guzzle = new ConnectException(
+        $message,
+        new Request('POST', 'https://api.anaf.ro/test/FCTEL/rest/upload'),
+        null,
+        ['errno' => $errno, 'error' => $error],
+    );
+
+    return new ConnectionException($message, 0, $guzzle);
 }
 
 beforeEach(function () {
@@ -99,6 +125,29 @@ describe('EFacturaClient', function () {
 
             $client->getStatusMessage('abc123');
         })->throws(ValidationException::class, 'Upload ID must be a numeric string');
+
+        it('surfaces an ANAF 200 + {"eroare"} body through the full client path', function () {
+            // The real runtime path the wrapper polls on: JSON 200 with no stare.
+            // ANAF's message must reach the caller instead of being dropped.
+            Http::fake([
+                '*' => Http::response(['eroare' => 'Nu exista niciun mesaj cu id-ul=12345'], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $response = $client->getStatusMessage('12345');
+
+            expect($response->errors)->toBe(['Nu exista niciun mesaj cu id-ul=12345']);
+            expect($response->hasAnafError())->toBeTrue();
+            // Still no verdict: the caller must treat this as indeterminate, not failed.
+            expect($response->stare)->toBeNull();
+            expect($response->isFailed())->toBeFalse();
+        });
     });
 
     describe('downloadDocument validation', function () {
@@ -355,6 +404,338 @@ describe('EFacturaClient', function () {
         });
     });
 
+    describe('upload retry safety (duplicate filing prevention)', function () {
+        // ANAF mints a distinct index_incarcare per accepted POST and honours no
+        // idempotency key, so an upload retried after the body was already delivered
+        // files the same invoice twice. A read timeout is the dangerous case: the
+        // document may be sitting in ANAF's queue, accepted, while we see only a stall.
+
+        beforeEach(function () {
+            // Retries must not actually sleep during tests.
+            config()->set('efactura-sdk.http.retry_delay', 0);
+            config()->set('efactura-sdk.http.retry_times', 3);
+        });
+
+        it('does NOT retry an upload after a read timeout', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+                // cURL 28: the request WAS sent; ANAF may have accepted it already.
+                throw curlFailure(28, 'Operation timed out after 30001 milliseconds with 0 bytes received');
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->uploadDocument('<Invoice/>'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(1);
+        });
+
+        it('does NOT retry an upload when the server closed without responding', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+                // cURL 52: server accepted the body then hung up. Guzzle still calls
+                // this a ConnectException, which is exactly why the class name cannot
+                // be trusted as proof the request was never sent.
+                throw curlFailure(52, 'Empty reply from server');
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->uploadDocument('<Invoice/>'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(1);
+        });
+
+        it('does NOT retry a B2C upload after a read timeout', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+                throw curlFailure(28, 'Operation timed out after 30001 milliseconds with 0 bytes received');
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->uploadB2CDocument('<Invoice/>'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(1);
+        });
+
+        it('DOES retry an upload when DNS resolution failed (nothing was sent)', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+                // cURL 6: no connection was ever established, so no filing happened.
+                throw curlFailure(6, 'Could not resolve host: api.anaf.ro');
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->uploadDocument('<Invoice/>'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('DOES retry an upload when the connection was refused (nothing was sent)', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+                throw curlFailure(7, 'Failed to connect to api.anaf.ro port 443: Connection refused');
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->uploadDocument('<Invoice/>'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('does NOT retry an upload on an unclassifiable transport error', function () {
+            // No cURL errno to reason about => cannot prove the request was not sent
+            // => must not retry. Correctness beats availability for a legal filing.
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+                throw new ConnectionException('Something went wrong');
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->uploadDocument('<Invoice/>'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(1);
+        });
+
+        it('does NOT retry an upload on a 5xx (ANAF received the document and responded)', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->uploadDocument('<Invoice/>'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(1);
+        });
+
+        it('still retries reads on a read timeout', function () {
+            // Reads have no side effects at ANAF, so availability wins there.
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+                throw curlFailure(28, 'Operation timed out after 30001 milliseconds with 0 bytes received');
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('still retries reads on a 5xx', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('consumes global rate limit quota once per HTTP attempt, not once per call', function () {
+            // ANAF counts every HTTP request against the global cap, so a retried
+            // read must consume a unit per attempt or the SDK under-counts.
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $this->rateLimiter->shouldReceive('checkGlobal')->times(3)->andReturn(null);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('consumes the per-message status bucket once per HTTP attempt too', function () {
+            // The global bucket is not the only one ANAF meters per request. Counting
+            // a retried status poll once leaves status_per_day_message (50/day)
+            // under-counted by the retry factor, so ANAF trips the real limit while
+            // getRemainingQuota() still reports headroom.
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $this->rateLimiter->shouldReceive('checkGlobal')->times(3)->andReturn(null);
+            $this->rateLimiter->shouldReceive('checkStatusQuery')->times(3)->with('12345')->andReturn(null);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('consumes the per-message download bucket once per HTTP attempt', function () {
+            // download_per_day_message defaults to 5. Four retried downloads of one
+            // message during a 5xx window are 12 real requests but would count as 4.
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $this->rateLimiter->shouldReceive('checkGlobal')->times(3)->andReturn(null);
+            $this->rateLimiter->shouldReceive('checkDownload')->times(3)->with('999')->andReturn(null);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->downloadDocument('999'))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('consumes the per-CUI simple-list bucket once per HTTP attempt', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $this->rateLimiter->shouldReceive('checkGlobal')->times(3)->andReturn(null);
+            $this->rateLimiter->shouldReceive('checkSimpleList')->times(3)->with('12345678')->andReturn(null);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $params = new ListMessagesParamsData(cif: '12345678', days: 7);
+
+            expect(fn () => $client->getMessages($params))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('consumes the per-CUI paginated-list bucket once per HTTP attempt', function () {
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $this->rateLimiter->shouldReceive('checkGlobal')->times(3)->andReturn(null);
+            $this->rateLimiter->shouldReceive('checkPaginatedList')->times(3)->with('12345678')->andReturn(null);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $params = new PaginatedMessagesParamsData(
+                cif: '12345678',
+                startTime: Carbon::now()->subDays(7)->getTimestampMs(),
+                endTime: Carbon::now()->getTimestampMs(),
+            );
+
+            expect(fn () => $client->getMessagesPaginated($params))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
+        it('does not leak one call\'s endpoint bucket into the next call\'s retries', function () {
+            // The retry hook has to be re-armed per logical call. A status poll that
+            // retried must not keep charging checkStatusQuery while a later
+            // validateXml (a global-only endpoint) retries.
+            Http::fake(fn () => Http::response('Server Error', 500));
+
+            $this->rateLimiter->shouldReceive('checkGlobal')->andReturn(null);
+            // Exactly the 3 attempts of the FIRST call - never re-armed for the second.
+            $this->rateLimiter->shouldReceive('checkStatusQuery')->times(3)->andReturn(null);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345'))->toThrow(ApiException::class);
+            expect(fn () => $client->validateXml('<Invoice/>', DocumentStandardType::FACT1))
+                ->toThrow(ApiException::class);
+        });
+    });
+
     describe('authentication error context preservation', function () {
         it('preserves API exception context when converting to AuthenticationException', function () {
             // Create a mock that throws ApiException with context on 401
@@ -520,6 +901,301 @@ describe('EFacturaClient', function () {
         });
     });
 
+    describe('downloadDocument body inspection', function () {
+        // ANAF is known to answer 200 + a JSON error body on other endpoints
+        // (listaMesaje errors arrive as 200 + "eroare"). If /descarcare ever does
+        // the same, an unchecked 2xx body means saveTo('invoice.zip') writes JSON
+        // into a file every downstream consumer will treat as a ZIP.
+
+        it('throws instead of returning a JSON error body as a ZIP', function () {
+            Http::fake([
+                '*' => Http::response(
+                    ['eroare' => 'Nu existe niciun mesaj cu id-ul=12345'],
+                    200,
+                    ['Content-Type' => 'application/json']
+                ),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->downloadDocument('12345');
+        })->throws(ApiException::class, 'Nu existe niciun mesaj cu id-ul=12345');
+
+        it('detects a JSON error body even without a JSON content-type', function () {
+            Http::fake([
+                '*' => Http::response(
+                    '{"eroare":"Id_descarcare cu id=12345 nu exista"}',
+                    200,
+                    ['Content-Type' => 'application/octet-stream']
+                ),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->downloadDocument('12345');
+        })->throws(ApiException::class, 'Id_descarcare cu id=12345 nu exista');
+
+        it('rejects a body that is not a ZIP archive', function () {
+            // e.g. an HTML maintenance page served with a 200.
+            Http::fake([
+                '*' => Http::response('<html><body>Service unavailable</body></html>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->downloadDocument('12345');
+        })->throws(ApiException::class, 'did not return a ZIP archive');
+
+        it('returns the download when the body is a real ZIP', function () {
+            // "PK\x03\x04" - the local file header signature every ZIP starts with.
+            $zip = "PK\x03\x04".str_repeat("\x00", 26).'invoice-content';
+
+            Http::fake([
+                '*' => Http::response($zip, 200, [
+                    'Content-Type' => 'application/zip',
+                    'Content-Disposition' => 'attachment; filename="12345.zip"',
+                ]),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $result = $client->downloadDocument('12345');
+
+            expect($result->content)->toBe($zip);
+            expect($result->filename)->toBe('12345.zip');
+        });
+
+        it('accepts an empty ZIP archive', function () {
+            // "PK\x05\x06" - end-of-central-directory, i.e. a valid empty archive.
+            $emptyZip = "PK\x05\x06".str_repeat("\x00", 18);
+
+            Http::fake([
+                '*' => Http::response($emptyZip, 200, ['Content-Type' => 'application/zip']),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->downloadDocument('12345')->content)->toBe($emptyZip);
+        });
+    });
+
+    describe('validation failure details', function () {
+        // ANAF's validare service reports *why* a document is invalid in
+        // Messages[].message, with a trace_id for support tickets:
+        //   {"stare":"nok","Messages":[{"message":"E: ..."}],"trace_id":...}
+        // Dropping those leaves the caller knowing only that the XML is bad.
+
+        beforeEach(function () {
+            config()->set('efactura-sdk.endpoints.services.validate', 'https://api.example.com/validare');
+            config()->set('efactura-sdk.endpoints.services.verify_signature', 'https://api.example.com/verificare');
+        });
+
+        it('maps ANAF Messages[].message into errors', function () {
+            Http::fake([
+                '*' => Http::response([
+                    'stare' => 'nok',
+                    'Messages' => [
+                        ['message' => 'E: validare fisier xml: linia 12: element lipsa'],
+                        ['message' => 'E: BR-CO-15: valoarea totala nu corespunde'],
+                    ],
+                    'trace_id' => '8321634512',
+                ], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $result = $client->validateXml('<Invoice/>', DocumentStandardType::FACT1);
+
+            expect($result->valid)->toBeFalse();
+            expect($result->errors)->toBe([
+                'E: validare fisier xml: linia 12: element lipsa',
+                'E: BR-CO-15: valoarea totala nu corespunde',
+            ]);
+        });
+
+        it('surfaces trace_id as info for support tickets', function () {
+            Http::fake([
+                '*' => Http::response([
+                    'stare' => 'nok',
+                    'Messages' => [['message' => 'E: ceva']],
+                    'trace_id' => '8321634512',
+                ], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->validateXml('<Invoice/>', DocumentStandardType::FACT1)->info)->toBe('8321634512');
+        });
+
+        it('stringifies a numeric trace_id', function () {
+            // Observed as both a quoted string and a bare number in the wild.
+            Http::fake([
+                '*' => Http::response([
+                    'stare' => 'ok',
+                    'trace_id' => 8321634512,
+                ], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $result = $client->validateXml('<Invoice/>', DocumentStandardType::FACT1);
+
+            expect($result->valid)->toBeTrue();
+            expect($result->info)->toBe('8321634512');
+        });
+
+        it('accepts plain-string Messages entries defensively', function () {
+            Http::fake([
+                '*' => Http::response([
+                    'stare' => 'nok',
+                    'Messages' => ['E: mesaj simplu'],
+                ], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->validateXml('<Invoice/>', DocumentStandardType::FACT1)->errors)->toBe(['E: mesaj simplu']);
+        });
+
+        it('still maps the legacy Errors key', function () {
+            Http::fake([
+                '*' => Http::response([
+                    'stare' => 'nok',
+                    'Errors' => ['legacy error'],
+                ], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->validateXml('<Invoice/>', DocumentStandardType::FACT1)->errors)->toBe(['legacy error']);
+        });
+
+        it('still maps the legacy eroare key', function () {
+            Http::fake([
+                '*' => Http::response([
+                    'stare' => 'nok',
+                    'eroare' => 'eroare simpla',
+                ], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->validateXml('<Invoice/>', DocumentStandardType::FACT1)->errors)->toBe(['eroare simpla']);
+        });
+
+        it('leaves errors null on a clean validation', function () {
+            Http::fake([
+                '*' => Http::response(['stare' => 'ok'], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $result = $client->validateXml('<Invoice/>', DocumentStandardType::FACT1);
+
+            expect($result->valid)->toBeTrue();
+            expect($result->errors)->toBeNull();
+        });
+
+        it('reports Messages from verifySignature too', function () {
+            Http::fake([
+                '*' => Http::response([
+                    'stare' => 'nok',
+                    'Messages' => [['message' => 'E: semnatura invalida']],
+                ], 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->verifySignature('<Invoice/>')->errors)->toBe(['E: semnatura invalida']);
+        });
+
+        it('reports Messages in the convertXmlToPdf error branch', function () {
+            config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transformare');
+
+            Http::fake([
+                '*' => Http::response(
+                    ['stare' => 'nok', 'Messages' => [['message' => 'E: XML invalid pentru transformare']]],
+                    200,
+                    ['Content-Type' => 'application/json']
+                ),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1);
+        })->throws(ApiException::class, 'E: XML invalid pentru transformare');
+    });
+
     describe('token refresh race condition handling', function () {
         it('throws AuthenticationException on lock timeout', function () {
             // Set up an expired token so it needs refresh
@@ -585,12 +1261,15 @@ describe('EFacturaClient', function () {
             expect($client->wasTokenRefreshed())->toBeTrue();
         });
 
-        it('skips refresh when another process already refreshed token', function () {
-            // This test verifies the re-check after acquiring lock
-            $expiredTime = Carbon::now()->subMinutes(5);
+        it('does not refresh when its own token is still valid', function () {
+            // Was named "skips refresh when another process already refreshed token"
+            // and claimed to cover the post-lock re-check -- but it passes a VALID
+            // token, so getValidAccessToken() returns at the fast path and the lock
+            // branch is never entered. It only ever proved "valid token => no
+            // refresh". Renamed to what it actually asserts; the post-lock re-check
+            // is covered by the 'concurrent token refresh' group below.
             $validTime = Carbon::now()->addHour();
 
-            // The authenticator should NOT be called because token becomes valid
             $this->authenticator->shouldNotReceive('refreshAccessToken');
 
             Http::fake([
@@ -608,6 +1287,364 @@ describe('EFacturaClient', function () {
             $result = $client->getStatusMessage('12345');
 
             expect($client->wasTokenRefreshed())->toBeFalse();
+        });
+    });
+
+    describe('concurrent token refresh (rotated refresh token)', function () {
+        // ANAF rotates refresh tokens: once used, the old one is dead. Two workers
+        // built from the same persisted tokens race here. A refreshes; B blocks on
+        // the lock; B then wakes with only its own stale in-memory copy. Re-checking
+        // $this->expiresAt at that point is a provable no-op -- nothing mutates it
+        // while blocked. So B refreshes with A's already-spent refresh token, which
+        // fails and can invalidate A's grant too. The client needs to re-read the
+        // persisted tokens after acquiring the lock.
+
+        it('adopts tokens another worker persisted instead of refreshing again', function () {
+            $expiredTime = Carbon::now()->subMinutes(5);
+
+            // What worker A refreshed and wrote to the store while B was blocked.
+            $persisted = new OAuthTokensData(
+                accessToken: 'rotated-access-token',
+                refreshToken: 'rotated-refresh-token',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            // B must NOT refresh: A's rotation already produced a valid token, and
+            // B's in-memory refresh token is now dead.
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'stale-access-token',
+                refreshToken: 'already-used-refresh-token',
+                expiresAt: $expiredTime,
+                tokenReloader: fn () => $persisted,
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($client->getTokens()->accessToken)->toBe('rotated-access-token');
+            // We adopted persisted tokens rather than minting new ones, so there is
+            // nothing for the caller to write back.
+            expect($client->wasTokenRefreshed())->toBeFalse();
+
+            Http::assertSent(fn ($request) => $request->hasHeader('Authorization', 'Bearer rotated-access-token'));
+        });
+
+        it('refreshes using the reloaded refresh token, never its own stale one', function () {
+            // The persisted tokens are expired too, so a refresh is still needed --
+            // but it must use the freshest refresh token, not the spent in-memory one.
+            $persisted = new OAuthTokensData(
+                accessToken: 'newer-but-expired-access-token',
+                refreshToken: 'newer-refresh-token',
+                expiresAt: Carbon::now()->subMinute(),
+            );
+
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->once()
+                ->with('newer-refresh-token')
+                ->andReturn(new OAuthTokensData(
+                    accessToken: 'final-access-token',
+                    refreshToken: 'final-refresh-token',
+                    expiresAt: Carbon::now()->addHour(),
+                ));
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'stale-access-token',
+                refreshToken: 'already-used-refresh-token',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenReloader: fn () => $persisted,
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($client->getTokens()->accessToken)->toBe('final-access-token');
+            expect($client->wasTokenRefreshed())->toBeTrue();
+        });
+
+        it('normalises an immutable expiresAt coming back from the reloader', function () {
+            // Wrapper packages hydrate expires_at from the DB, which is a
+            // CarbonImmutable under Date::use(CarbonImmutable::class).
+            $persisted = new OAuthTokensData(
+                accessToken: 'rotated-access-token',
+                refreshToken: 'rotated-refresh-token',
+                expiresAt: CarbonImmutable::now()->addHour(),
+            );
+
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'stale-access-token',
+                refreshToken: 'already-used-refresh-token',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenReloader: fn () => $persisted,
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($client->getTokens()->expiresAt)->toBeInstanceOf(Carbon::class);
+        });
+
+        it('falls back to its own tokens when the reloader returns null', function () {
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->once()
+                ->with('own-refresh-token')
+                ->andReturn(new OAuthTokensData(
+                    accessToken: 'new-access-token',
+                    refreshToken: 'new-refresh-token',
+                    expiresAt: Carbon::now()->addHour(),
+                ));
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'stale-access-token',
+                refreshToken: 'own-refresh-token',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenReloader: fn () => null,
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($client->wasTokenRefreshed())->toBeTrue();
+        });
+
+        it('falls back to its own tokens when the reloader throws', function () {
+            // A store lookup failure must not take down the API call: refreshing
+            // with a possibly-stale token is still better than failing outright.
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->once()
+                ->with('own-refresh-token')
+                ->andReturn(new OAuthTokensData(
+                    accessToken: 'new-access-token',
+                    refreshToken: 'new-refresh-token',
+                    expiresAt: Carbon::now()->addHour(),
+                ));
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'stale-access-token',
+                refreshToken: 'own-refresh-token',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenReloader: fn () => throw new RuntimeException('database is down'),
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($client->wasTokenRefreshed())->toBeTrue();
+        });
+
+        it('does not consult the reloader when the token is still valid', function () {
+            // The fast path must stay allocation-free: no store hit per API call.
+            $reloaderCalls = 0;
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'valid-token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+                tokenReloader: function () use (&$reloaderCalls) {
+                    $reloaderCalls++;
+
+                    return null;
+                },
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($reloaderCalls)->toBe(0);
+        });
+
+        it('accepts a reloader via fromTokens', function () {
+            $persisted = new OAuthTokensData(
+                accessToken: 'rotated-access-token',
+                refreshToken: 'rotated-refresh-token',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = EFacturaClient::fromTokens(
+                '12345678',
+                new OAuthTokensData(
+                    accessToken: 'stale-access-token',
+                    refreshToken: 'already-used-refresh-token',
+                    expiresAt: Carbon::now()->subMinutes(5),
+                ),
+                $this->authenticator,
+                fn () => $persisted,
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($client->getTokens()->accessToken)->toBe('rotated-access-token');
+        });
+
+        it('does not clobber tokens it minted itself with the store\'s spent ones', function () {
+            // The reloader reads a store the caller has NOT written back to yet: the
+            // README's own pattern persists only AFTER the call returns
+            // (`if ($client->wasTokenRefreshed()) { persist }`), so this window always
+            // exists. A long-lived client (a batch worker) then refreshes a SECOND
+            // time later in the same run -- and must not adopt the store's copy of the
+            // refresh token it has already spent.
+            Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));
+
+            // The store still holds the ORIGINAL pair. Nobody has persisted since.
+            $persisted = new OAuthTokensData(
+                accessToken: 'orig-access',
+                refreshToken: 'orig-refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+            );
+
+            // ANAF rotates refresh tokens: spending one invalidates it for good.
+            $spent = [];
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->andReturnUsing(function (string $refreshToken) use (&$spent) {
+                    if (isset($spent[$refreshToken])) {
+                        throw new AuthenticationException(
+                            "invalid_grant: refresh token '{$refreshToken}' was already used"
+                        );
+                    }
+                    $spent[$refreshToken] = true;
+
+                    return match ($refreshToken) {
+                        'orig-refresh' => new OAuthTokensData(
+                            accessToken: 'new-access',
+                            refreshToken: 'new-refresh',
+                            expiresAt: Carbon::now()->addHour(),
+                        ),
+                        'new-refresh' => new OAuthTokensData(
+                            accessToken: 'final-access',
+                            refreshToken: 'final-refresh',
+                            expiresAt: Carbon::now()->addHour(),
+                        ),
+                        default => throw new AuthenticationException("unknown refresh token '{$refreshToken}'"),
+                    };
+                });
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'orig-access',
+                refreshToken: 'orig-refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenReloader: fn () => $persisted,
+            );
+
+            // Call 1: in-memory token is expired, the store's is too, so this client
+            // spends 'orig-refresh' itself and mints 'new-refresh'.
+            $client->getStatusMessage('12345');
+            expect($client->getTokens()->refreshToken)->toBe('new-refresh');
+            expect($client->wasTokenRefreshed())->toBeTrue();
+
+            // The caller has still not persisted -- it does that at the end of the batch.
+            // Two hours on, the token this client minted expires and it refreshes again.
+            Carbon::setTestNow(Carbon::now()->addHours(2));
+
+            $client->getStatusMessage('12345');
+
+            // It must have refreshed with its OWN 'new-refresh', not the store's
+            // long-spent 'orig-refresh'.
+            expect($client->getTokens()->accessToken)->toBe('final-access');
+            expect($client->getTokens()->refreshToken)->toBe('final-refresh');
+
+            Carbon::setTestNow();
+        });
+
+        it('still adopts a store token that is genuinely fresher than its own', function () {
+            // The converse of the test above: skipping adoption outright would brick
+            // the multi-worker case this feature exists for. Another worker rotating
+            // AFTER us must still win.
+            Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));
+
+            $persisted = new OAuthTokensData(
+                accessToken: 'orig-access',
+                refreshToken: 'orig-refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+            );
+
+            $spent = [];
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->andReturnUsing(function (string $refreshToken) use (&$spent, &$persisted) {
+                    if (isset($spent[$refreshToken])) {
+                        throw new AuthenticationException(
+                            "invalid_grant: refresh token '{$refreshToken}' was already used"
+                        );
+                    }
+                    $spent[$refreshToken] = true;
+
+                    return new OAuthTokensData(
+                        accessToken: 'new-access',
+                        refreshToken: 'new-refresh',
+                        expiresAt: Carbon::now()->addHour(),
+                    );
+                });
+
+            Http::fake([
+                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
+            ]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'orig-access',
+                refreshToken: 'orig-refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+                // NB: a by-reference closure, not `fn () =>` -- an arrow function
+                // captures by value and would pin the store to its original contents.
+                tokenReloader: function () use (&$persisted) {
+                    return $persisted;
+                },
+            );
+
+            $client->getStatusMessage('12345');
+            expect($client->getTokens()->refreshToken)->toBe('new-refresh');
+
+            // Meanwhile another worker rotated again and DID persist, so the store now
+            // holds a strictly fresher pair than the one we minted.
+            Carbon::setTestNow(Carbon::now()->addHours(2));
+            $persisted = new OAuthTokensData(
+                accessToken: 'other-worker-access',
+                refreshToken: 'other-worker-refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->getStatusMessage('12345');
+
+            // Ours is expired and the store's is valid and later: adopt it, do not
+            // spend our own now-dead refresh token.
+            expect($client->getTokens()->accessToken)->toBe('other-worker-access');
         });
     });
 

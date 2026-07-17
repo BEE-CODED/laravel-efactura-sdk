@@ -28,9 +28,16 @@ return [
     'line_quantity_cannot_be_zero' => 'Line :lineNum: Quantity cannot be zero',
     'line_unit_price_not_negative' => 'Line :lineNum: Unit price cannot be negative',
     'line_tax_percent_range' => 'Line :lineNum: Tax percent must be between 0 and 100',
+    'line_tax_not_allowed_for_non_vat_payer' => 'Line :lineNum: A supplier that is not registered for VAT cannot charge VAT (BR-O-09)',
+    'line_tax_amount_must_be_zero_for_zero_rate' => 'Line :lineNum: A zero-rated line cannot carry a VAT amount (BR-Z-09)',
 
     // Billing reference
     'preceding_invoice_number_max_length' => 'The preceding invoice number must not exceed 200 characters (BR-RO-L200)',
+
+    // Tax accounting currency (BT-111)
+    'tax_amount_ron_required' => 'A :currency invoice must declare its total VAT in RON: set taxAmountRon to the converted amount (BT-111). ANAF cannot verify the conversion, so an incorrect value would be filed as a true statement of VAT owed (BR-RO-030, BR-53).',
+    'tax_amount_ron_not_allowed_for_ron' => 'taxAmountRon must not be set on a RON invoice: the VAT total is already stated in RON, and a second RON tax total is not permitted (BR-CO-15).',
+    'tax_amount_ron_sign_mismatch' => 'taxAmountRon must have the same sign as the invoice VAT total: a credited amount cannot be declared as collected VAT, or vice versa (BT-111).',
 
     // County mapping
     'county_invalid_iso_code' => 'County ":county" could not be mapped to a valid ISO 3166-2:RO code. Romanian addresses require valid county codes (e.g., "RO-AB" for Alba, "RO-B" for Bucharest).',

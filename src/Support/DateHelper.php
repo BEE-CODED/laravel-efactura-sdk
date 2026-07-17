@@ -17,6 +17,18 @@ use InvalidArgumentException;
 final class DateHelper
 {
     /**
+     * The timezone ANAF's systems operate in.
+     *
+     * Every date the SDK *chooses* on the caller's behalf must be resolved here:
+     * ANAF evaluates dates against the Romanian calendar, so a UTC server between
+     * midnight and 02:00/03:00 Bucharest would otherwise report yesterday.
+     *
+     * Exposed publicly so callers can anchor their own dates to ANAF's business
+     * day, e.g. Carbon::parse('2024-03-15', DateHelper::ANAF_TIMEZONE).
+     */
+    public const ANAF_TIMEZONE = 'Europe/Bucharest';
+
+    /**
      * ANAF date format pattern.
      */
     private const ANAF_DATE_FORMAT = 'Y-m-d';
@@ -72,6 +84,14 @@ final class DateHelper
      *
      * ANAF uses millisecond timestamps for message list pagination.
      *
+     * Timezone: the caller's is respected. A CarbonInterface already carries an
+     * absolute instant, and a bare string is parsed in the app timezone per
+     * Laravel convention. This helper does NOT re-anchor to ANAF_TIMEZONE --
+     * unlike getCurrentDateForAnaf(), the caller supplies the date, and
+     * overriding an explicitly-chosen timezone would override stated intent.
+     * To pin a date to ANAF's business day, say so:
+     *   DateHelper::toTimestamp(Carbon::parse('2024-03-15', DateHelper::ANAF_TIMEZONE))
+     *
      * @param  CarbonInterface|string  $date  The date to convert
      * @return int Timestamp in milliseconds
      *
@@ -93,6 +113,12 @@ final class DateHelper
      * Returns timestamps in milliseconds for the beginning (00:00:00.000)
      * and end (23:59:59.999) of the specified day, useful for day-based
      * message filtering.
+     *
+     * Timezone: the day boundaries are anchored in the timezone of the date you
+     * pass in, not in ANAF_TIMEZONE -- see the note on toTimestamp(). On a UTC
+     * server, getDayRange('2024-03-15') therefore spans a UTC day, which is
+     * offset 2-3 hours from ANAF's Romanian day. Pass the timezone you mean:
+     *   DateHelper::getDayRange(Carbon::parse('2024-03-15', DateHelper::ANAF_TIMEZONE))
      *
      * @param  CarbonInterface|string  $date  The date to get the range for
      * @return array{start: int, end: int} Array with 'start' and 'end' timestamps in milliseconds
@@ -136,22 +162,32 @@ final class DateHelper
     /**
      * Get the current date formatted for ANAF.
      *
+     * Resolved in Europe/Bucharest, not the app timezone. ANAF interprets this
+     * value against the Romanian calendar, so on a UTC server between midnight
+     * and 02:00/03:00 Bucharest the app timezone still reads yesterday -- which
+     * would return stale data on effective-date boundaries (VAT registrations
+     * flip on the 1st).
+     *
      * @return string Current date in YYYY-MM-DD format
      */
     public static function getCurrentDateForAnaf(): string
     {
-        return Carbon::now()->format(self::ANAF_DATE_FORMAT);
+        return Carbon::now(self::ANAF_TIMEZONE)->format(self::ANAF_DATE_FORMAT);
     }
 
     /**
      * Get a date N days ago.
+     *
+     * Anchored to Europe/Bucharest for the same reason as getCurrentDateForAnaf():
+     * the SDK chooses "now" here, and callers format the result as an ANAF date.
+     * Only the display timezone differs -- the instant returned is unchanged.
      *
      * @param  int  $days  Number of days to go back
      * @return Carbon The Carbon instance for that date
      */
     public static function getDaysAgo(int $days): Carbon
     {
-        return Carbon::now()->subDays($days);
+        return Carbon::now(self::ANAF_TIMEZONE)->subDays($days);
     }
 
     /**

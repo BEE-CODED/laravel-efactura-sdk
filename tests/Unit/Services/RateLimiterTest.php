@@ -218,6 +218,36 @@ describe('getRemainingQuota', function () {
 
         expect($quota)->toHaveKeys(['limit', 'remaining', 'resetsIn']);
     });
+
+    it('reports the company_lookup quota', function () {
+        // checkCompanyLookup() enforces this limit, so getRemainingQuota() must be
+        // able to report it -- otherwise the one limit the SDK cannot introspect is
+        // the one with the tightest window.
+        $limiter = new RateLimiter;
+
+        $quota = $limiter->getRemainingQuota('company_lookup');
+
+        expect($quota)->toHaveKeys(['limit', 'remaining', 'resetsIn']);
+        expect($quota['limit'])->toBe(1);
+        expect($quota['remaining'])->toBe(1);
+    });
+
+    it('allows empty identifier for company_lookup type', function () {
+        // Like 'global' this is a single bucket: the limit is per request, not per CUI.
+        $limiter = new RateLimiter;
+
+        expect($limiter->getRemainingQuota('company_lookup', ''))->toHaveKeys(['limit', 'remaining', 'resetsIn']);
+    });
+
+    it('reports company_lookup against the same bucket checkCompanyLookup consumes', function () {
+        $limiter = new RateLimiter;
+
+        expect($limiter->getRemainingQuota('company_lookup')['remaining'])->toBe(1);
+
+        $limiter->checkCompanyLookup();
+
+        expect($limiter->getRemainingQuota('company_lookup')['remaining'])->toBe(0);
+    });
 });
 
 describe('checkCompanyLookup', function () {

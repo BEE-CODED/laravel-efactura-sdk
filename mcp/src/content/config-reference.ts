@@ -90,7 +90,22 @@ Maximum number of seconds to wait for an API response before timing out.
 | **Default** | \`3\` |
 | **Required** | No |
 
-Number of times a failed HTTP request will be automatically retried.
+Total number of attempts (**not** extra retries) for a failed HTTP request — \`3\` means one initial call plus up to two retries.
+
+Read by **both \`EFacturaClient\` and \`AnafDetailsClient\`** (since v3.0.0 — previously \`AnafDetailsClient\` ignored it and was pinned to \`BaseApiClient\`'s hardcoded \`MAX_TRY_COUNT = 3\`). When the key is absent the hardcoded \`3\` still applies.
+
+A **read** is retried when the transport fails outright or ANAF answers with status **0 or 5xx**. **4xx responses — including 429 — are never retried**; they raise \`ApiException\` on the first response.
+
+> **Uploads are NOT covered by this key (since v3.0.0).** \`uploadDocument()\` / \`uploadB2CDocument()\`
+> are non-idempotent and auto-retry only on transport errors that provably happened *before* the
+> request left the machine (cURL errno 5, 6, 7, 35). A 5xx, a read timeout, or an unclassifiable
+> transport error raises \`ApiException\` on the **first** attempt, no matter what \`retry_times\` says
+> — ANAF issues a fresh \`index_incarcare\` per accepted POST, so a blind retry files the invoice
+> twice. See the \`migration-v2-v3\` topic.
+
+> **Each retry consumes global rate-limit quota (since v3.0.0).** ANAF meters per HTTP request, so
+> every retry attempt calls \`checkGlobal()\` again. A tight \`global_per_minute\` can therefore surface
+> a \`RateLimitExceededException\` mid-retry where v2 raised \`ApiException\` after exhausting attempts.
 
 ### \`http.retry_delay\`
 
@@ -101,7 +116,9 @@ Number of times a failed HTTP request will be automatically retried.
 | **Default** | \`5\` |
 | **Required** | No |
 
-Number of seconds to wait between retry attempts.
+Number of seconds to wait between retry attempts. This is a blocking \`sleep()\` on the calling process, and the delay is fixed — there is no backoff.
+
+Read by **both \`EFacturaClient\` and \`AnafDetailsClient\`** (since v3.0.0 — previously \`AnafDetailsClient\` ignored it and was pinned to \`BaseApiClient\`'s hardcoded \`RETRY_DELAY = 5\` seconds). When the key is absent the hardcoded \`5\` still applies.
 
 ---
 
@@ -185,7 +202,7 @@ Additional ANAF web service endpoints:
 
 ## \`rate_limits\`
 
-Rate limiting configuration to prevent exceeding ANAF API quotas. All defaults are set to **50% of ANAF's official limits** as a safety margin.
+Rate limiting configuration to prevent exceeding ANAF API quotas. Defaults are set to **50% of ANAF's official limits** as a safety margin — with one exception: \`company_lookup_per_second\` defaults to \`1\`, which is **100%** of ANAF's cap. A 50% margin cannot be expressed as an integer limit over a 1-second window (any lower integer would be \`0\` and disable lookups entirely).
 
 ### \`rate_limits.enabled\`
 
@@ -270,6 +287,18 @@ Maximum paginated list queries per CUI per day.
 
 Maximum invoice XML downloads per message ID per day.
 
+### \`rate_limits.company_lookup_per_second\`
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Environment variable** | \`EFACTURA_RATE_LIMIT_COMPANY_LOOKUP\` |
+| **Default** | \`1\` |
+| **ANAF official limit** | 1/second |
+| **Valid range** | 1 – 1 (the default already matches ANAF's cap) |
+
+Maximum company-lookup (\`PlatitorTvaRest\`) requests per second, enforced by \`AnafDetailsClient\`. Unlike the other rate limits, the default is **100% of ANAF's limit**, not 50% — ANAF's cap is already 1/second and there is no lower positive integer. The bucket is a **single global one**: the limit is per request, not per CUI, so a 100-CUI batch consumes exactly one unit. Exceeding it throws \`RateLimitExceededException\`.
+
 ---
 
 ## Minimal \`.env\` configuration
@@ -309,5 +338,6 @@ EFACTURA_RATE_LIMIT_STATUS=50
 EFACTURA_RATE_LIMIT_SIMPLE_LIST=750
 EFACTURA_RATE_LIMIT_PAGINATED_LIST=50000
 EFACTURA_RATE_LIMIT_DOWNLOAD=5
+EFACTURA_RATE_LIMIT_COMPANY_LOOKUP=1
 \`\`\`
 `;

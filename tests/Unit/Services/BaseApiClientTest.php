@@ -3,6 +3,9 @@
 declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Services\ApiClients\BaseApiClient;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Psr7\Request;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Mockery\MockInterface;
 use Psr\Log\LoggerInterface;
@@ -46,11 +49,23 @@ class TestableBaseApiClient extends BaseApiClient
     {
         return $this->extractErrorMessage($response);
     }
+
+    // Expose protected method for testing
+    public function testIsRetryableException(Throwable $exception, bool $idempotent): bool
+    {
+        return $this->isRetryableException($exception, $idempotent);
+    }
 }
 
 describe('BaseApiClient', function () {
     describe('isRetryable', function () {
-        it('returns true for status code 0 (connection failure)', function () {
+        it('returns true for a synthesised status 0, the defensive guard', function () {
+            // NB: this does NOT cover connection failures, despite how the status-0
+            // check reads. A real connection failure produces no Response at all --
+            // Laravel raises a ConnectionException that call()/callRaw() catch and
+            // route to isRetryableException() instead. A Response always wraps a PSR-7
+            // response, whose status is a real HTTP code, so 0 has to be mocked to get
+            // here. This pins the guard's behaviour, not a reachable code path.
             $response = Mockery::mock(Response::class);
             $response->shouldReceive('status')->andReturn(0);
 
@@ -133,6 +148,75 @@ describe('BaseApiClient', function () {
             $client = new TestableBaseApiClient;
 
             expect($client->testIsRetryable($response))->toBeFalse();
+        });
+    });
+
+    describe('isRetryableException', function () {
+        // Guzzle raises ConnectException for cURL 28 (timeout) and 52 (empty reply)
+        // just as it does for 6 (DNS) and 7 (refused) -- see CurlFactory's
+        // $connectionErrors map. The class therefore proves nothing about whether
+        // the request was delivered; only the errno does.
+
+        $connectionException = function (int $errno, string $error): ConnectionException {
+            $message = sprintf('cURL error %d: %s (see https://curl.haxx.se/libcurl/c/libcurl-errors.html)', $errno, $error);
+
+            return new ConnectionException(
+                $message,
+                0,
+                new ConnectException($message, new Request('POST', 'https://api.anaf.ro/'), null, ['errno' => $errno, 'error' => $error])
+            );
+        };
+
+        it('retries any transport failure for an idempotent call', function () use ($connectionException) {
+            $client = new TestableBaseApiClient;
+
+            expect($client->testIsRetryableException($connectionException(28, 'Operation timed out'), true))->toBeTrue();
+            expect($client->testIsRetryableException(new RuntimeException('anything'), true))->toBeTrue();
+        });
+
+        it('retries provably pre-send cURL errors for a non-idempotent call', function (int $errno, string $error) use ($connectionException) {
+            $client = new TestableBaseApiClient;
+
+            expect($client->testIsRetryableException($connectionException($errno, $error), false))->toBeTrue();
+        })->with([
+            'CURLE_COULDNT_RESOLVE_PROXY' => [5, 'Could not resolve proxy'],
+            'CURLE_COULDNT_RESOLVE_HOST' => [6, 'Could not resolve host: api.anaf.ro'],
+            'CURLE_COULDNT_CONNECT' => [7, 'Failed to connect to api.anaf.ro port 443: Connection refused'],
+            'CURLE_SSL_CONNECT_ERROR' => [35, 'SSL connect error'],
+        ]);
+
+        it('refuses to retry possibly-delivered cURL errors for a non-idempotent call', function (int $errno, string $error) use ($connectionException) {
+            $client = new TestableBaseApiClient;
+
+            expect($client->testIsRetryableException($connectionException($errno, $error), false))->toBeFalse();
+        })->with([
+            'CURLE_OPERATION_TIMEDOUT (body may already be filed)' => [28, 'Operation timed out after 30001 milliseconds'],
+            'CURLE_GOT_NOTHING (server hung up after accepting)' => [52, 'Empty reply from server'],
+            'CURLE_SEND_ERROR (partial send, unknowable)' => [55, 'Failed sending data to the peer'],
+            'CURLE_RECV_ERROR (failed mid-response)' => [56, 'Failure when receiving data from the peer'],
+        ]);
+
+        it('refuses to retry an unclassifiable exception for a non-idempotent call', function () {
+            $client = new TestableBaseApiClient;
+
+            expect($client->testIsRetryableException(new ConnectionException('no errno here'), false))->toBeFalse();
+            expect($client->testIsRetryableException(new RuntimeException('anything'), false))->toBeFalse();
+        });
+
+        it('reads the errno from the message when no handler context survives', function () {
+            // Laravel copies Guzzle's message verbatim, so the errno is recoverable
+            // even from a bare ConnectionException with no previous.
+            $client = new TestableBaseApiClient;
+
+            expect($client->testIsRetryableException(
+                new ConnectionException('cURL error 6: Could not resolve host: api.anaf.ro'),
+                false
+            ))->toBeTrue();
+
+            expect($client->testIsRetryableException(
+                new ConnectionException('cURL error 28: Operation timed out'),
+                false
+            ))->toBeFalse();
         });
     });
 

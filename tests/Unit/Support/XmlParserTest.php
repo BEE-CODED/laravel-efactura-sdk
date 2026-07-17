@@ -50,7 +50,9 @@ XML;
 
         expect($result['executionStatus'])->toBe(ExecutionStatus::Error->value);
         expect($result['indexIncarcare'])->toBeNull();
-        expect($result['errors'])->toBeArray();
+        // Assert the CONTENTS, not merely that it is an array: a single <Errors> node
+        // must become a flat list of message strings, never the raw {"@":..., "_":...} node.
+        expect($result['errors'])->toBe(['Invalid document format']);
     });
 
     it('handles uppercase Header element', function () {
@@ -170,6 +172,34 @@ XML;
 
         expect($result['stare'])->toBe('nok');
         expect($result['errors'])->toContain('Document not found');
+    });
+
+    it('parses a single Errors element in the header (ANAF unknown id_incarcare)', function () {
+        // Exactly what ANAF returns from /stareMesaj for an id it does not recognise:
+        // a header carrying one <Errors errorMessage="..."/> and no stare attribute.
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<header xmlns="mfp:anaf:dgti:efactura:stareMesajFactura:v1"><Errors errorMessage="Nu exista factura cu id_incarcare= 9999999999"/></header>
+XML;
+
+        $result = XmlParser::parseStatusResponse($xml);
+
+        expect($result['stare'])->toBe('nok');
+        expect($result['idDescarcare'])->toBeNull();
+        // Must be a flat list of message strings - NOT the raw {"@":..., "_":...} node.
+        expect($result['errors'])->toBe(['Nu exista factura cu id_incarcare= 9999999999']);
+    });
+
+    it('parses multiple Errors elements in the header as a flat message list', function () {
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header><Errors errorMessage="First problem"/><Errors errorMessage="Second problem"/></header>
+XML;
+
+        $result = XmlParser::parseStatusResponse($xml);
+
+        expect($result['stare'])->toBe('nok');
+        expect($result['errors'])->toBe(['First problem', 'Second problem']);
     });
 });
 

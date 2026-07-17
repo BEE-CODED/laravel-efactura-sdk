@@ -107,6 +107,59 @@ describe('StatusResponseData', function () {
         expect($response->isFailed())->toBeFalse();
         expect($response->isInProgress())->toBeFalse();
     });
+
+    describe('ANAF 200 + {"eroare"} responses', function () {
+        // ANAF answers an unknown/rejected id_incarcare with HTTP 200 and an "eroare"
+        // body rather than a status. /descarcare is guarded against exactly this
+        // (guardDownloadBody); stareMesaj was not, and dropped the message entirely.
+
+        it('surfaces the eroare message through errors', function () {
+            $response = StatusResponseData::fromAnafResponse([
+                'eroare' => 'Nu exista niciun mesaj cu id-ul=123',
+            ]);
+
+            expect($response->errors)->toBe(['Nu exista niciun mesaj cu id-ul=123']);
+        });
+
+        it('leaves stare unrecognisable so callers do not read it as a verdict', function () {
+            // Load-bearing for the wrapper package: an "eroare" body means ANAF told us
+            // nothing about the document, which is NOT the same as ANAF rejecting it on
+            // its merits (stare=nok). Mapping it to Failed would mark a possibly-filed
+            // invoice as validation-failed. The wrapper keys its Indeterminate parking
+            // on all three predicates being false; keep them that way.
+            $response = StatusResponseData::fromAnafResponse([
+                'eroare' => 'Nu exista niciun mesaj cu id-ul=123',
+            ]);
+
+            expect($response->stare)->toBeNull();
+            expect($response->isReady())->toBeFalse();
+            expect($response->isFailed())->toBeFalse();
+            expect($response->isInProgress())->toBeFalse();
+        });
+
+        it('reports the error via hasAnafError only when one is present', function () {
+            expect(StatusResponseData::fromAnafResponse(['eroare' => 'boom'])->hasAnafError())->toBeTrue();
+            expect(StatusResponseData::fromAnafResponse(['stare' => 'ok'])->hasAnafError())->toBeFalse();
+            expect(StatusResponseData::fromAnafResponse([])->hasAnafError())->toBeFalse();
+        });
+
+        it('does not let eroare displace a real Errors list', function () {
+            $response = StatusResponseData::fromAnafResponse([
+                'stare' => 'nok',
+                'Errors' => ['Real validation error'],
+                'eroare' => 'secondary',
+            ]);
+
+            expect($response->stare)->toBe(UploadStatusValue::Failed);
+            expect($response->errors)->toBe(['Real validation error']);
+        });
+
+        it('ignores a non-string eroare rather than corrupting errors', function () {
+            $response = StatusResponseData::fromAnafResponse(['eroare' => ['nested' => 'thing']]);
+
+            expect($response->errors)->toBeNull();
+        });
+    });
 });
 
 describe('MessageDetailsData', function () {

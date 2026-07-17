@@ -11,6 +11,37 @@ use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use Carbon\Carbon;
 
+/**
+ * Query generated UBL XML with XPath.
+ *
+ * Used to assert on the exact element context the EN 16931 schematron rules bind
+ * to — string matching cannot distinguish a cbc:Percent inside a line's
+ * cac:ClassifiedTaxCategory from one inside the cac:TaxSubtotal breakdown.
+ */
+function ublXpath(string $xml, string $query): DOMNodeList
+{
+    $dom = new DOMDocument;
+    expect($dom->loadXML($xml))->toBeTrue();
+
+    $xpath = new DOMXPath($dom);
+    $xpath->registerNamespace('cac', 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2');
+    $xpath->registerNamespace('cbc', 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2');
+
+    $result = $xpath->query($query);
+    expect($result)->not->toBeFalse();
+
+    return $result;
+}
+
+/** Text content of the first node matching $query. */
+function ublText(string $xml, string $query): string
+{
+    $nodes = ublXpath($xml, $query);
+    expect($nodes->length)->toBeGreaterThan(0);
+
+    return $nodes->item(0)->textContent;
+}
+
 function createTestInvoiceForBuilder(array $lines = [], array $overrides = []): InvoiceData
 {
     $supplierAddress = new AddressData(
@@ -60,11 +91,14 @@ function createTestInvoiceForBuilder(array $lines = [], array $overrides = []): 
         supplier: $supplier,
         customer: $customer,
         lines: $defaultLines,
-        dueDate: $overrides['dueDate'] ?? Carbon::create(2024, 4, 15),
+        // array_key_exists, not ??, so a test can assert the no-due-date case by
+        // passing an explicit null (as it already can for paymentIban).
+        dueDate: array_key_exists('dueDate', $overrides) ? $overrides['dueDate'] : Carbon::create(2024, 4, 15),
         currency: $overrides['currency'] ?? 'RON',
         paymentIban: array_key_exists('paymentIban', $overrides) ? $overrides['paymentIban'] : 'RO49AAAA1B31007593840000',
         invoiceTypeCode: $overrides['invoiceTypeCode'] ?? null,
         precedingInvoiceNumber: $overrides['precedingInvoiceNumber'] ?? null,
+        taxAmountRon: $overrides['taxAmountRon'] ?? null,
     );
 }
 
@@ -261,7 +295,7 @@ describe('validation', function () {
     it('throws exception for missing supplier registration name', function () {
         $builder = new InvoiceBuilder;
         $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
-        $supplier = new PartyData(registrationName: '', companyId: 'RO12345678', address: $address);
+        $supplier = new PartyData(registrationName: '', companyId: 'RO12345678', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
@@ -270,7 +304,7 @@ describe('validation', function () {
     it('throws exception for missing supplier company ID', function () {
         $builder = new InvoiceBuilder;
         $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
-        $supplier = new PartyData(registrationName: 'Test', companyId: '', address: $address);
+        $supplier = new PartyData(registrationName: 'Test', companyId: '', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
@@ -279,7 +313,7 @@ describe('validation', function () {
     it('throws exception for missing street address', function () {
         $builder = new InvoiceBuilder;
         $address = new AddressData(street: '', city: 'Test', postalZone: '010101', county: 'Cluj');
-        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
@@ -292,7 +326,7 @@ describe('validation', function () {
         // Empty array is passed but the helper function provides default lines
         // Need to create invoice directly
         $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
-        $party = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $party = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
 
         $emptyLinesInvoice = new InvoiceData(
             invoiceNumber: 'INV-001',
@@ -732,6 +766,139 @@ describe('VAT number normalization', function () {
         // PartyTaxScheme should use AT prefix
         expect($xml)->toContain('<cbc:CompanyID>AT12345678</cbc:CompanyID>');
     });
+
+    // Greece is the canonical trap: its VAT identifier prefix is "EL" while its
+    // ISO 3166-1 country code is "GR", so a prefix check against the country code
+    // never matches an already-prefixed Greek VAT id and prefixes it a second time.
+    it('does not double-prefix a Greek VAT id whose prefix differs from its country code', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Test Street',
+            city: 'Athens',
+            postalZone: '10431',
+            countryCode: 'GR',
+        );
+        $customer = new PartyData(
+            registrationName: 'Greek Company',
+            companyId: 'EL123456789',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        $companyId = ublText($xml, '//cac:AccountingCustomerParty//cac:PartyTaxScheme/cbc:CompanyID');
+        expect($companyId)->toBe('EL123456789');
+        expect($xml)->not->toContain('GREL');
+    });
+
+    // The mirror-image trap: the caller prefixes the id with Greece's ISO 3166-1 country code
+    // ("GR") instead of its VAT prefix ("EL"). "GR" is deliberately absent from
+    // VAT_COUNTRY_PREFIXES — no VAT id legitimately carries it — so the prefix check does not
+    // recognise it and prefixes again, producing "ELGR123456789". v2 returned it unchanged.
+    // The intent is unambiguous (a bare national VAT number never opens with two letters), so
+    // it is corrected to the prefix Greece actually files under rather than mangled.
+    it('corrects a Greek VAT id prefixed with the country code instead of the VAT prefix', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Test Street',
+            city: 'Athens',
+            postalZone: '10431',
+            countryCode: 'GR',
+        );
+        $customer = new PartyData(
+            registrationName: 'Greek Company',
+            companyId: 'GR123456789',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        $companyId = ublText($xml, '//cac:AccountingCustomerParty//cac:PartyTaxScheme/cbc:CompanyID');
+        expect($companyId)->toBe('EL123456789');
+        expect($xml)->not->toContain('ELGR');
+    });
+
+    // The same correction applies when the Greek registration sits on a foreign address: an
+    // explicit prefix from the caller is better evidence of the issuing state than the address.
+    it('corrects a country-code-prefixed Greek VAT id on a non-Greek address', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Str. Test 1',
+            city: 'Cluj-Napoca',
+            postalZone: '400001',
+            county: 'Cluj',
+            countryCode: 'RO',
+        );
+        $customer = new PartyData(
+            registrationName: 'Greek Company',
+            companyId: 'GR123456789',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:AccountingCustomerParty//cac:PartyTaxScheme/cbc:CompanyID'))->toBe('EL123456789');
+        expect($xml)->not->toContain('ROGR');
+    });
+
+    it('does not double-prefix a Northern Ireland VAT id (XI) on a GB address', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(
+            street: 'Test Street',
+            city: 'Belfast',
+            postalZone: 'BT1 1AA',
+            countryCode: 'GB',
+        );
+        $customer = new PartyData(
+            registrationName: 'NI Company',
+            companyId: 'XI123456789',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        $companyId = ublText($xml, '//cac:AccountingCustomerParty//cac:PartyTaxScheme/cbc:CompanyID');
+        expect($companyId)->toBe('XI123456789');
+        expect($xml)->not->toContain('GBXI');
+    });
+
+    // A Romanian CUI is purely numeric and MUST still receive its RO prefix.
+    it('still prefixes a bare Romanian CUI', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder();
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:AccountingSupplierParty//cac:PartyTaxScheme/cbc:CompanyID'))
+            ->toBe('RO12345678');
+    });
+
+    // Recognising an existing prefix must not hinge on the character after it
+    // being alphanumeric: a separator is malformed input but the id is plainly
+    // already prefixed, and prefixing it again is strictly worse than leaving it.
+    it('does not re-prefix an RO id that carries a separator', function () {
+        $builder = new InvoiceBuilder;
+        $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
+        $supplier = new PartyData(
+            registrationName: 'Test Company',
+            companyId: 'RO 12345678',
+            address: $address,
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->not->toContain('RORO');
+    });
 });
 
 describe('non-VAT payer CIUS-RO compliance', function () {
@@ -834,6 +1001,234 @@ describe('non-VAT payer CIUS-RO compliance', function () {
     });
 });
 
+describe('BR-O non-VAT payer schematron compliance', function () {
+    // A micro-enterprise / non-VAT-payer supplier. Every line it issues carries
+    // VAT category "O" (Not subject to VAT), which triggers the BR-O-* rule set.
+    $nonVatSupplier = fn (): PartyData => new PartyData(
+        registrationName: 'Micro SRL',
+        companyId: '12345678',
+        address: new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj'),
+        isVatPayer: false,
+    );
+
+    it('omits the invoiced item VAT rate on category O lines (BR-O-05)', function () use ($nonVatSupplier) {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
+        ], ['supplier' => $nonVatSupplier()]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Mirrors the schematron assert: context cac:ClassifiedTaxCategory[cbc:ID='O'], test not(cbc:Percent)
+        expect(ublXpath($xml, '//cac:Item/cac:ClassifiedTaxCategory[cbc:ID="O"]/cbc:Percent')->length)->toBe(0);
+        // The category itself must still be present.
+        expect(ublXpath($xml, '//cac:Item/cac:ClassifiedTaxCategory[cbc:ID="O"]')->length)->toBe(1);
+    });
+
+    it('omits the buyer VAT identifier when the supplier is not a VAT payer (BR-O-02)', function () use ($nonVatSupplier) {
+        $builder = new InvoiceBuilder;
+        // Default customer is VAT-registered (RO87654321) — the common real-world case.
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
+        ], ['supplier' => $nonVatSupplier()]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // BT-48 (buyer VAT identifier) is prohibited when any line is category O.
+        expect(ublXpath($xml, '//cac:AccountingCustomerParty/cac:Party/cac:PartyTaxScheme')->length)->toBe(0);
+        // BT-31 (seller VAT identifier) likewise.
+        expect(ublXpath($xml, '//cac:AccountingSupplierParty/cac:Party/cac:PartyTaxScheme')->length)->toBe(0);
+        // BT-47: the buyer's legal registration identifier is NOT prohibited and must remain.
+        expect(ublText($xml, '//cac:AccountingCustomerParty/cac:Party/cac:PartyLegalEntity/cbc:CompanyID'))->toBe('87654321');
+    });
+
+    it('rejects a non-VAT-payer supplier charging VAT (BR-O-09)', function () use ($nonVatSupplier) {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 19.00, taxPercent: 19),
+        ], ['supplier' => $nonVatSupplier()]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Line 1: A supplier that is not registered for VAT cannot charge VAT (BR-O-09)');
+
+    it('keeps the invoiced item VAT rate for VAT-payer suppliers', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder(); // VAT-payer supplier, 19%
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Guard against over-fixing: BR-O-05 only binds to category O.
+        expect(ublText($xml, '//cac:Item/cac:ClassifiedTaxCategory[cbc:ID="S"]/cbc:Percent'))->toBe('19.00');
+    });
+
+    it('retains the VAT breakdown rate for category O', function () use ($nonVatSupplier) {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
+        ], ['supplier' => $nonVatSupplier()]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // Guard against over-fixing: no BR-O rule prohibits cbc:Percent in the
+        // cac:TaxSubtotal/cac:TaxCategory breakdown — only on the line (BR-O-05).
+        expect(ublText($xml, '//cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory[cbc:ID="O"]/cbc:Percent'))->toBe('0.00');
+        // BR-O-09: the VAT category tax amount must be zero.
+        expect(ublText($xml, '//cac:TaxTotal/cac:TaxSubtotal[cac:TaxCategory/cbc:ID="O"]/cbc:TaxAmount'))->toBe('0.00');
+        // BR-O-10: exemption reason code must be present.
+        expect(ublText($xml, '//cac:TaxCategory[cbc:ID="O"]/cbc:TaxExemptionReasonCode'))->toBe('VATEX-EU-O');
+    });
+});
+
+describe('BR-Z zero-rated schematron compliance', function () {
+    // The BR-O-09 guard fires only when the supplier is NOT a VAT payer. A VAT-PAYER supplier
+    // declaring a 0% rate lands its lines in VAT category "Z", which carries the very same
+    // requirement: BR-Z-09 asserts xs:decimal(../cbc:TaxAmount) = 0 — exact, no tolerance —
+    // so a non-zero tax amount on a zero-rated line is fatal. BR-CO-17 fails alongside it
+    // (19.00 against a 100.00 x 0% expectation of 0.00, drift far beyond its +/-1 tolerance).
+    //
+    // Before this guard existed the builder emitted TaxCategory/ID=Z, Percent=0.00 and
+    // TaxSubtotal/TaxAmount=19.00 with no local error at all — two fatal ANAF rejections,
+    // exactly what the BR-O-09 guard exists to prevent for the mirror-image case.
+    it('rejects a VAT-payer supplier charging tax on a zero-rated line (BR-Z-09)', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 19.00, taxPercent: 0),
+        ]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'Line 1: A zero-rated line cannot carry a VAT amount (BR-Z-09)');
+
+    // The guard mirrors getTaxCategory()'s epsilon, so it must bind exactly when category Z is
+    // emitted — a rate below the 0.01 epsilon is filed as Z and is caught too.
+    it('rejects a sub-epsilon rate carrying a VAT amount', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.01, taxPercent: 0.001),
+        ]);
+
+        $builder->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class);
+
+    // Guard against over-fixing: a genuine zero-rated line must still build.
+    it('accepts a zero-rated line declaring zero tax', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.00, taxPercent: 0),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:TaxSubtotal[cac:TaxCategory/cbc:ID="Z"]/cbc:TaxAmount'))->toBe('0.00');
+        expect(ublText($xml, '//cac:TaxSubtotal/cac:TaxCategory[cbc:ID="Z"]/cbc:Percent'))->toBe('0.00');
+    });
+
+    // Guard against over-fixing: the rounding tolerance is the emitted figure's. A sub-cent
+    // residue that rounds to 0.00 is what BR-Z-09 actually sees, so it must not be rejected.
+    it('accepts a sub-cent tax residue that files as zero', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.004, taxPercent: 0),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:TaxSubtotal[cac:TaxCategory/cbc:ID="Z"]/cbc:TaxAmount'))->toBe('0.00');
+    });
+
+    // Guard against over-fixing: a standard-rated line is untouched by BR-Z-09.
+    it('leaves a standard-rated line alone', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 19.00, taxPercent: 19),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:TaxSubtotal[cac:TaxCategory/cbc:ID="S"]/cbc:TaxAmount'))->toBe('19.00');
+    });
+});
+
+describe('BT-129/BT-146 quantity and unit price precision', function () {
+    it('keeps fractional quantities so quantity x price reconciles with the line amount', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Cheese', quantity: 1.375, unitPrice: 10.00, taxAmount: 2.61, unitCode: 'KGM', taxPercent: 19),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:InvoicedQuantity unitCode="KGM">1.375</cbc:InvoicedQuantity>');
+        expect($xml)->toContain('<cbc:PriceAmount currencyID="RON">10.00</cbc:PriceAmount>');
+        expect($xml)->toContain('<cbc:LineExtensionAmount currencyID="RON">13.75</cbc:LineExtensionAmount>');
+
+        // The legal document must be internally consistent: BT-129 x BT-146 = BT-131.
+        $quantity = (float) ublText($xml, '//cac:InvoiceLine/cbc:InvoicedQuantity');
+        $price = (float) ublText($xml, '//cac:InvoiceLine/cac:Price/cbc:PriceAmount');
+        $lineAmount = (float) ublText($xml, '//cac:InvoiceLine/cbc:LineExtensionAmount');
+        expect(round($quantity * $price, 2))->toBe($lineAmount);
+    });
+
+    it('preserves sub-cent unit prices (BT-146)', function () {
+        $builder = new InvoiceBuilder;
+        // 10 000 SMS at 0.0075 RON each = 75.00 RON. Rounding the price to 0.01 would file 100.00.
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'SMS', quantity: 10000, unitPrice: 0.0075, taxAmount: 14.25, taxPercent: 19),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:PriceAmount currencyID="RON">0.0075</cbc:PriceAmount>');
+        expect($xml)->toContain('<cbc:InvoicedQuantity unitCode="EA">10000.00</cbc:InvoicedQuantity>');
+        expect($xml)->toContain('<cbc:LineExtensionAmount currencyID="RON">75.00</cbc:LineExtensionAmount>');
+
+        $quantity = (float) ublText($xml, '//cac:InvoiceLine/cbc:InvoicedQuantity');
+        $price = (float) ublText($xml, '//cac:InvoiceLine/cac:Price/cbc:PriceAmount');
+        $lineAmount = (float) ublText($xml, '//cac:InvoiceLine/cbc:LineExtensionAmount');
+        expect(round($quantity * $price, 2))->toBe($lineAmount);
+    });
+
+    it('preserves fractional credited quantities on credit notes', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Returned cheese', quantity: 1.375, unitPrice: 10.00, taxAmount: 2.61, unitCode: 'KGM', taxPercent: 19),
+        ], ['invoiceTypeCode' => InvoiceTypeCode::CreditNote]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:CreditedQuantity unitCode="KGM">-1.375</cbc:CreditedQuantity>');
+        expect($xml)->toContain('<cbc:LineExtensionAmount currencyID="RON">-13.75</cbc:LineExtensionAmount>');
+    });
+
+    it('caps precision at 6 decimals and never emits scientific notation', function () {
+        $builder = new InvoiceBuilder;
+        // (string) 0.0000075 would render as "7.5E-6", which is not a valid xsd:decimal.
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Bulk', quantity: 1 / 3, unitPrice: 0.0000075, taxAmount: 0.00, taxPercent: 0),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect($xml)->toContain('<cbc:InvoicedQuantity unitCode="EA">0.333333</cbc:InvoicedQuantity>');
+        expect($xml)->toContain('<cbc:PriceAmount currencyID="RON">0.000008</cbc:PriceAmount>');
+    });
+
+    it('keeps monetary amount fields at 2 decimals (BR-DEC)', function () {
+        $builder = new InvoiceBuilder;
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Cheese', quantity: 1.375, unitPrice: 10.00, taxAmount: 2.61, unitCode: 'KGM', taxPercent: 19),
+        ]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // BR-DEC-* caps AMOUNT fields at 2 decimals — the quantity/price fix must not leak into them.
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:LineExtensionAmount'))->toBe('13.75');
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount'))->toBe('13.75');
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'))->toBe('16.36');
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:PayableAmount'))->toBe('16.36');
+        expect(ublText($xml, '//cac:TaxTotal/cbc:TaxAmount'))->toBe('2.61');
+    });
+});
+
 describe('BR-RO-010 invoice number validation', function () {
     it('throws exception for invoice number without digits', function () {
         $builder = new InvoiceBuilder;
@@ -923,6 +1318,7 @@ describe('BR-RO-L string length validations', function () {
             registrationName: str_repeat('A', 201),
             companyId: 'RO12345678',
             address: $address,
+            isVatPayer: true,
         );
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
@@ -936,7 +1332,7 @@ describe('BR-RO-L string length validations', function () {
             city: 'Test',
             postalZone: '010101',
         );
-        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
@@ -949,7 +1345,7 @@ describe('BR-RO-L string length validations', function () {
             city: str_repeat('A', 51),
             postalZone: '010101',
         );
-        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
@@ -963,7 +1359,7 @@ describe('BR-RO-L string length validations', function () {
             postalZone: str_repeat('1', 21),
             county: 'Cluj',
         );
-        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address);
+        $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
 
         $builder->buildInvoiceXml($invoice);
@@ -1093,7 +1489,7 @@ describe('BR-RO-030 multi-currency support', function () {
 
     it('adds TaxCurrencyCode RON for EUR invoices', function () {
         $builder = new InvoiceBuilder;
-        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR']);
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => 944.30]);
 
         $xml = $builder->buildInvoiceXml($invoice);
 
@@ -1103,7 +1499,7 @@ describe('BR-RO-030 multi-currency support', function () {
 
     it('adds second TaxTotal in RON for non-RON invoices', function () {
         $builder = new InvoiceBuilder;
-        $invoice = createTestInvoiceForBuilder([], ['currency' => 'USD']);
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'USD', 'taxAmountRon' => 945.00]);
 
         $xml = $builder->buildInvoiceXml($invoice);
 
@@ -1111,5 +1507,311 @@ describe('BR-RO-030 multi-currency support', function () {
         expect(substr_count($xml, '<cac:TaxTotal>'))->toBe(2);
         expect($xml)->toContain('currencyID="USD"');
         expect($xml)->toContain('currencyID="RON"');
+    });
+});
+
+describe('BT-111 VAT total in the RON accounting currency', function () {
+    // BR-RO-030 forces BT-6 (TaxCurrencyCode) to RON whenever BT-5 is not RON;
+    // BR-53 then forces a TaxTotal/TaxAmount at @currencyID='RON' to exist. ANAF
+    // cannot check the conversion, so a wrong figure here is ACCEPTED and filed.
+    // The document-currency amount must therefore never be reused as the RON one.
+    it('files the supplied RON amount, not the document-currency amount', function () {
+        // 190.00 EUR of VAT at ~4.97 RON/EUR.
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => 944.30]);
+
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='EUR']"))->toBe('190.00');
+        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='RON']"))->toBe('944.30');
+    });
+
+    it('throws when a non-RON invoice omits the RON tax amount', function () {
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR']);
+
+        (new InvoiceBuilder)->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class, 'taxAmountRon');
+
+    // BR-CO-15 asserts count(TaxTotal/TaxAmount[@currencyID=BT-5]) eq 1, so a RON
+    // invoice may carry only ONE TaxTotal. Supplying BT-111 there cannot be
+    // honoured, and silently ignoring a statutory figure is what caused this bug.
+    it('throws when a RON invoice supplies a redundant RON tax amount', function () {
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'RON', 'taxAmountRon' => 190.00]);
+
+        (new InvoiceBuilder)->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class);
+
+    it('emits exactly one TaxTotal for a RON invoice (BR-CO-15)', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], ['currency' => 'RON']));
+
+        expect(ublXpath($xml, '/*/cac:TaxTotal')->length)->toBe(1);
+    });
+
+    // The RON TaxTotal must carry cbc:TaxAmount ONLY. BR-CO-14's `or
+    // not(cac:TaxSubtotal)` escape is what permits a bare TaxTotal; adding a
+    // breakdown would double the document-wide category counts that BR-Z-01 /
+    // BR-O-01 assert as `= 1`, and BR-S-08 would compare a RON TaxableAmount
+    // against EUR line sums.
+    it('emits the RON TaxTotal without any TaxSubtotal breakdown', function () {
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => 944.30]);
+
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        $ronTaxTotal = ublXpath($xml, "/*/cac:TaxTotal[cbc:TaxAmount/@currencyID='RON']");
+        expect($ronTaxTotal->length)->toBe(1);
+
+        $children = [];
+        foreach ($ronTaxTotal->item(0)->childNodes as $node) {
+            if ($node instanceof DOMElement) {
+                $children[] = $node->localName;
+            }
+        }
+        expect($children)->toBe(['TaxAmount']);
+    });
+
+    // BR-DEC-RO-15 (message tag [BR-RO-Z2]): BT-111 allows at most 2 decimals.
+    it('rounds the RON tax amount to 2 decimals (BR-DEC-RO-15)', function () {
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => 944.3049]);
+
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='RON']"))->toBe('944.30');
+    });
+
+    // A credit note sign-flips its line tax amounts, so BT-111 is supplied in the
+    // same positive sense as the lines and flipped alongside them. Filing +945 RON
+    // against -190 EUR would contradict the document.
+    it('negates the RON tax amount for a credit note, matching the document currency', function () {
+        $invoice = createTestInvoiceForBuilder([], [
+            'currency' => 'EUR',
+            'taxAmountRon' => 944.30,
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+        ]);
+
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='EUR']"))->toBe('-190.00');
+        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='RON']"))->toBe('-944.30');
+    });
+
+    it('accepts a zero RON tax amount for a zero-rated non-RON invoice', function () {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Export', quantity: 1, unitPrice: 100.00, taxAmount: 0.00, taxPercent: 0),
+        ], ['currency' => 'EUR', 'taxAmountRon' => 0.0]);
+
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='RON']"))->toBe('0.00');
+    });
+
+    it('throws when the RON tax amount contradicts the sign of the document VAT', function () {
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => -944.30]);
+
+        (new InvoiceBuilder)->buildInvoiceXml($invoice);
+    })->throws(ValidationException::class);
+});
+
+describe('BT-9 payment due date on credit notes', function () {
+    // UBL 2.1 CreditNoteType has no cbc:DueDate (that slot holds cbc:TaxPointDate),
+    // so EN 16931 binds BT-9 on a credit note to cac:PaymentMeans/cbc:PaymentDueDate.
+    // UBL-CR-412 (`not(cac:PaymentMeans/cbc:PaymentDueDate) or ../cn:CreditNote`)
+    // exists precisely to carve this out for credit notes only.
+    it('emits the due date as PaymentMeans/PaymentDueDate', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'dueDate' => Carbon::create(2024, 4, 15),
+        ]));
+
+        expect(ublText($xml, '/*/cac:PaymentMeans/cbc:PaymentDueDate'))->toBe('2024-04-15');
+    });
+
+    it('never emits a root cbc:DueDate on a credit note (not in the UBL schema)', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'dueDate' => Carbon::create(2024, 4, 15),
+        ]));
+
+        expect(ublXpath($xml, '/*/cbc:DueDate')->length)->toBe(0);
+    });
+
+    // BR-61: a PaymentMeansCode of 30/58 (credit transfer) REQUIRES BT-84, the
+    // payee account id. With no IBAN to put there, code 30 would fail fatally, so
+    // a due-date-only PaymentMeans must use code 1 ("Instrument not defined"),
+    // which satisfies BR-61 vacuously.
+    it('uses PaymentMeansCode 1 and no account when a credit note has a due date but no IBAN', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'dueDate' => Carbon::create(2024, 4, 15),
+            'paymentIban' => null,
+        ]));
+
+        expect(ublText($xml, '/*/cac:PaymentMeans/cbc:PaymentMeansCode'))->toBe('1');
+        expect(ublText($xml, '/*/cac:PaymentMeans/cbc:PaymentDueDate'))->toBe('2024-04-15');
+        expect(ublXpath($xml, '/*/cac:PaymentMeans/cac:PayeeFinancialAccount')->length)->toBe(0);
+    });
+
+    it('keeps PaymentMeansCode 30 with the account when a credit note has both', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'dueDate' => Carbon::create(2024, 4, 15),
+        ]));
+
+        expect(ublText($xml, '/*/cac:PaymentMeans/cbc:PaymentMeansCode'))->toBe('30');
+        expect(ublText($xml, '/*/cac:PaymentMeans/cac:PayeeFinancialAccount/cbc:ID'))
+            ->toBe('RO49AAAA1B31007593840000');
+    });
+
+    // UBL PaymentMeansType is a sequence: PaymentMeansCode, PaymentDueDate, ...,
+    // PayeeFinancialAccount. Wrong order is a schema rejection.
+    it('orders PaymentMeans children per the UBL 2.1 sequence', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'dueDate' => Carbon::create(2024, 4, 15),
+        ]));
+
+        $children = [];
+        foreach (ublXpath($xml, '/*/cac:PaymentMeans/*') as $node) {
+            $children[] = $node->localName;
+        }
+
+        expect($children)->toBe(['PaymentMeansCode', 'PaymentDueDate', 'PayeeFinancialAccount']);
+    });
+
+    it('omits PaymentMeans entirely when a credit note has neither due date nor IBAN', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], [
+            'invoiceTypeCode' => InvoiceTypeCode::CreditNote,
+            'dueDate' => null,
+            'paymentIban' => null,
+        ]));
+
+        expect(ublXpath($xml, '/*/cac:PaymentMeans')->length)->toBe(0);
+    });
+
+    // UBL-CR-412 warns that a UBL *Invoice* should not carry
+    // PaymentMeans/PaymentDueDate — an invoice states BT-9 as root cbc:DueDate.
+    it('keeps using root cbc:DueDate on an invoice and never PaymentMeans/PaymentDueDate', function () {
+        $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], [
+            'dueDate' => Carbon::create(2024, 4, 15),
+        ]));
+
+        expect(ublText($xml, '/*/cbc:DueDate'))->toBe('2024-04-15');
+        expect(ublXpath($xml, '/*/cac:PaymentMeans/cbc:PaymentDueDate')->length)->toBe(0);
+    });
+});
+
+describe('InvoiceData monetary helpers agree with the filed XML', function () {
+    // A wrapper that records getTotalIncludingVat() as the receivable must not
+    // disagree with the legal document by a bani. These lines are built so that
+    // BOTH rounding boundaries bite at once: two sub-cent net amounts, and two
+    // sub-cent VAT residues sitting in DIFFERENT tax-rate groups.
+    $subCent = fn () => [
+        new InvoiceLineData(name: 'Product 1', quantity: 0.5, unitPrice: 0.01, taxAmount: 0.005, taxPercent: 19),
+        new InvoiceLineData(name: 'Product 2', quantity: 0.5, unitPrice: 0.01, taxAmount: 0.005, taxPercent: 5),
+    ];
+
+    it('getTotalExcludingVat matches LegalMonetaryTotal/TaxExclusiveAmount', function () use ($subCent) {
+        $invoice = createTestInvoiceForBuilder($subCent());
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount'))
+            ->toBe(number_format($invoice->getTotalExcludingVat(), 2, '.', ''));
+    });
+
+    it('getTotalExcludingVat matches LegalMonetaryTotal/LineExtensionAmount', function () use ($subCent) {
+        $invoice = createTestInvoiceForBuilder($subCent());
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:LineExtensionAmount'))
+            ->toBe(number_format($invoice->getTotalExcludingVat(), 2, '.', ''));
+    });
+
+    it('getTotalVat matches the document-level TaxTotal/TaxAmount (BT-110)', function () use ($subCent) {
+        $invoice = createTestInvoiceForBuilder($subCent());
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '/*/cac:TaxTotal/cbc:TaxAmount'))
+            ->toBe(number_format($invoice->getTotalVat(), 2, '.', ''));
+    });
+
+    it('getTotalIncludingVat matches LegalMonetaryTotal/PayableAmount', function () use ($subCent) {
+        $invoice = createTestInvoiceForBuilder($subCent());
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:PayableAmount'))
+            ->toBe(number_format($invoice->getTotalIncludingVat(), 2, '.', ''));
+    });
+
+    it('getTotalVat matches BT-110 when all lines share one tax rate', function () {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 1.00, taxAmount: 0.005, taxPercent: 19),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 1.00, taxAmount: 0.005, taxPercent: 19),
+        ]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '/*/cac:TaxTotal/cbc:TaxAmount'))
+            ->toBe(number_format($invoice->getTotalVat(), 2, '.', ''));
+    });
+});
+
+/**
+ * France is the only member state whose VAT key may be two letters (HMRC:
+ * "XX123456789"), which makes a BARE French id shaped exactly like a Greek id
+ * carrying its country code. These pin what the builder does about it: the
+ * prefixed form is correct and safe, the bare form is knowingly ambiguous.
+ */
+describe('French VAT ids, whose key may be two letters', function () {
+    it('passes a prefixed French VAT id through untouched, whatever its key', function () {
+        $builder = new InvoiceBuilder;
+        $customer = new PartyData(
+            registrationName: 'Societe Test',
+            companyId: 'FRGR123456789',
+            address: new AddressData(
+                street: 'Rue Test 1',
+                city: 'Paris',
+                postalZone: '75001',
+                countryCode: 'FR',
+            ),
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        // The "GR" here is the French key, not Greece. A prefixed id is
+        // unambiguous, so it must survive intact.
+        expect(ublText($xml, '//cac:AccountingCustomerParty//cac:PartyTaxScheme/cbc:CompanyID'))
+            ->toBe('FRGR123456789');
+        expect($xml)->not->toContain('EL123456789');
+    });
+
+    /**
+     * KNOWN LIMITATION, pinned deliberately rather than left as folklore.
+     *
+     * 'GR123456789' + countryCode 'FR' is byte-for-byte identical to a Greek id
+     * written with its country code, which the builder corrects to 'EL...' — a
+     * behaviour another test pins on purpose for foreign VAT registrations.
+     * Nothing here can tell the two apart, and gating the correction on the
+     * country code would not fix it: it would just invert which case breaks,
+     * sacrificing the commoner one. The fix is the caller contract in
+     * normalizeVatNumber()'s docblock: pass the prefix.
+     */
+    it('misreads a BARE French VAT id whose key looks like a country code', function () {
+        $builder = new InvoiceBuilder;
+        $customer = new PartyData(
+            registrationName: 'Societe Test',
+            companyId: 'GR123456789',
+            address: new AddressData(
+                street: 'Rue Test 1',
+                city: 'Paris',
+                postalZone: '75001',
+                countryCode: 'FR',
+            ),
+            isVatPayer: true,
+        );
+        $invoice = createTestInvoiceForBuilder([], ['customer' => $customer]);
+
+        $xml = $builder->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:AccountingCustomerParty//cac:PartyTaxScheme/cbc:CompanyID'))
+            ->toBe('EL123456789');
     });
 });

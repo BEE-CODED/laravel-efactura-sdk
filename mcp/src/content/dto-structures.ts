@@ -19,6 +19,37 @@ Complete invoice data for e-Factura submission. Extends \`Spatie\\LaravelData\\D
 | \`$paymentIban\` | \`?string\` | no | \`null\` | IBAN for payment |
 | \`$invoiceTypeCode\` | \`?InvoiceTypeCode\` | no | \`null\` | Type of invoice — resolved via \`getInvoiceTypeCode()\` which defaults to \`CommercialInvoice\` |
 | \`$precedingInvoiceNumber\` | \`?string\` | no | \`null\` | Preceding invoice number for credit notes (BT-25, used in BillingReference element) |
+| \`$taxAmountRon\` | \`?float\` | conditional | \`null\` | Total VAT expressed in RON (BT-111). **Required when \`$currency\` is not \`'RON'\`, and rejected when it is.** See below |
+
+## Multi-currency: \`$taxAmountRon\` (BT-111) — new and required in v3.0.0
+
+A non-RON invoice must also declare its VAT total in RON, the tax accounting currency:
+BR-RO-030 forces \`TaxCurrencyCode\` (BT-6) to \`RON\` whenever \`DocumentCurrencyCode\` (BT-5) is not,
+and BR-53 then requires a \`cac:TaxTotal/cbc:TaxAmount\` at \`@currencyID='RON'\` to exist.
+
+**ANAF cannot verify the conversion, so a wrong figure here is accepted and filed as a true
+statement of VAT owed.** Before v3.0.0 the builder emitted the document-currency amount unchanged
+under \`currencyID="RON"\` — a EUR invoice with 190.00 EUR of VAT filed \`190.00\` RON instead of
+~945 RON. There is now no way to make that mistake: the builder throws a \`ValidationException\`
+when a non-RON invoice omits \`$taxAmountRon\`.
+
+\`\`\`php
+new InvoiceData(
+    // ...
+    currency: 'EUR',
+    taxAmountRon: 944.30,   // 190.00 EUR converted at the applicable BNR rate
+);
+\`\`\`
+
+- **Supply the converted AMOUNT, not an exchange rate.** The rate is not part of the filed
+  document — EN 16931 defines no business term for it, and \`UBL-CR-490\` warns against
+  \`cac:TaxExchangeRate\`. Only the RON amount is transmitted. Taking a rate would also make this
+  library's rounding authoritative over the figure your ledger already holds.
+- **Rejected on a RON invoice.** BR-CO-15 permits exactly one \`TaxTotal\` in the document currency,
+  so a second RON total cannot be emitted; passing it throws rather than being silently discarded.
+- Supply it in the same positive sense as the per-line \`taxAmount\`; the builder sign-flips it for
+  credit notes alongside the lines. It must agree in sign with the invoice VAT total, and is
+  rounded to 2 decimals (BR-DEC-RO-15).
 
 ## Date handling (since v2.3.0)
 
@@ -51,20 +82,33 @@ Returns the due date as a Carbon instance, or null if not set. Returns a copy. T
 ### \`getInvoiceTypeCode(): InvoiceTypeCode\`
 Returns \`$invoiceTypeCode ?? InvoiceTypeCode::CommercialInvoice\`. Use this accessor rather than the raw property.
 
+> **Fixed in v3.0.0:** these three helpers used to round differently from the XML the builder
+> actually files, so a wrapper recording a helper value as the receivable could disagree with the
+> legal document by a bani. They now reproduce the filed totals exactly, and are pinned against
+> generated XML by tests.
+
 ### \`getTotalExcludingVat(): float\`
-Sums raw (unrounded) line totals and rounds once at the end to 2 decimal places.
+Sums the per-line **rounded** net amounts (BT-106), matching \`cac:LegalMonetaryTotal\` — every line
+files its own \`cbc:LineExtensionAmount\` capped at 2 decimals, and the document total adds those up.
+(Previously summed raw line totals and rounded once, which lost a bani per pair of sub-cent lines.)
 
 ### \`getTotalVat(): float\`
-Sums per-line \`taxAmount\` values (pre-computed, not recalculated). Rounded to 2 decimal places.
+Sums the pre-computed per-line \`taxAmount\` values rounded **once per tax-rate group** (BT-110),
+matching the filed \`cac:TaxSubtotal\` breakdown. The grouping is load-bearing: rounding the raw
+all-lines sum understates across rate groups, and rounding per line overstates within one.
 
 ### \`getTotalIncludingVat(): float\`
-Returns \`getTotalExcludingVat() + getTotalVat()\`, rounded to 2 decimal places.
+Returns \`getTotalExcludingVat() + getTotalVat()\`, rounded to 2 decimal places — matching
+\`cbc:TaxInclusiveAmount\` / \`cbc:PayableAmount\`.
+
+> Sign note: all three report totals in the same positive sense the lines are supplied in. A credit
+> note sign-flips every line, so the filed document states the negation of these values.
 
 ## Usage Notes
 
 - **Credit notes:** Set \`$invoiceTypeCode = InvoiceTypeCode::CreditNote\` and provide \`$precedingInvoiceNumber\` (the original invoice number being credited). The builder uses \`precedingInvoiceNumber\` to populate the UBL \`BillingReference\` element (BT-25).
 - If \`$invoiceTypeCode\` is \`null\` (omitted), the builder treats the document as a standard commercial invoice (code \`380\`).
-- \`$currency\` defaults to \`'RON'\`. For EUR invoices, pass \`'EUR'\`.
+- \`$currency\` defaults to \`'RON'\`. For EUR invoices pass \`'EUR'\` — and you must then also pass \`$taxAmountRon\` (see above), or \`buildInvoiceXml()\` throws a \`ValidationException\`.
 
 ## Example
 
@@ -107,8 +151,8 @@ Invoice line item data. Extends \`Spatie\\LaravelData\\Data\`.
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | \`$name\` | \`string\` | yes | — | Product or service name |
-| \`$quantity\` | \`float\` | yes | — | Quantity of items. Can be negative for credit notes/corrective invoices. |
-| \`$unitPrice\` | \`float\` | yes | — | Unit price (excluding VAT) |
+| \`$quantity\` | \`float\` | yes | — | Quantity of items. Can be negative for credit notes/corrective invoices. Filed with **2–6 decimals** — see Precision below. |
+| \`$unitPrice\` | \`float\` | yes | — | Unit price (excluding VAT). Filed with **2–6 decimals** — see Precision below. |
 | \`$taxAmount\` | \`float\` | yes | — | **Pre-computed tax amount for this line** (v2.0 breaking change — now required, no default) |
 | \`$id\` | \`string\|int\|null\` | no | \`null\` | Line item identifier (auto-generated by builder if null) |
 | \`$description\` | \`?string\` | no | \`null\` | Additional description |
@@ -119,6 +163,30 @@ Invoice line item data. Extends \`Spatie\\LaravelData\\Data\`.
 
 - \`$taxPercent\` has a \`#[Min(0)]\` attribute from \`Spatie\\LaravelData\\Attributes\\Validation\\Min\`. Tax percent must be zero or positive.
 
+## Precision of \`$quantity\` and \`$unitPrice\` (changed in v3.0.0)
+
+\`$quantity\` (BT-129/BT-130) and \`$unitPrice\` (BT-146) are filed with a **minimum of 2 and a
+maximum of 6 decimals**, trailing zeros trimmed beyond the second. They are **not** monetary
+amount fields — the EN 16931 \`BR-DEC-*\` rules cap decimals at 2 for amounts only, and quantities
+and unit prices are explicitly allowed more precision.
+
+Through v2 both were formatted as money at 2 decimals, which **corrupted the filed document**:
+
+| Value passed | v2 filed | v3 filed |
+|---|---|---|
+| \`quantity: 1.375\` | \`1.38\` ✗ | \`1.375\` ✓ |
+| \`unitPrice: 0.0075\` | \`0.01\` ✗ (overstates by 33%) | \`0.0075\` ✓ |
+| \`quantity: 5.0\` | \`5.00\` | \`5.00\` (unchanged) |
+| \`unitPrice: 100.0\` | \`100.00\` | \`100.00\` (unchanged) |
+
+This bites per-unit pricing below one ban (telecom, energy, per-page/per-SMS tariffs) and
+fine-grained quantities (grams billed in KGM, fractional hours). Whole and 2-decimal values render
+exactly as before, so most invoices are byte-identical.
+
+Amount fields — \`cbc:LineExtensionAmount\`, all VAT amounts, and the document totals — remain at
+exactly 2 decimals. Beyond 6 decimals the value is truncated by rounding, which also keeps binary
+floating-point noise out of the XML (a quantity of \`1/3\` files as \`0.333333\`, not seventeen digits).
+
 ## Public Methods
 
 ### \`getLineTotal(): float\`
@@ -128,7 +196,10 @@ Returns \`round(quantity * unitPrice, 2)\`.
 Returns \`round(taxAmount, 2)\`. This is the pre-computed value passed at construction.
 
 ### \`getRawLineTotal(): float\`
-Returns unrounded \`quantity * unitPrice\`. Used internally by \`InvoiceData::getTotalExcludingVat()\` for tax grouping to avoid double-rounding.
+Returns unrounded \`quantity * unitPrice\`. **Not** what the invoice files — \`cbc:LineExtensionAmount\`
+is capped at 2 decimals, so \`getLineTotal()\` is the figure that reaches ANAF and the one the
+document totals are built from. Summing this across lines and rounding once at the end does not
+reproduce the filed total.
 
 ### \`getLineTotalWithTax(): float\`
 Returns \`round(getLineTotal() + getTaxAmount(), 2)\`.
@@ -180,12 +251,19 @@ Party information (supplier or customer) for an invoice. Extends \`Spatie\\Larav
 | \`$registrationName\` | \`string\` | yes | — | Legal name of the party as registered |
 | \`$companyId\` | \`string\` | yes | — | CIF/CUI number without RO prefix (e.g. \`'49296198'\`). The builder adds \`RO\` prefix automatically for VAT payers. |
 | \`$address\` | \`AddressData\` | yes | — | Address of the party (Invoice\\AddressData) |
+| \`$isVatPayer\` | \`bool\|string\` | **yes** | — | Whether the party is registered for VAT. **No default (since v3.0.0)**. Typed as a union so a mis-positioned string is rejected rather than silently coerced — the property itself is \`bool\`. See below |
 | \`$registrationNumber\` | \`?string\` | no | \`null\` | ONRC trade register identifier (e.g. \`'J40/1234/2020'\`) |
-| \`$isVatPayer\` | \`bool\` | no | \`false\` | Whether the party is a VAT payer |
 
 ## Critical Notes
 
-- **\`$isVatPayer\` affects XML output:** when \`true\`, the UBL builder prepends \`RO\` to \`$companyId\` in the \`CompanyID\` XML element. Pass the raw numeric CIF (without \`RO\`) and let the builder handle the prefix.
+- **\`$isVatPayer\` is REQUIRED and has no default (BREAKING in v3.0.0).** It used to default to \`false\`, which meant a caller who simply forgot it filed a VAT-registered company as *not subject to VAT* — and because the resulting document is internally consistent, ANAF accepts it. There was no error to notice. Declare it explicitly on **both** the supplier and the customer. Omitting it now raises \`ArgumentCountError\` on direct construction, \`CannotCreateData\` via \`::from()\`, and a validation error via \`::validate()\`/\`::validateAndCreate()\`. An explicit \`false\` is accepted normally.
+  - The parameter ORDER also changed: \`$isVatPayer\` now precedes \`$registrationNumber\`. Use named arguments.
+- **\`$isVatPayer\` affects XML output:** when \`true\`, the UBL builder emits a \`PartyTaxScheme\` block whose \`CompanyID\` is \`$companyId\` prefixed with the party's VAT country prefix (derived from \`$address->countryCode\`, uppercased, defaulting to \`RO\`) — so a Romanian address yields \`RO49296198\`. Pass the raw numeric CIF (without a prefix) and let the builder handle it.
+  - The prefix is skipped when \`$companyId\` already carries a recognised VAT prefix. That prefix is not always the country code: Greece files under \`EL\` (country \`GR\`) and Northern Ireland under \`XI\` (country \`GB\`), and a party may hold a VAT id issued by another state. A supplied \`EL123456789\` stays \`EL123456789\` rather than becoming \`GREL123456789\` (fixed in v3.0.0).
+  - \`PartyLegalEntity/CompanyID\` is emitted for **every** party, VAT payer or not, and carries \`$companyId\` passed through \`VatNumberValidator::stripPrefix()\`. That helper strips **only** a leading \`RO\` — a \`companyId\` of \`'EL123456789'\` or \`'XI123456789'\` reaches \`PartyLegalEntity/CompanyID\` unchanged. Supplying the bare national number remains the safe input.
+- **\`$isVatPayer: false\` on the supplier forces VAT category "O" on every line.** A supplier not registered for VAT cannot charge it: every line must carry \`taxPercent: 0\` and \`taxAmount: 0.0\`, or the builder throws (BR-O-09). Category "O" has two further effects, both new in v3.0.0:
+  - the line's \`ClassifiedTaxCategory\` omits \`cbc:Percent\` entirely (BR-O-05). The document-level \`TaxSubtotal/TaxCategory\` **still** carries \`<cbc:Percent>0.00</cbc:Percent>\` plus \`<cbc:TaxExemptionReasonCode>VATEX-EU-O</cbc:TaxExemptionReasonCode>\` — the suppression applies to the line only;
+  - the **buyer's** \`PartyTaxScheme\` (BT-48) is suppressed too, per BR-O-02 — even when the customer's own \`isVatPayer\` is \`true\`. A non-VAT supplier therefore files a document with **zero** \`PartyTaxScheme\` blocks.
 - \`$address\` is \`BeeCoded\\EFacturaSdk\\Data\\Invoice\\AddressData\`, not the Company namespace AddressData.
 
 ## Example
@@ -203,10 +281,54 @@ $supplier = new PartyData(
         county: 'RO-B',
         postalZone: '010101',
     ),
+    isVatPayer: true,                // REQUIRED — builder writes <CompanyID>RO49296198</CompanyID>
     registrationNumber: 'J40/1234/2020',
-    isVatPayer: true,                // builder will write <CompanyID>RO49296198</CompanyID>
 );
 \`\`\`
+
+Named arguments make the v3.0.0 reorder a non-event. **Positional construction is the dangerous
+case** — the 4th argument is now \`$isVatPayer\` and \`$registrationNumber\` moved to 5th, so a v2
+positional call passes the ONRC string where the bool belongs:
+
+\`\`\`php
+// v2 positional call, unchanged:
+new PartyData('Acme SRL', '49296198', $address, 'J40/1234/2020', true);
+\`\`\`
+
+| Calling file | Result |
+|---|---|
+| \`declare(strict_types=1);\` | \`InvalidArgumentException: PartyData::$isVatPayer must be a bool, received the string "J40/1234/2020"\` |
+| **no** \`strict_types\` (the Laravel app default) | The same \`InvalidArgumentException\` |
+
+Both are loud, and that took deliberate work. \`strict_types\` is **caller-scoped**, so a plain
+\`bool\` parameter is only type-checked when the *calling* file declares it — which most Laravel app
+files do not. Under coercive binding \`'J40/1234/2020'\` silently became \`isVatPayer = true\`, and
+\`true\` became \`registrationNumber = '1'\`: no error, and since v2 defaulted the flag to \`false\`,
+a non-VAT-payer supplier silently flipped to a VAT payer. Every line moved from category O to Z, the
+party gained a BT-31 seller VAT id it does not hold, and the document stayed internally consistent —
+so **ANAF accepted and filed it**.
+
+\`$isVatPayer\` is therefore typed \`bool|string\` and rejects strings explicitly. A union matches a
+string *exactly*, so PHP never coerces it, and the guard turns what was a silent mis-filing into an
+exception in both modes. Only \`true\`, \`false\`, \`1\`, \`0\`, \`'1'\` and \`'0'\` are accepted —
+exactly Laravel's \`boolean\` rule, so \`::from()\` and \`::validateAndCreate()\` payloads are
+unaffected.
+
+\`\`\`php
+// v3 — correct
+new PartyData('Acme SRL', '49296198', $address, true, 'J40/1234/2020');   // ✓
+// v3 — better: immune to any future reorder
+new PartyData(
+    registrationName: 'Acme SRL',
+    companyId: '49296198',
+    address: $address,
+    isVatPayer: true,
+    registrationNumber: 'J40/1234/2020',
+);
+\`\`\`
+
+Grep for positional \`new PartyData(\` before upgrading — most app files do not declare
+\`strict_types\`, so the compiler will **not** catch this for you.
 `,
 
   InvoiceAddressData: `# InvoiceAddressData (class name: AddressData)
@@ -348,7 +470,7 @@ $tokens = OAuthTokensData::fromAnafResponse($response);
 
 // Check before using
 if ($tokens->isExpired()) {
-    $tokens = $authenticator->refreshTokens($tokens->refreshToken);
+    $tokens = $authenticator->refreshAccessToken($tokens->refreshToken);
 }
 \`\`\`
 `,
@@ -757,7 +879,7 @@ do {
         endDate: $end,
         page: $page,
     );
-    $response = $client->listMessagesPaginated($params);
+    $response = $client->getMessagesPaginated($params);
 
     foreach ($response->mesaje ?? [] as $message) {
         // process
@@ -929,7 +1051,9 @@ Finds a company by CUI. Handles optional \`RO\` prefix (case-insensitive) before
 ## Example
 
 \`\`\`php
-$result = $companyService->lookup(['12345678', '98765432']);
+use BeeCoded\\EFacturaSdk\\Facades\\AnafDetails;
+
+$result = AnafDetails::batchGetCompanyData(['12345678', '98765432']);
 
 if ($result->success && $result->hasCompanies()) {
     $company = $result->getByCui('RO12345678');

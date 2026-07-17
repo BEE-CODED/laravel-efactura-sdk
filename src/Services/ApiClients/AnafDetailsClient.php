@@ -57,6 +57,43 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
     }
 
     /**
+     * {@inheritdoc}
+     *
+     * Reads the same efactura-sdk.http.* config as the timeout above. Company
+     * lookups are reads, so retrying them is always safe.
+     */
+    protected function getRetryDelay(): int
+    {
+        return (int) (config('efactura-sdk.http.retry_delay') ?? self::RETRY_DELAY);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function getMaxTryCount(): int
+    {
+        return (int) (config('efactura-sdk.http.retry_times') ?? self::MAX_TRY_COUNT);
+    }
+
+    /**
+     * {@inheritdoc}
+     *
+     * The lookup cap is metered per HTTP request, so every retry must consume a
+     * unit of its own. This bucket is less forgiving than the e-Factura ones: it
+     * is 100% of ANAF's cap rather than the usual 50% margin (a margin is
+     * unrepresentable as an integer over a 1-second window -- see RateLimiter),
+     * and the window is one SECOND. With retry_delay=0 an ANAF 5xx storm fires
+     * every attempt inside that same second, so counting the retries as a single
+     * lookup puts the SDK over a hard cap it believes it is respecting.
+     *
+     * @throws RateLimitExceededException When the retry would exceed the 1 req/sec cap
+     */
+    protected function onRetryAttempt(): void
+    {
+        $this->rateLimiter->checkCompanyLookup();
+    }
+
+    /**
      * Get the logger instance.
      */
     public static function getLogger(): LoggerInterface
@@ -179,6 +216,12 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             $this->logger->info('ANAF API successful response for batch request');
 
             return $this->transformResponse($data, $invalidCodes);
+        } catch (RateLimitExceededException $e) {
+            // onRetryAttempt() consumes the lookup bucket from INSIDE this try block,
+            // so unlike the pre-flight check above, a breach raised mid-retry would be
+            // swallowed by the catch-all below and reported as a lookup failure.
+            // Rethrow so a rate limit always surfaces as one, wherever it is tripped.
+            throw $e;
         } catch (ApiException $e) {
             // ANAF returns HTTP 404 with a {found, notFound} body when NONE of the
             // queried CUIs exist. That is a documented "not found" response, not an

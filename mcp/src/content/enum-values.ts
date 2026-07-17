@@ -74,21 +74,22 @@ Message filters for listing operations in the ANAF e-Factura system. Each filter
 ## Usage example
 
 \`\`\`php
+use BeeCoded\\EFacturaSdk\\Data\\Invoice\\ListMessagesParamsData;
 use BeeCoded\\EFacturaSdk\\Enums\\MessageFilter;
 
 // List invoices you have sent
-$messages = $client->listMessages(
+$messages = $client->getMessages(new ListMessagesParamsData(
     cif: '12345678',
-    filter: MessageFilter::InvoiceSent,
     days: 60,
-);
+    filter: MessageFilter::InvoiceSent,
+));
 
 // List invoices you received
-$received = $client->listMessages(
+$received = $client->getMessages(new ListMessagesParamsData(
     cif: '12345678',
-    filter: MessageFilter::InvoiceReceived,
     days: 60,
-);
+    filter: MessageFilter::InvoiceReceived,
+));
 \`\`\`
 `,
 
@@ -140,17 +141,16 @@ Document standards used for XML validation and PDF conversion via ANAF web servi
 \`\`\`php
 use BeeCoded\\EFacturaSdk\\Enums\\DocumentStandardType;
 
-// Validate an invoice XML
-$result = $validationService->validate(
-    xml: $invoiceXml,
-    standard: DocumentStandardType::FACT1,
-);
+// Validate an invoice XML ($client is an EFacturaClient instance)
+$result = $client->validateXml($invoiceXml, DocumentStandardType::FACT1);
 
 // Validate a credit note XML
-$result = $validationService->validate(
-    xml: $creditNoteXml,
-    standard: DocumentStandardType::FCN,
-);
+$result = $client->validateXml($creditNoteXml, DocumentStandardType::FCN);
+
+// validateXml() returns a ValidationResultData — a failed validation does NOT throw
+if (! $result->valid) {
+    // Inspect $result->details and $result->errors
+}
 \`\`\`
 `,
 
@@ -172,21 +172,24 @@ Standard document types supported by ANAF e-Factura. Used to indicate the XML fo
 ## Usage example
 
 \`\`\`php
+use BeeCoded\\EFacturaSdk\\Data\\Invoice\\UploadOptionsData;
 use BeeCoded\\EFacturaSdk\\Enums\\StandardType;
 
-// Upload a UBL invoice
-$response = $client->uploadInvoice(
-    xml: $invoiceXml,
-    cif: '12345678',
-    standard: StandardType::UBL,
+// Upload a UBL invoice. The CIF is not a parameter — it comes from the
+// $vatNumber the EFacturaClient was constructed with.
+$response = $client->uploadDocument(
+    $invoiceXml,
+    new UploadOptionsData(standard: StandardType::UBL),
 );
 
 // Upload a credit note
-$response = $client->uploadInvoice(
-    xml: $creditNoteXml,
-    cif: '12345678',
-    standard: StandardType::CN,
+$response = $client->uploadDocument(
+    $creditNoteXml,
+    new UploadOptionsData(standard: StandardType::CN),
 );
+
+// $options is optional — omitting it defaults the standard to UBL
+$response = $client->uploadDocument($invoiceXml);
 \`\`\`
 `,
 
@@ -204,18 +207,65 @@ Tax Category identifiers for VAT classification in UBL invoice line items and ta
 | \`Standard\` | \`'S'\` | Standard rated VAT (e.g. 19% in Romania) |
 | \`ZeroRated\` | \`'Z'\` | Zero-rated VAT (0%) |
 
+## You never pass this enum
+
+\`TaxCategoryId\` is **derived internally** by \`InvoiceBuilder\` — it is not a constructor
+parameter on \`InvoiceLineData\` or any other DTO, and there is no way to override it.
+The builder picks the category per line from the **supplier's VAT-payer flag** and the
+line's \`taxPercent\`:
+
+| Condition | Resulting category |
+|---|---|
+| \`$invoice->supplier->isVatPayer === false\` | \`NotSubject\` (\`'O'\`) — regardless of \`taxPercent\` |
+| Supplier is a VAT payer and \`taxPercent\` is ~0 (\`abs(taxPercent) < 0.01\`) | \`ZeroRated\` (\`'Z'\`) |
+| Supplier is a VAT payer and \`taxPercent\` > 0 | \`Standard\` (\`'S'\`) |
+
+The chosen value is written to \`ClassifiedTaxCategory/ID\` on each line and to the
+matching \`TaxSubtotal\` group. Import the enum only if you need to *read* or compare
+these values (e.g. when parsing XML you received).
+
+## Category \`O\` suppresses the line VAT rate (v3.0.0)
+
+When a line resolves to \`NotSubject\` (\`'O'\`), its \`cac:ClassifiedTaxCategory\` omits
+\`cbc:Percent\` entirely. BR-O-05 asserts \`not(cbc:Percent)\` on such a line and fails
+**fatally** otherwise — through v2 the builder always emitted it, so every invoice from a
+non-VAT-payer supplier was rejected by ANAF.
+
+The document-level \`cac:TaxSubtotal/cac:TaxCategory\` is **not** affected and still carries
+\`<cbc:Percent>0.00</cbc:Percent>\` alongside \`<cbc:TaxExemptionReasonCode>VATEX-EU-O</cbc:TaxExemptionReasonCode>\`:
+
+\`\`\`xml
+<!-- invoice LINE: no Percent -->
+<cac:ClassifiedTaxCategory>
+  <cbc:ID>O</cbc:ID>
+  <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+</cac:ClassifiedTaxCategory>
+
+<!-- document TAX BREAKDOWN: Percent retained -->
+<cac:TaxCategory>
+  <cbc:ID>O</cbc:ID>
+  <cbc:Percent>0.00</cbc:Percent>
+  <cbc:TaxExemptionReasonCode>VATEX-EU-O</cbc:TaxExemptionReasonCode>
+  <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+</cac:TaxCategory>
+\`\`\`
+
+A category-\`O\` line must also carry \`taxPercent: 0\` and \`taxAmount: 0.0\`, or the builder throws
+\`ValidationException: Line N: A supplier that is not registered for VAT cannot charge VAT (BR-O-09)\`.
+
 ## Usage example
 
 \`\`\`php
-use BeeCoded\\EFacturaSdk\\Enums\\TaxCategoryId;
 use BeeCoded\\EFacturaSdk\\Data\\Invoice\\InvoiceLineData;
 
+// Supplier is a VAT payer + taxPercent 19 → builder emits ClassifiedTaxCategory/ID = 'S'
 $line = new InvoiceLineData(
-    description: 'Consulting services',
+    name: 'Consulting services',   // required — this is the line item name, not 'description'
     quantity: 1,
     unitPrice: 1000.00,
-    taxCategory: TaxCategoryId::Standard,
+    taxAmount: 190.00,             // required — pre-computed: 1 * 1000.00 * 0.19
     taxPercent: 19.0,
+    description: 'Optional longer description',
 );
 \`\`\`
 `,
@@ -272,8 +322,8 @@ Parses a \`stare_inregistrare\` string. Prefix-matches (case-insensitive, diacri
 
 ## Usage Notes
 
-- **\`Unknown\` is fail-open:** treat it as "no verdict", never as deregistered. It does **not** flip \`CompanyData::$isDeregistered\` and does **not** make \`isActive()\` return false.
-- Only \`Deregistered\` flips \`CompanyData::$isDeregistered\` to \`true\`. The raw string is always preserved in \`CompanyData::$registrationStatusRaw\`.
+- **\`Unknown\` is fail-open:** treat it as "no verdict", never as deregistered. \`Unknown\` never *causes* \`CompanyData::$isDeregistered\` to be \`true\`. Note this says nothing about the other inputs: a company whose \`registrationStatus\` is \`Unknown\` can still be \`$isDeregistered\` (via \`dataRadiere\`, see below) or \`$isInactive\`, either of which makes \`isActive()\` return \`false\`.
+- \`Deregistered\` is **not** the only trigger for \`CompanyData::$isDeregistered\`. That flag is \`true\` when **either** source says so: the inactive registry supplied a \`dataRadiere\` date (surfaced as \`inactiveStatusDetails->deregistrationDate\`), **or** \`registrationStatus === Deregistered\`. Either one alone is enough, so \`$isDeregistered\` can be \`true\` while \`registrationStatus\` is \`Registered\` or \`Unknown\`. \`$deregistrationDate\` prefers the \`dataRadiere\` value and falls back to the date parsed out of the status string. The raw string is always preserved in \`CompanyData::$registrationStatusRaw\`.
 
 ## Usage example
 

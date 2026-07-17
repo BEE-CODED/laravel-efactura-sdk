@@ -16,6 +16,72 @@ beforeEach(function () {
 });
 
 describe('AnafDetailsClient', function () {
+    describe('retry configuration', function () {
+        // This client already overrides getTimeoutDuration() to read
+        // efactura-sdk.http.timeout, so honouring the timeout but silently
+        // ignoring the neighbouring retry settings is an oversight, not a design.
+        // Company lookups are reads, so retrying them stays safe.
+
+        it('honours the configured retry_times', function () {
+            config()->set('efactura-sdk.http.retry_times', 2);
+            config()->set('efactura-sdk.http.retry_delay', 0);
+
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $result = (new AnafDetailsClient)->getCompanyData('RO18547290');
+
+            expect($result->success)->toBeFalse();
+            expect($attempts)->toBe(2);
+        });
+
+        it('honours the configured retry_delay', function () {
+            config()->set('efactura-sdk.http.retry_delay', 7);
+            config()->set('efactura-sdk.http.retry_times', 4);
+
+            $client = new class extends AnafDetailsClient
+            {
+                public function exposedRetryDelay(): int
+                {
+                    return $this->getRetryDelay();
+                }
+
+                public function exposedMaxTryCount(): int
+                {
+                    return $this->getMaxTryCount();
+                }
+            };
+
+            expect($client->exposedRetryDelay())->toBe(7);
+            expect($client->exposedMaxTryCount())->toBe(4);
+        });
+
+        it('falls back to the hardcoded defaults when config is absent', function () {
+            config()->set('efactura-sdk.http.retry_delay', null);
+            config()->set('efactura-sdk.http.retry_times', null);
+
+            $client = new class extends AnafDetailsClient
+            {
+                public function exposedRetryDelay(): int
+                {
+                    return $this->getRetryDelay();
+                }
+
+                public function exposedMaxTryCount(): int
+                {
+                    return $this->getMaxTryCount();
+                }
+            };
+
+            expect($client->exposedRetryDelay())->toBe(5);
+            expect($client->exposedMaxTryCount())->toBe(3);
+        });
+    });
+
     describe('getCompanyData', function () {
         it('returns company data for valid CUI', function () {
             Http::fake([
@@ -326,6 +392,55 @@ describe('rate limiting', function () {
         Http::preventStrayRequests();
 
         expect(fn () => (new AnafDetailsClient)->getCompanyData('12345678'))
+            ->toThrow(RateLimitExceededException::class);
+    });
+
+    it('consumes a lookup token for every HTTP attempt, including retries', function () {
+        // company_lookup is 100% of ANAF's cap (1/sec, not halved like the others)
+        // over a 1-SECOND window. With retry_delay=0 -- supported, and what the retry
+        // tests above set -- a 500 storm fires all 3 attempts inside that one second.
+        // Counting them as 1 lookup puts the SDK 3x over a hard cap it believes it is
+        // respecting.
+        config()->set('efactura-sdk.http.retry_times', 3);
+        config()->set('efactura-sdk.http.retry_delay', 0);
+
+        $attempts = 0;
+        Http::fake(function () use (&$attempts) {
+            $attempts++;
+
+            return Http::response('Server Error', 500);
+        });
+
+        $rateLimiter = Mockery::mock(RateLimiter::class);
+        $rateLimiter->shouldReceive('checkCompanyLookup')->times(3)->andReturnNull();
+        app()->instance(RateLimiter::class, $rateLimiter);
+
+        $result = (new AnafDetailsClient)->getCompanyData('RO18547290');
+
+        expect($result->success)->toBeFalse();
+        expect($attempts)->toBe(3);
+    });
+
+    it('surfaces a lookup limit tripped mid-retry as RateLimitExceededException', function () {
+        // The retry hook must not swallow the limiter's verdict: if the bucket runs
+        // out on attempt 2, that has to propagate, not be reported as a lookup failure.
+        config()->set('efactura-sdk.http.retry_times', 3);
+        config()->set('efactura-sdk.http.retry_delay', 0);
+
+        Http::fake(['*' => Http::response('Server Error', 500)]);
+
+        $rateLimiter = Mockery::mock(RateLimiter::class);
+        $rateLimiter->shouldReceive('checkCompanyLookup')
+            ->once()
+            ->andReturnNull()
+            ->ordered();
+        $rateLimiter->shouldReceive('checkCompanyLookup')
+            ->once()
+            ->andThrow(new RateLimitExceededException('limit', remaining: 0, retryAfterSeconds: 1))
+            ->ordered();
+        app()->instance(RateLimiter::class, $rateLimiter);
+
+        expect(fn () => (new AnafDetailsClient)->getCompanyData('RO18547290'))
             ->toThrow(RateLimitExceededException::class);
     });
 
