@@ -700,7 +700,7 @@ describe('VatRegistrationData', function () {
         expect($vatReg->actType)->toBe('HOTARARE');
     });
 
-    describe('fromAnafResponse', function () {
+    describe('fromAnafResponse (VAT registration)', function () {
         it('parses active TVA incasare status', function () {
             $response = [
                 'statusTvaIncasare' => true,
