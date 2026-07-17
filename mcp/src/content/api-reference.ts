@@ -12,10 +12,14 @@ public function __construct(
     string $vatNumber,
     string $accessToken,
     string $refreshToken,
-    ?Carbon $expiresAt = null,
+    ?CarbonInterface $expiresAt = null,
     ?AnafAuthenticatorInterface $authenticator = null,
 )
 \`\`\`
+
+\`$expiresAt\` accepts any \`Carbon\\CarbonInterface\` implementation (since v2.3.0), so a
+\`CarbonImmutable\` from \`Date::use(CarbonImmutable::class)\` can be passed directly. It is
+normalised to a mutable \`Carbon\` internally.
 
 ## Factory Method
 
@@ -70,7 +74,7 @@ Built-in rate limiting is enforced via the \`RateLimiter\` class. When the limit
 
 \`\`\`php
 use BeeCoded\\EFacturaSdk\\Services\\ApiClients\\EFacturaClient;
-use BeeCoded\\EFacturaSdk\\Data\\OAuthTokensData;
+use BeeCoded\\EFacturaSdk\\Data\\Auth\\OAuthTokensData;
 
 // Instantiate via constructor
 $client = new EFacturaClient(

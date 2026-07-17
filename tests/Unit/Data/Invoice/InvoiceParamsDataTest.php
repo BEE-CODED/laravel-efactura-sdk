@@ -8,6 +8,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
 use BeeCoded\EFacturaSdk\Enums\MessageFilter;
 use BeeCoded\EFacturaSdk\Enums\StandardType;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 
 describe('ListMessagesParamsData', function () {
     it('has correct default values', function () {
@@ -62,6 +63,21 @@ describe('PaginatedMessagesParamsData', function () {
 
             expect($params->page)->toBe(3);
             expect($params->filter)->toBe(MessageFilter::InvoiceReceived);
+        });
+
+        it('creates from immutable dates', function () {
+            // Apps calling Date::use(CarbonImmutable::class) pass CarbonImmutable in;
+            // it is not a Carbon subclass, so the signature must accept CarbonInterface.
+            // Expectations are hardcoded rather than derived from getTimestampMs(), which is
+            // the same call the implementation makes -- otherwise this asserts X === X.
+            $params = PaginatedMessagesParamsData::fromDateRange(
+                cif: '12345678',
+                startDate: CarbonImmutable::create(2024, 1, 1, 0, 0, 0, 'UTC'),
+                endDate: CarbonImmutable::create(2024, 1, 2, 0, 0, 0, 'UTC'),
+            );
+
+            expect($params->startTime)->toBe(1704067200000)
+                ->and($params->endTime)->toBe(1704153600000);
         });
     });
 });

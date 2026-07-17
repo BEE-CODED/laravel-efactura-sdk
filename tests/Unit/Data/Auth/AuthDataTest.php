@@ -5,6 +5,7 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 
 describe('OAuthTokensData', function () {
     it('creates with required fields', function () {
@@ -33,6 +34,91 @@ describe('OAuthTokensData', function () {
 
         expect($tokens->expiresAt)->toBe($expiresAt);
         expect($tokens->expiresIn)->toBe(3600);
+    });
+
+    it('accepts an immutable date for expiresAt and normalises it', function () {
+        // Apps that call Date::use(CarbonImmutable) hydrate the token's expires_at as a
+        // CarbonImmutable, which is NOT a Carbon subclass. The constructor must accept it.
+        $expiresAt = CarbonImmutable::create(2024, 12, 31, 23, 59, 59);
+
+        $tokens = new OAuthTokensData(
+            accessToken: 'access_token',
+            refreshToken: 'refresh_token',
+            expiresAt: $expiresAt,
+        );
+
+        // Stored as a mutable Carbon, preserving the exact instant.
+        expect($tokens->expiresAt)->toBeInstanceOf(Carbon::class)
+            ->and($tokens->expiresAt->equalTo($expiresAt))->toBeTrue();
+    });
+
+    it('reports isExpired correctly for an immutable expiresAt', function () {
+        // Pins the read path (->copy()->subSeconds()->isPast()) against a fixed clock,
+        // so this asserts the ANSWER rather than merely that a bool came back.
+        Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));
+
+        // Inside the 120s default buffer -> already considered expired.
+        $expiring = new OAuthTokensData(
+            accessToken: 'a',
+            refreshToken: 'r',
+            expiresAt: CarbonImmutable::create(2024, 6, 15, 12, 0, 30),
+        );
+
+        // Comfortably in the future -> not expired.
+        $valid = new OAuthTokensData(
+            accessToken: 'a',
+            refreshToken: 'r',
+            expiresAt: CarbonImmutable::create(2024, 6, 15, 13, 0, 0),
+        );
+
+        expect($expiring->isExpired())->toBeTrue()
+            ->and($valid->isExpired())->toBeFalse();
+
+        Carbon::setTestNow();
+    });
+
+    it('preserves a mutable Carbon instance as-is', function () {
+        // Guards the BC promise: existing callers passing a mutable Carbon must keep
+        // getting back the very same instance, not a copy.
+        $expiresAt = Carbon::create(2024, 12, 31, 23, 59, 59);
+
+        $tokens = new OAuthTokensData(
+            accessToken: 'access_token',
+            refreshToken: 'refresh_token',
+            expiresAt: $expiresAt,
+        );
+
+        expect($tokens->expiresAt)->toBe($expiresAt);
+    });
+
+    it('serialises keys in the declared order', function () {
+        // The date properties are declared in the class body rather than promoted, and
+        // spatie derives serialisation order from declaration order. Declaring them out
+        // of constructor order would silently reorder every consumer's toArray()/toJson().
+        $tokens = new OAuthTokensData(
+            accessToken: 'access_token',
+            refreshToken: 'refresh_token',
+            expiresAt: Carbon::create(2024, 12, 31),
+            expiresIn: 3600,
+        );
+
+        expect(array_keys($tokens->toArray()))
+            ->toBe(['accessToken', 'refreshToken', 'expiresAt', 'expiresIn', 'tokenType']);
+    });
+
+    it('omits defaulted fields from validation rules', function () {
+        // The properties are declared in the class body, and laravel-data reads a
+        // non-promoted property's default from the property itself. Drop those defaults
+        // and tokenType becomes "required", rejecting payloads that were valid before.
+        expect(array_keys(OAuthTokensData::getValidationRules([])))
+            ->toBe(['accessToken', 'refreshToken']);
+    });
+
+    it('accepts a payload omitting the defaulted fields', function () {
+        // The assertion above only reads the rules; this proves the behaviour they drive.
+        $tokens = OAuthTokensData::validate(['accessToken' => 'AT', 'refreshToken' => 'RT']);
+
+        expect($tokens)->toBeArray();
     });
 
     describe('fromAnafResponse', function () {

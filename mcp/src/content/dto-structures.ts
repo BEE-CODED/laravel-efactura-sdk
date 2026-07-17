@@ -10,15 +10,35 @@ Complete invoice data for e-Factura submission. Extends \`Spatie\\LaravelData\\D
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | \`$invoiceNumber\` | \`string\` | yes | — | Invoice number/identifier |
-| \`$issueDate\` | \`Carbon\|string\` | yes | — | Invoice issue date |
+| \`$issueDate\` | \`CarbonInterface\|string\` | yes | — | Invoice issue date — see Date handling below |
 | \`$supplier\` | \`PartyData\` | yes | — | Supplier (seller) information |
 | \`$customer\` | \`PartyData\` | yes | — | Customer (buyer) information |
-| \`$lines\` | \`InvoiceLineData[]\` | yes | — | Invoice line items (annotated with \`#[DataCollectionOf(InvoiceLineData::class)]\`) |
-| \`$dueDate\` | \`Carbon\|string\|null\` | no | \`null\` | Payment due date |
+| \`$lines\` | \`InvoiceLineData[]\` | yes | — | Invoice line items (the \`$lines\` **property** is annotated with \`#[DataCollectionOf(InvoiceLineData::class)]\`) |
+| \`$dueDate\` | \`CarbonInterface\|string\|null\` | no | \`null\` | Payment due date — see Date handling below |
 | \`$currency\` | \`string\` | no | \`'RON'\` | Currency code (ISO 4217) |
 | \`$paymentIban\` | \`?string\` | no | \`null\` | IBAN for payment |
 | \`$invoiceTypeCode\` | \`?InvoiceTypeCode\` | no | \`null\` | Type of invoice — resolved via \`getInvoiceTypeCode()\` which defaults to \`CommercialInvoice\` |
 | \`$precedingInvoiceNumber\` | \`?string\` | no | \`null\` | Preceding invoice number for credit notes (BT-25, used in BillingReference element) |
+
+## Date handling (since v2.3.0)
+
+\`$issueDate\` and \`$dueDate\` accept **any** \`Carbon\\CarbonInterface\` implementation, so apps that
+call \`Date::use(CarbonImmutable::class)\` can pass Eloquent \`datetime\` casts straight in:
+
+\`\`\`php
+new InvoiceData(
+    invoiceNumber: $this->number,
+    issueDate: $this->issued_at,   // CarbonImmutable — accepted
+    dueDate: $this->due_at,
+    // ...
+);
+\`\`\`
+
+An immutable date is normalised to a mutable \`Carbon\` on the way in (timezone and microseconds
+preserved); a date that is already a mutable \`Carbon\` is stored as-is (same instance), and a
+\`string\` is left as a \`string\`. The **stored property types are unchanged** — \`$issueDate\` is
+\`Carbon|string\` and \`$dueDate\` is \`Carbon|string|null\` — and the getters below still return
+concrete \`Carbon\`, so reading an invoice never gives you a \`CarbonImmutable\`.
 
 ## Public Methods
 
@@ -285,9 +305,26 @@ OAuth 2.0 token data from ANAF. Extends \`Spatie\\LaravelData\\Data\`.
 |---|---|---|---|---|
 | \`$accessToken\` | \`string\` | yes | — | OAuth access token |
 | \`$refreshToken\` | \`string\` | yes | — | OAuth refresh token |
-| \`$expiresAt\` | \`?Carbon\` | no | \`null\` | Absolute expiry timestamp |
+| \`$expiresAt\` | \`?CarbonInterface\` | no | \`null\` | Absolute expiry timestamp. Accepts any Carbon date; stored as \`?Carbon\` (see Date handling below) |
 | \`$expiresIn\` | \`?int\` | no | \`null\` | Token lifetime in seconds (as returned by ANAF) |
 | \`$tokenType\` | \`string\` | no | \`'Bearer'\` | Token type |
+
+## Date handling (since v2.3.0)
+
+\`$expiresAt\` accepts **any** \`Carbon\\CarbonInterface\` implementation, so apps that call
+\`Date::use(CarbonImmutable::class)\` can pass an Eloquent \`datetime\` cast straight in:
+
+\`\`\`php
+new OAuthTokensData(
+    accessToken: $token->access_token,
+    refreshToken: $token->refresh_token,
+    expiresAt: $token->expires_at,   // CarbonImmutable — accepted
+);
+\`\`\`
+
+An immutable date is normalised to a mutable \`Carbon\`; a mutable \`Carbon\` is stored as-is (same
+instance). The **\`$expiresAt\` property stays \`?Carbon\`**, so reading it always gives a mutable
+\`Carbon\` regardless of what was passed in.
 
 ## Static Factory Methods
 
@@ -397,8 +434,8 @@ Parameters for the paginated message listing endpoint from ANAF e-Factura. Uses 
 
 ## Static Factory Methods
 
-### \`fromDateRange(string $cif, Carbon $startDate, Carbon $endDate, int $page = 1, ?MessageFilter $filter = null): self\`
-Convenience constructor that accepts Carbon dates and converts them to millisecond timestamps via \`->getTimestampMs()\`.
+### \`fromDateRange(string $cif, CarbonInterface $startDate, CarbonInterface $endDate, int $page = 1, ?MessageFilter $filter = null): self\`
+Convenience constructor that accepts any Carbon dates — mutable or \`CarbonImmutable\` (since v2.3.0) — and converts them to millisecond timestamps via \`->getTimestampMs()\`.
 
 ## Public Methods
 

@@ -6,6 +6,7 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\MessageFilter;
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Spatie\LaravelData\Attributes\Validation\Min;
 use Spatie\LaravelData\Data;
 
@@ -31,12 +32,15 @@ class PaginatedMessagesParamsData extends Data
     ) {}
 
     /**
-     * Create from Carbon date range.
+     * Create from a Carbon date range.
+     *
+     * Accepts any CarbonInterface implementation, so immutable dates from
+     * Date::use(CarbonImmutable::class) can be passed directly.
      */
     public static function fromDateRange(
         string $cif,
-        Carbon $startDate,
-        Carbon $endDate,
+        CarbonInterface $startDate,
+        CarbonInterface $endDate,
         int $page = 1,
         ?MessageFilter $filter = null,
     ): self {

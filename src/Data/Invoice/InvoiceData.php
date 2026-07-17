@@ -6,6 +6,7 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
 use Spatie\LaravelData\Data;
 
@@ -16,31 +17,97 @@ use Spatie\LaravelData\Data;
  */
 class InvoiceData extends Data
 {
+    // Properties are declared here rather than promoted so that the date fields can accept any
+    // CarbonInterface while storing a concrete Carbon. Two details are load-bearing:
+    //
+    //  - the declaration ORDER is the constructor's, because laravel-data builds its property
+    //    list from ReflectionClass::getProperties(), which drives toArray()/toJson() key order;
+    //  - each property carries the constructor's DEFAULT, because laravel-data reads a
+    //    non-promoted property's default from the property itself (DataPropertyFactory) rather
+    //    than from the constructor signature. Without them, defaulted fields would become
+    //    "required" in getValidationRules() and validate() would reject payloads that omit them.
+    //
+    // Both are guarded by tests in tests/Unit/Data/Invoice/InvoiceDataTest.php.
+    public string $invoiceNumber;
+
+    /**
+     * Invoice issue date.
+     *
+     * Any CarbonInterface implementation is accepted by the constructor, so apps using
+     * Date::use(CarbonImmutable::class) can pass their datetime casts straight in.
+     * Immutable dates are converted to a mutable Carbon; a Carbon that is already
+     * mutable is stored as-is. A string is left untouched.
+     *
+     * Careful when changing this: the normalisation below only protects direct construction.
+     * On laravel-data's ::from() path the constructor runs and is then OVERWRITTEN --
+     * DataFromArrayResolver skips promoted properties but direct-writes un-promoted ones,
+     * and these are un-promoted. Today that is harmless because laravel-data's cast resolves
+     * the declared property type and produces a Carbon by itself, so the end state matches
+     * and getIssueDateAsCarbon()'s `instanceof Carbon` check stays correct. Any further
+     * normalisation added here would silently not apply via ::from().
+     */
+    public Carbon|string $issueDate;
+
+    public PartyData $supplier;
+
+    public PartyData $customer;
+
+    /** @var InvoiceLineData[] */
+    #[DataCollectionOf(InvoiceLineData::class)]
+    public array $lines;
+
+    /**
+     * Payment due date. Normalised in the same way as $issueDate.
+     */
+    public Carbon|string|null $dueDate = null;
+
+    public string $currency = 'RON';
+
+    public ?string $paymentIban = null;
+
+    public ?InvoiceTypeCode $invoiceTypeCode = null;
+
+    public ?string $precedingInvoiceNumber = null;
+
     /**
      * @param  string  $invoiceNumber  Invoice number/identifier
-     * @param  Carbon|string  $issueDate  Invoice issue date
+     * @param  CarbonInterface|string  $issueDate  Invoice issue date
      * @param  PartyData  $supplier  Supplier (seller) information
      * @param  PartyData  $customer  Customer (buyer) information
      * @param  InvoiceLineData[]  $lines  Invoice line items
-     * @param  Carbon|string|null  $dueDate  Payment due date
+     * @param  CarbonInterface|string|null  $dueDate  Payment due date
      * @param  string  $currency  Currency code (ISO 4217)
      * @param  string|null  $paymentIban  IBAN for payment
      * @param  InvoiceTypeCode|null  $invoiceTypeCode  Type of invoice (default: CommercialInvoice)
      * @param  string|null  $precedingInvoiceNumber  Preceding invoice number for credit notes (BT-25, used in BillingReference)
      */
     public function __construct(
-        public string $invoiceNumber,
-        public Carbon|string $issueDate,
-        public PartyData $supplier,
-        public PartyData $customer,
-        #[DataCollectionOf(InvoiceLineData::class)]
-        public array $lines,
-        public Carbon|string|null $dueDate = null,
-        public string $currency = 'RON',
-        public ?string $paymentIban = null,
-        public ?InvoiceTypeCode $invoiceTypeCode = null,
-        public ?string $precedingInvoiceNumber = null,
-    ) {}
+        string $invoiceNumber,
+        CarbonInterface|string $issueDate,
+        PartyData $supplier,
+        PartyData $customer,
+        array $lines,
+        CarbonInterface|string|null $dueDate = null,
+        string $currency = 'RON',
+        ?string $paymentIban = null,
+        ?InvoiceTypeCode $invoiceTypeCode = null,
+        ?string $precedingInvoiceNumber = null,
+    ) {
+        $this->invoiceNumber = $invoiceNumber;
+        $this->issueDate = $issueDate instanceof CarbonInterface && ! $issueDate instanceof Carbon
+            ? Carbon::instance($issueDate)
+            : $issueDate;
+        $this->supplier = $supplier;
+        $this->customer = $customer;
+        $this->lines = $lines;
+        $this->dueDate = $dueDate instanceof CarbonInterface && ! $dueDate instanceof Carbon
+            ? Carbon::instance($dueDate)
+            : $dueDate;
+        $this->currency = $currency;
+        $this->paymentIban = $paymentIban;
+        $this->invoiceTypeCode = $invoiceTypeCode;
+        $this->precedingInvoiceNumber = $precedingInvoiceNumber;
+    }
 
     /**
      * Get the issue date as a Carbon instance.

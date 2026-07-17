@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Support\DateHelper;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 
 beforeEach(function () {
     Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));
@@ -156,5 +157,47 @@ describe('daysBetween', function () {
 
     it('handles same dates', function () {
         expect(DateHelper::daysBetween('2024-03-15', '2024-03-15'))->toBe(0);
+    });
+});
+
+describe('immutable date support', function () {
+    // Apps calling Date::use(CarbonImmutable::class) pass CarbonImmutable instances in.
+    // CarbonImmutable is not a Carbon subclass, so these entry points must accept
+    // CarbonInterface and normalise internally.
+
+    it('formats an immutable date for ANAF', function () {
+        expect(DateHelper::formatForAnaf(CarbonImmutable::create(2024, 3, 15)))->toBe('2024-03-15');
+    });
+
+    it('converts an immutable date to a millisecond timestamp', function () {
+        $date = CarbonImmutable::create(2024, 1, 1, 0, 0, 0, 'UTC');
+
+        expect(DateHelper::toTimestamp($date))->toBe($date->getTimestamp() * 1000);
+    });
+
+    it('builds a day range from an immutable date', function () {
+        $date = CarbonImmutable::create(2024, 3, 15, 8, 30, 0, 'UTC');
+
+        $range = DateHelper::getDayRange($date);
+
+        expect($range['start'])->toBe(Carbon::create(2024, 3, 15, 0, 0, 0, 'UTC')->getTimestamp() * 1000)
+            ->and($range['end'])->toBe(Carbon::create(2024, 3, 15, 23, 59, 59, 'UTC')->getTimestamp() * 1000 + 999);
+    });
+
+    it('calculates days between immutable dates', function () {
+        expect(DateHelper::daysBetween(
+            CarbonImmutable::create(2024, 3, 10),
+            CarbonImmutable::create(2024, 3, 15),
+        ))->toBe(5);
+    });
+
+    it('does not mutate the caller\'s mutable Carbon', function () {
+        // toCarbon() returns the caller's instance verbatim for a mutable Carbon,
+        // so getDayRange() must keep copying before startOfDay()/endOfDay().
+        $date = Carbon::create(2024, 3, 15, 8, 30, 0, 'UTC');
+
+        DateHelper::getDayRange($date);
+
+        expect($date->format('Y-m-d H:i:s'))->toBe('2024-03-15 08:30:00');
     });
 });

@@ -25,6 +25,7 @@ use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -129,21 +130,23 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * @param  string  $vatNumber  The VAT number (CIF) for API operations
      * @param  string  $accessToken  The OAuth access token
      * @param  string  $refreshToken  The OAuth refresh token for auto-refresh
-     * @param  Carbon|null  $expiresAt  Token expiration time
+     * @param  CarbonInterface|null  $expiresAt  Token expiration time (normalised to a mutable Carbon)
      * @param  AnafAuthenticatorInterface|null  $authenticator  Optional authenticator (resolved lazily if not provided)
      */
     public function __construct(
         private readonly string $vatNumber,
         string $accessToken,
         string $refreshToken,
-        ?Carbon $expiresAt = null,
+        ?CarbonInterface $expiresAt = null,
         ?AnafAuthenticatorInterface $authenticator = null,
     ) {
         parent::__construct();
 
         $this->accessToken = $accessToken;
         $this->refreshToken = $refreshToken;
-        $this->expiresAt = $expiresAt;
+        $this->expiresAt = $expiresAt === null || $expiresAt instanceof Carbon
+            ? $expiresAt
+            : Carbon::instance($expiresAt);
         $this->authenticator = $authenticator;
         $this->rateLimiter = app(RateLimiter::class);
     }
