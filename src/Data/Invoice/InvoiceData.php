@@ -6,6 +6,7 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
 use Spatie\LaravelData\Data;
 
@@ -17,12 +18,27 @@ use Spatie\LaravelData\Data;
 class InvoiceData extends Data
 {
     /**
+     * Invoice issue date.
+     *
+     * Any CarbonInterface implementation is accepted by the constructor, so apps using
+     * Date::use(CarbonImmutable::class) can pass their datetime casts straight in.
+     * Immutable dates are converted to a mutable Carbon; a Carbon that is already
+     * mutable is stored as-is.
+     */
+    public Carbon|string $issueDate;
+
+    /**
+     * Payment due date. Normalised in the same way as $issueDate.
+     */
+    public Carbon|string|null $dueDate;
+
+    /**
      * @param  string  $invoiceNumber  Invoice number/identifier
-     * @param  Carbon|string  $issueDate  Invoice issue date
+     * @param  CarbonInterface|string  $issueDate  Invoice issue date
      * @param  PartyData  $supplier  Supplier (seller) information
      * @param  PartyData  $customer  Customer (buyer) information
      * @param  InvoiceLineData[]  $lines  Invoice line items
-     * @param  Carbon|string|null  $dueDate  Payment due date
+     * @param  CarbonInterface|string|null  $dueDate  Payment due date
      * @param  string  $currency  Currency code (ISO 4217)
      * @param  string|null  $paymentIban  IBAN for payment
      * @param  InvoiceTypeCode|null  $invoiceTypeCode  Type of invoice (default: CommercialInvoice)
@@ -30,17 +46,25 @@ class InvoiceData extends Data
      */
     public function __construct(
         public string $invoiceNumber,
-        public Carbon|string $issueDate,
+        CarbonInterface|string $issueDate,
         public PartyData $supplier,
         public PartyData $customer,
         #[DataCollectionOf(InvoiceLineData::class)]
         public array $lines,
-        public Carbon|string|null $dueDate = null,
+        CarbonInterface|string|null $dueDate = null,
         public string $currency = 'RON',
         public ?string $paymentIban = null,
         public ?InvoiceTypeCode $invoiceTypeCode = null,
         public ?string $precedingInvoiceNumber = null,
-    ) {}
+    ) {
+        $this->issueDate = $issueDate instanceof CarbonInterface && ! $issueDate instanceof Carbon
+            ? Carbon::instance($issueDate)
+            : $issueDate;
+
+        $this->dueDate = $dueDate instanceof CarbonInterface && ! $dueDate instanceof Carbon
+            ? Carbon::instance($dueDate)
+            : $dueDate;
+    }
 
     /**
      * Get the issue date as a Carbon instance.

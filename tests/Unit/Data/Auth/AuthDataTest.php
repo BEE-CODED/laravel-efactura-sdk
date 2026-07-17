@@ -36,9 +36,9 @@ describe('OAuthTokensData', function () {
         expect($tokens->expiresIn)->toBe(3600);
     });
 
-    it('accepts an immutable date for expiresAt', function () {
+    it('accepts an immutable date for expiresAt and normalises it', function () {
         // Apps that call Date::use(CarbonImmutable) hydrate the token's expires_at as a
-        // CarbonImmutable, which is not a Carbon subclass. The type hint must accept it.
+        // CarbonImmutable, which is NOT a Carbon subclass. The constructor must accept it.
         $expiresAt = CarbonImmutable::create(2024, 12, 31, 23, 59, 59);
 
         $tokens = new OAuthTokensData(
@@ -47,11 +47,48 @@ describe('OAuthTokensData', function () {
             expiresAt: $expiresAt,
         );
 
-        expect($tokens->expiresAt)->toBe($expiresAt)
-            ->and($tokens->expiresAt)->toBeInstanceOf(CarbonImmutable::class);
+        // Stored as a mutable Carbon, preserving the exact instant.
+        expect($tokens->expiresAt)->toBeInstanceOf(Carbon::class)
+            ->and($tokens->expiresAt->equalTo($expiresAt))->toBeTrue();
+    });
 
-        // The read path (->copy()->subSeconds()) must work on an immutable date too.
-        expect($tokens->isExpired())->toBeBool();
+    it('reports isExpired correctly for an immutable expiresAt', function () {
+        // Pins the read path (->copy()->subSeconds()->isPast()) against a fixed clock,
+        // so this asserts the ANSWER rather than merely that a bool came back.
+        Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));
+
+        // Inside the 120s default buffer -> already considered expired.
+        $expiring = new OAuthTokensData(
+            accessToken: 'a',
+            refreshToken: 'r',
+            expiresAt: CarbonImmutable::create(2024, 6, 15, 12, 0, 30),
+        );
+
+        // Comfortably in the future -> not expired.
+        $valid = new OAuthTokensData(
+            accessToken: 'a',
+            refreshToken: 'r',
+            expiresAt: CarbonImmutable::create(2024, 6, 15, 13, 0, 0),
+        );
+
+        expect($expiring->isExpired())->toBeTrue()
+            ->and($valid->isExpired())->toBeFalse();
+
+        Carbon::setTestNow();
+    });
+
+    it('preserves a mutable Carbon instance as-is', function () {
+        // Guards the BC promise: existing callers passing a mutable Carbon must keep
+        // getting back the very same instance, not a copy.
+        $expiresAt = Carbon::create(2024, 12, 31, 23, 59, 59);
+
+        $tokens = new OAuthTokensData(
+            accessToken: 'access_token',
+            refreshToken: 'refresh_token',
+            expiresAt: $expiresAt,
+        );
+
+        expect($tokens->expiresAt)->toBe($expiresAt);
     });
 
     describe('fromAnafResponse', function () {

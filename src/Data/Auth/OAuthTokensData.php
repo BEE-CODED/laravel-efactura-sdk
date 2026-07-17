@@ -13,13 +13,27 @@ use Spatie\LaravelData\Data;
  */
 class OAuthTokensData extends Data
 {
+    /**
+     * Token expiration time.
+     *
+     * Any CarbonInterface implementation is accepted by the constructor, so apps using
+     * Date::use(CarbonImmutable::class) can pass their datetime casts straight in.
+     * Immutable dates are converted to a mutable Carbon; a Carbon that is already
+     * mutable is stored as-is.
+     */
+    public ?Carbon $expiresAt;
+
     public function __construct(
         public string $accessToken,
         public string $refreshToken,
-        public ?CarbonInterface $expiresAt = null,
+        ?CarbonInterface $expiresAt = null,
         public ?int $expiresIn = null,
         public string $tokenType = 'Bearer',
-    ) {}
+    ) {
+        $this->expiresAt = $expiresAt === null || $expiresAt instanceof Carbon
+            ? $expiresAt
+            : Carbon::instance($expiresAt);
+    }
 
     /**
      * Create from ANAF token response.

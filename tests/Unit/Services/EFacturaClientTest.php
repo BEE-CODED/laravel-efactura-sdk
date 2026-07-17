@@ -14,6 +14,7 @@ use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 
@@ -755,6 +756,44 @@ describe('EFacturaClient', function () {
             $client->getStatusMessage('12345');
 
             expect($client->wasTokenRefreshed())->toBeTrue();
+        });
+    });
+
+    describe('immutable date support', function () {
+        // Apps calling Date::use(CarbonImmutable::class) hydrate expires_at as a
+        // CarbonImmutable, which is NOT a Carbon subclass. It reaches this client via
+        // OAuthTokensData -> fromTokens() on every single API operation.
+
+        it('accepts an immutable expiresAt and normalises it', function () {
+            $expiresAt = CarbonImmutable::create(2024, 12, 31, 23, 59, 59);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'access_token',
+                refreshToken: 'refresh_token',
+                expiresAt: $expiresAt,
+            );
+
+            // Round-trips as a mutable Carbon at the same instant, so the private
+            // isTokenValid() expiry math never sees an immutable date.
+            expect($client->getTokens()->expiresAt)->toBeInstanceOf(Carbon::class)
+                ->and($client->getTokens()->expiresAt->equalTo($expiresAt))->toBeTrue();
+        });
+
+        it('accepts tokens carrying an immutable expiresAt via fromTokens', function () {
+            $expiresAt = CarbonImmutable::create(2024, 12, 31, 23, 59, 59);
+
+            $client = EFacturaClient::fromTokens(
+                vatNumber: '12345678',
+                tokens: new OAuthTokensData(
+                    accessToken: 'access_token',
+                    refreshToken: 'refresh_token',
+                    expiresAt: $expiresAt,
+                ),
+            );
+
+            expect($client->getTokens()->expiresAt)->toBeInstanceOf(Carbon::class)
+                ->and($client->getTokens()->expiresAt->equalTo($expiresAt))->toBeTrue();
         });
     });
 });

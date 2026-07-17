@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
 use Carbon\Carbon;
-use Carbon\CarbonInterface;
 use Spatie\LaravelData\Data;
 
 /**
@@ -17,8 +16,8 @@ class SplitVatData extends Data
 {
     public function __construct(
         public bool $isActive = false,
-        public ?CarbonInterface $startDate = null,
-        public ?CarbonInterface $cancelDate = null,
+        public ?Carbon $startDate = null,
+        public ?Carbon $cancelDate = null,
     ) {}
 
     /**

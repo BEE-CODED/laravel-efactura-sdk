@@ -98,7 +98,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     /**
      * Token expiration time (may be updated after refresh).
      */
-    private ?CarbonInterface $expiresAt;
+    private ?Carbon $expiresAt;
 
     /**
      * Whether the token was refreshed during operations.
@@ -130,7 +130,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * @param  string  $vatNumber  The VAT number (CIF) for API operations
      * @param  string  $accessToken  The OAuth access token
      * @param  string  $refreshToken  The OAuth refresh token for auto-refresh
-     * @param  Carbon|null  $expiresAt  Token expiration time
+     * @param  CarbonInterface|null  $expiresAt  Token expiration time (normalised to a mutable Carbon)
      * @param  AnafAuthenticatorInterface|null  $authenticator  Optional authenticator (resolved lazily if not provided)
      */
     public function __construct(
@@ -144,7 +144,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $this->accessToken = $accessToken;
         $this->refreshToken = $refreshToken;
-        $this->expiresAt = $expiresAt;
+        $this->expiresAt = $expiresAt === null || $expiresAt instanceof Carbon
+            ? $expiresAt
+            : Carbon::instance($expiresAt);
         $this->authenticator = $authenticator;
         $this->rateLimiter = app(RateLimiter::class);
     }

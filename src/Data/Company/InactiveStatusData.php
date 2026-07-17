@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
 use Carbon\Carbon;
-use Carbon\CarbonInterface;
 use Spatie\LaravelData\Data;
 
 /**
@@ -17,10 +16,10 @@ class InactiveStatusData extends Data
 {
     public function __construct(
         public bool $isInactive = false,
-        public ?CarbonInterface $inactiveDate = null,
-        public ?CarbonInterface $reactivationDate = null,
-        public ?CarbonInterface $publishDate = null,
-        public ?CarbonInterface $deregistrationDate = null,
+        public ?Carbon $inactiveDate = null,
+        public ?Carbon $reactivationDate = null,
+        public ?Carbon $publishDate = null,
+        public ?Carbon $deregistrationDate = null,
     ) {}
 
     /**

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
 use Carbon\Carbon;
-use Carbon\CarbonInterface;
 use Spatie\LaravelData\Data;
 
 /**
@@ -17,10 +16,10 @@ class VatRegistrationData extends Data
 {
     public function __construct(
         public bool $isActive = false,
-        public ?CarbonInterface $startDate = null,
-        public ?CarbonInterface $endDate = null,
-        public ?CarbonInterface $updateDate = null,
-        public ?CarbonInterface $publishDate = null,
+        public ?Carbon $startDate = null,
+        public ?Carbon $endDate = null,
+        public ?Carbon $updateDate = null,
+        public ?Carbon $publishDate = null,
         public ?string $actType = null,
     ) {}
 

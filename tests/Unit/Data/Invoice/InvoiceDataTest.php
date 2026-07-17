@@ -8,6 +8,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
 
 function createTestInvoice(array $lines = [], array $overrides = []): InvoiceData
 {
@@ -321,5 +322,57 @@ describe('getTotalIncludingVat', function () {
         // VAT: 38.00 + 4.50 = 42.50
         // Total: 250 + 42.50 = 292.50
         expect($invoice->getTotalIncludingVat())->toBe(292.50);
+    });
+});
+
+describe('InvoiceData immutable date support', function () {
+    // Apps calling Date::use(CarbonImmutable::class) hydrate Eloquent datetime casts as
+    // CarbonImmutable, which is NOT a Carbon subclass. The README documents passing those
+    // casts straight into InvoiceData, so the constructor must accept them.
+
+    it('accepts an immutable issueDate and normalises it to Carbon', function () {
+        $invoice = createTestInvoice(overrides: [
+            'issueDate' => CarbonImmutable::create(2024, 3, 15),
+        ]);
+
+        expect($invoice->issueDate)->toBeInstanceOf(Carbon::class)
+            ->and($invoice->getIssueDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-15');
+    });
+
+    it('accepts an immutable dueDate and normalises it to Carbon', function () {
+        $invoice = createTestInvoice(overrides: [
+            'dueDate' => CarbonImmutable::create(2024, 4, 14),
+        ]);
+
+        expect($invoice->dueDate)->toBeInstanceOf(Carbon::class)
+            ->and($invoice->getDueDateAsCarbon()?->format('Y-m-d'))->toBe('2024-04-14');
+    });
+
+    it('preserves a mutable Carbon issueDate as-is', function () {
+        // BC guard: existing callers must keep getting the very same instance back.
+        $issueDate = Carbon::create(2024, 3, 15);
+
+        $invoice = createTestInvoice(overrides: ['issueDate' => $issueDate]);
+
+        expect($invoice->issueDate)->toBe($issueDate);
+    });
+
+    it('still accepts a string issueDate', function () {
+        $invoice = createTestInvoice(overrides: ['issueDate' => '2024-03-15']);
+
+        expect($invoice->issueDate)->toBe('2024-03-15')
+            ->and($invoice->getIssueDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-15');
+    });
+
+    it('does not alias the date returned by getIssueDateAsCarbon', function () {
+        // getIssueDateAsCarbon() documents that it returns a copy; mutating the result
+        // must not corrupt the invoice.
+        $invoice = createTestInvoice(overrides: [
+            'issueDate' => CarbonImmutable::create(2024, 3, 15),
+        ]);
+
+        $invoice->getIssueDateAsCarbon()->addYear();
+
+        expect($invoice->getIssueDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-15');
     });
 });

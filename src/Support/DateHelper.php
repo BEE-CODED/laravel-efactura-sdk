@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Support;
 
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 use InvalidArgumentException;
 
 /**
@@ -38,12 +39,12 @@ final class DateHelper
     /**
      * Format a date for ANAF API (YYYY-MM-DD format).
      *
-     * @param  Carbon|string|int  $date  The date to format (Carbon, string, or Unix timestamp in seconds)
+     * @param  CarbonInterface|string|int  $date  The date to format (any Carbon date, string, or Unix timestamp in seconds)
      * @return string The formatted date string
      *
      * @throws InvalidArgumentException If the date is invalid
      */
-    public static function formatForAnaf(Carbon|string|int $date): string
+    public static function formatForAnaf(CarbonInterface|string|int $date): string
     {
         // If already in ANAF format, return as-is
         if (is_string($date) && self::isValidAnafFormat($date)) {
@@ -71,12 +72,12 @@ final class DateHelper
      *
      * ANAF uses millisecond timestamps for message list pagination.
      *
-     * @param  Carbon|string  $date  The date to convert
+     * @param  CarbonInterface|string  $date  The date to convert
      * @return int Timestamp in milliseconds
      *
      * @throws InvalidArgumentException If the date is invalid
      */
-    public static function toTimestamp(Carbon|string $date): int
+    public static function toTimestamp(CarbonInterface|string $date): int
     {
         $carbon = self::toCarbon($date);
 
@@ -93,12 +94,12 @@ final class DateHelper
      * and end (23:59:59.999) of the specified day, useful for day-based
      * message filtering.
      *
-     * @param  Carbon|string  $date  The date to get the range for
+     * @param  CarbonInterface|string  $date  The date to get the range for
      * @return array{start: int, end: int} Array with 'start' and 'end' timestamps in milliseconds
      *
      * @throws InvalidArgumentException If the date is invalid
      */
-    public static function getDayRange(Carbon|string $date): array
+    public static function getDayRange(CarbonInterface|string $date): array
     {
         $carbon = self::toCarbon($date);
 
@@ -156,13 +157,13 @@ final class DateHelper
     /**
      * Calculate the number of days between two dates.
      *
-     * @param  Carbon|string  $from  Start date
-     * @param  Carbon|string  $to  End date
+     * @param  CarbonInterface|string  $from  Start date
+     * @param  CarbonInterface|string  $to  End date
      * @return int Number of days between the dates (absolute value)
      *
      * @throws InvalidArgumentException If either date is invalid
      */
-    public static function daysBetween(Carbon|string $from, Carbon|string $to): int
+    public static function daysBetween(CarbonInterface|string $from, CarbonInterface|string $to): int
     {
         $fromCarbon = self::toCarbon($from);
         $toCarbon = self::toCarbon($to);
@@ -171,17 +172,24 @@ final class DateHelper
     }
 
     /**
-     * Convert various date formats to Carbon instance.
+     * Convert various date formats to a mutable Carbon instance.
      *
-     * @param  Carbon|string|int  $date  The date to convert
+     * Any CarbonInterface implementation is accepted; immutable dates from
+     * Date::use(CarbonImmutable::class) are converted via Carbon::instance().
+     *
+     * @param  CarbonInterface|string|int  $date  The date to convert
      * @return Carbon The Carbon instance
      *
      * @throws InvalidArgumentException If the date is invalid
      */
-    private static function toCarbon(Carbon|string|int $date): Carbon
+    private static function toCarbon(CarbonInterface|string|int $date): Carbon
     {
         if ($date instanceof Carbon) {
             return $date;
+        }
+
+        if ($date instanceof CarbonInterface) {
+            return Carbon::instance($date);
         }
 
         if (is_int($date)) {
