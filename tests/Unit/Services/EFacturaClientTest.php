@@ -8,6 +8,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\ListMessagesParamsData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
 use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
 use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\StandardType;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
@@ -17,6 +18,7 @@ use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Request;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
@@ -356,7 +358,7 @@ describe('EFacturaClient', function () {
                 expiresAt: Carbon::now()->addHour(),
             );
 
-            $options = new UploadOptionsData(standard: \BeeCoded\EFacturaSdk\Enums\StandardType::RASP);
+            $options = new UploadOptionsData(standard: StandardType::RASP);
 
             $client->uploadDocument('<Invoice/>', $options);
         });
@@ -376,7 +378,7 @@ describe('EFacturaClient', function () {
                 expiresAt: Carbon::now()->addHour(),
             );
 
-            $options = new UploadOptionsData(standard: \BeeCoded\EFacturaSdk\Enums\StandardType::UBL);
+            $options = new UploadOptionsData(standard: StandardType::UBL);
 
             $client->uploadDocument('<Invoice/>', $options);
         });
@@ -398,7 +400,7 @@ describe('EFacturaClient', function () {
                 expiresAt: Carbon::now()->addHour(),
             );
 
-            $options = new UploadOptionsData(standard: \BeeCoded\EFacturaSdk\Enums\StandardType::RASP);
+            $options = new UploadOptionsData(standard: StandardType::RASP);
 
             $client->uploadB2CDocument('<Invoice/>', $options);
         });
@@ -1224,7 +1226,7 @@ describe('EFacturaClient', function () {
                 $client->getStatusMessage('12345');
             } catch (AuthenticationException $e) {
                 expect($e->getMessage())->toContain('Token refresh lock timeout');
-                expect($e->getPrevious())->toBeInstanceOf(\Illuminate\Contracts\Cache\LockTimeoutException::class);
+                expect($e->getPrevious())->toBeInstanceOf(LockTimeoutException::class);
             } finally {
                 // Always release the lock
                 $lock->release();

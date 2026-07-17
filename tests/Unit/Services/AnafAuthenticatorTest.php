@@ -268,14 +268,14 @@ describe('AnafAuthenticator', function () {
             $state = ['data' => $invalidUtf8];
 
             // This should throw AuthenticationException, not raw JsonException
-            $settings = new \BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData(state: $state);
+            $settings = new AuthUrlSettingsData(state: $state);
             $auth->getAuthorizationUrl($settings);
         })->throws(AuthenticationException::class, 'Failed to encode state parameter');
 
         it('successfully encodes valid state data', function () {
             $auth = createAuthenticator();
             $state = ['csrf_token' => 'abc123', 'user_id' => 456, 'nested' => ['key' => 'value']];
-            $settings = new \BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData(state: $state);
+            $settings = new AuthUrlSettingsData(state: $state);
 
             $url = $auth->getAuthorizationUrl($settings);
 

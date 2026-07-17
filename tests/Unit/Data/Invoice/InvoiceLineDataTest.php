@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
+use Illuminate\Validation\ValidationException;
 
 describe('InvoiceLineData construction', function () {
     it('has correct default values', function () {
@@ -199,7 +200,7 @@ describe('negative values', function () {
             'taxAmount' => 0.00,
             'taxPercent' => -5,
         ]);
-    })->throws(Illuminate\Validation\ValidationException::class, 'The tax percent field must be at least 0.');
+    })->throws(ValidationException::class, 'The tax percent field must be at least 0.');
 
     it('accepts zero tax percent', function () {
         $line = InvoiceLineData::validateAndCreate([

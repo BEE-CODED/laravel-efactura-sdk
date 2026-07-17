@@ -27,8 +27,10 @@ use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Closure;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Psr\Log\LoggerInterface;
 
@@ -743,7 +745,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             $this->refreshTokens();
 
             return $this->accessToken;
-        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
+        } catch (LockTimeoutException $e) {
             // Could not acquire lock within timeout
             // Another process is likely refreshing the token - fail fast rather than use stale token
             // ANAF uses rotating refresh tokens, so the old token is invalidated after refresh
@@ -1043,7 +1045,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         ];
 
         try {
-            $request = \Illuminate\Support\Facades\Http::timeout(static::getTimeoutDuration());
+            $request = Http::timeout(static::getTimeoutDuration());
             $request->withHeaders($headers);
 
             $response = $request->withBody($body, $contentType)->$method($fullUrl);

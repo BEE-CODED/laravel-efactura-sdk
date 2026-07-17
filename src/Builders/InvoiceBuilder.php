@@ -202,7 +202,7 @@ class InvoiceBuilder
 
         // DueDate is only valid in Invoice schema, not in CreditNote
         if ($input->dueDate !== null && ! $isCreditNote) {
-            /** @var \Carbon\Carbon $dueDate PHPStan: guaranteed non-null by guard clause above */
+            /** @var Carbon $dueDate PHPStan: guaranteed non-null by guard clause above */
             $dueDate = $input->getDueDateAsCarbon();
             $this->writeElement($writer, self::NS_CBC, 'DueDate', $dueDate->format('Y-m-d'));
         }
@@ -893,7 +893,7 @@ class InvoiceBuilder
      * by the schema.
      *
      * @param  string|null  $iban  Payee account (BT-84), or null when unknown
-     * @param  \Carbon\Carbon|null  $paymentDueDate  BT-9, credit notes only
+     * @param  Carbon|null  $paymentDueDate  BT-9, credit notes only
      */
     private function buildPaymentMeansXml(Writer $writer, ?string $iban, ?Carbon $paymentDueDate): void
     {

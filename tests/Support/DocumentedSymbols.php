@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Tests\Support;
 
+use Illuminate\Support\Facades\Facade;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use ReflectionClass;
@@ -274,7 +275,7 @@ final class DocumentedSymbols
      */
     public static function facadeTarget(string $fqcn): ?string
     {
-        if (! is_subclass_of($fqcn, \Illuminate\Support\Facades\Facade::class)) {
+        if (! is_subclass_of($fqcn, Facade::class)) {
             return null;
         }
 

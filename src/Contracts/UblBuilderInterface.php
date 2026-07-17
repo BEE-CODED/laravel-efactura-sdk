@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Contracts;
 
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 
 /**
  * Interface for UBL XML generation.
@@ -20,7 +21,7 @@ interface UblBuilderInterface
      * @param  InvoiceData  $invoiceData  The invoice data to serialize
      * @return string The generated XML string
      *
-     * @throws \BeeCoded\EFacturaSdk\Exceptions\ValidationException If invoice data is invalid
+     * @throws ValidationException If invoice data is invalid
      */
     public function generateInvoiceXml(InvoiceData $invoiceData): string;
 }

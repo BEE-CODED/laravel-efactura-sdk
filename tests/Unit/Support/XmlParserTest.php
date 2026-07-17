@@ -224,7 +224,7 @@ XML;
 
         $exception = XmlParser::getLastParseException();
 
-        expect($exception)->toBeInstanceOf(\Throwable::class);
+        expect($exception)->toBeInstanceOf(Throwable::class);
     });
 
     it('passes previous exception to XmlParsingException', function () {
@@ -234,7 +234,7 @@ XML;
             XmlParser::parseUploadResponse($invalidXml);
         } catch (XmlParsingException $e) {
             // The previous exception should be set
-            expect($e->getPrevious())->toBeInstanceOf(\Throwable::class);
+            expect($e->getPrevious())->toBeInstanceOf(Throwable::class);
         }
     });
 

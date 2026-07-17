@@ -7,6 +7,7 @@ namespace BeeCoded\EFacturaSdk\Facades;
 use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Services\AnafAuthenticator;
 use Illuminate\Support\Facades\Facade;
 
 /**
@@ -32,7 +33,7 @@ use Illuminate\Support\Facades\Facade;
  * @method static OAuthTokensData refreshAccessToken(string $refreshToken) Refresh an expired token
  * @method static array<string, mixed> decodeState(string $encodedState) Decode state parameter for CSRF validation
  *
- * @see \BeeCoded\EFacturaSdk\Services\AnafAuthenticator
+ * @see AnafAuthenticator
  */
 final class EFacturaSdkAuth extends Facade
 {
