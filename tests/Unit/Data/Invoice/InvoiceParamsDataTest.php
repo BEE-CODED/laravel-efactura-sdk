@@ -68,17 +68,16 @@ describe('PaginatedMessagesParamsData', function () {
         it('creates from immutable dates', function () {
             // Apps calling Date::use(CarbonImmutable::class) pass CarbonImmutable in;
             // it is not a Carbon subclass, so the signature must accept CarbonInterface.
-            $startDate = CarbonImmutable::create(2024, 1, 1, 0, 0, 0, 'UTC');
-            $endDate = CarbonImmutable::create(2024, 1, 2, 0, 0, 0, 'UTC');
-
+            // Expectations are hardcoded rather than derived from getTimestampMs(), which is
+            // the same call the implementation makes -- otherwise this asserts X === X.
             $params = PaginatedMessagesParamsData::fromDateRange(
                 cif: '12345678',
-                startDate: $startDate,
-                endDate: $endDate,
+                startDate: CarbonImmutable::create(2024, 1, 1, 0, 0, 0, 'UTC'),
+                endDate: CarbonImmutable::create(2024, 1, 2, 0, 0, 0, 'UTC'),
             );
 
-            expect($params->startTime)->toBe($startDate->getTimestampMs());
-            expect($params->endTime)->toBe($endDate->getTimestampMs());
+            expect($params->startTime)->toBe(1704067200000)
+                ->and($params->endTime)->toBe(1704153600000);
         });
     });
 });

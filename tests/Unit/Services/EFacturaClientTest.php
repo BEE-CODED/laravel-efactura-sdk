@@ -780,20 +780,35 @@ describe('EFacturaClient', function () {
                 ->and($client->getTokens()->expiresAt->equalTo($expiresAt))->toBeTrue();
         });
 
-        it('accepts tokens carrying an immutable expiresAt via fromTokens', function () {
-            $expiresAt = CarbonImmutable::create(2024, 12, 31, 23, 59, 59);
+        it('preserves microseconds and timezone when normalising expiresAt', function () {
+            // Carbon::instance() round-trips through 'U.u'; assert the precision rather than
+            // trusting it, since a lossy conversion would shift token expiry.
+            $expiresAt = CarbonImmutable::create(2024, 12, 31, 23, 59, 59, 'Europe/Bucharest')->addMicroseconds(123456);
 
-            $client = EFacturaClient::fromTokens(
+            $client = new EFacturaClient(
                 vatNumber: '12345678',
-                tokens: new OAuthTokensData(
-                    accessToken: 'access_token',
-                    refreshToken: 'refresh_token',
-                    expiresAt: $expiresAt,
-                ),
+                accessToken: 'access_token',
+                refreshToken: 'refresh_token',
+                expiresAt: $expiresAt,
             );
 
-            expect($client->getTokens()->expiresAt)->toBeInstanceOf(Carbon::class)
+            expect($client->getTokens()->expiresAt->format('Y-m-d H:i:s.u'))->toBe('2024-12-31 23:59:59.123456')
+                ->and($client->getTokens()->expiresAt->getTimezone()->getName())->toBe('Europe/Bucharest')
                 ->and($client->getTokens()->expiresAt->equalTo($expiresAt))->toBeTrue();
+        });
+
+        it('keeps a mutable Carbon expiresAt as the same instance', function () {
+            // BC guard: existing callers must not silently start getting a copy.
+            $expiresAt = Carbon::create(2024, 12, 31, 23, 59, 59);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'access_token',
+                refreshToken: 'refresh_token',
+                expiresAt: $expiresAt,
+            );
+
+            expect($client->getTokens()->expiresAt)->toBe($expiresAt);
         });
     });
 });

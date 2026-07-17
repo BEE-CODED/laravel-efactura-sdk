@@ -375,4 +375,63 @@ describe('InvoiceData immutable date support', function () {
 
         expect($invoice->getIssueDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-15');
     });
+
+    it('yields a mutable Carbon for an immutable issueDate on the ::from() path', function () {
+        // Note what this does and does not guard. laravel-data's cast converts the immutable
+        // date to a Carbon BEFORE the constructor runs, so this passes with or without the
+        // constructor's normalisation -- it is not a guard for that. What it does guard is the
+        // un-promotion rewrite: the resolver direct-writes un-promoted properties, so anything
+        // other than a Carbon reaching $issueDate would TypeError against its declared type,
+        // and getIssueDateAsCarbon()'s `instanceof Carbon` check would stop holding.
+        $address = new AddressData(street: 'Str. Test 1', city: 'Bucuresti', postalZone: '010101', county: 'Bucuresti');
+        $party = new PartyData(registrationName: 'Test SRL', companyId: 'RO12345678', address: $address, isVatPayer: true);
+
+        $invoice = InvoiceData::from([
+            'invoiceNumber' => 'INV-001',
+            'issueDate' => CarbonImmutable::create(2024, 3, 15),
+            'dueDate' => CarbonImmutable::create(2024, 4, 14),
+            'supplier' => $party,
+            'customer' => $party,
+            'lines' => [['name' => 'P1', 'quantity' => 1, 'unitPrice' => 100.0, 'taxAmount' => 19.0, 'taxPercent' => 19]],
+        ]);
+
+        expect($invoice->issueDate)->toBeInstanceOf(Carbon::class)
+            ->and($invoice->dueDate)->toBeInstanceOf(Carbon::class)
+            ->and($invoice->lines[0])->toBeInstanceOf(InvoiceLineData::class)
+            ->and($invoice->getIssueDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-15')
+            ->and($invoice->getDueDateAsCarbon()?->format('Y-m-d'))->toBe('2024-04-14');
+    });
+
+    it('preserves microseconds and timezone when normalising', function () {
+        // Carbon::instance() round-trips through 'U.u'; assert the precision the docblock
+        // promises rather than trusting it.
+        $issueDate = CarbonImmutable::create(2024, 3, 15, 10, 30, 45, 'Europe/Bucharest')->addMicroseconds(123456);
+
+        $invoice = createTestInvoice(overrides: ['issueDate' => $issueDate]);
+
+        expect($invoice->issueDate)->toBeInstanceOf(Carbon::class)
+            ->and($invoice->issueDate->format('Y-m-d H:i:s.u'))->toBe('2024-03-15 10:30:45.123456')
+            ->and($invoice->issueDate->getTimezone()->getName())->toBe('Europe/Bucharest')
+            ->and($invoice->issueDate->equalTo($issueDate))->toBeTrue();
+    });
+});
+
+describe('InvoiceData serialisation contract', function () {
+    it('serialises keys in the declared order', function () {
+        // The date properties are declared in the class body rather than promoted, and
+        // spatie derives serialisation order from declaration order. Declaring them out
+        // of constructor order would silently reorder every consumer's toArray()/toJson().
+        expect(array_keys(createTestInvoice()->toArray()))->toBe([
+            'invoiceNumber', 'issueDate', 'supplier', 'customer', 'lines',
+            'dueDate', 'currency', 'paymentIban', 'invoiceTypeCode', 'precedingInvoiceNumber',
+        ]);
+    });
+
+    it('omits defaulted fields from validation rules', function () {
+        // Body-declared properties carry the constructor's defaults so spatie still treats
+        // them as optional; without them, currency/dueDate would become required.
+        expect(array_keys(InvoiceData::getValidationRules([])))
+            ->not->toContain('currency')
+            ->and(array_keys(InvoiceData::getValidationRules([])))->not->toContain('dueDate');
+    });
 });

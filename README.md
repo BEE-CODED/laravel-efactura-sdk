@@ -288,7 +288,7 @@ $messages = $client->getMessagesPaginated(new PaginatedMessagesParamsData(
     filter: MessageFilter::InvoiceReceived,
 ));
 
-// Or create from Carbon dates
+// Or create from Carbon dates (mutable or immutable)
 $messages = $client->getMessagesPaginated(
     PaginatedMessagesParamsData::fromDateRange(
         cif: '12345678',
@@ -820,6 +820,65 @@ DateHelper::toTimestamp(now());             // 1705312800000
 DateHelper::isValidDaysParameter(30);  // true (1-60 allowed)
 DateHelper::isValidDaysParameter(100); // false
 ```
+
+### Immutable Dates (CarbonImmutable)
+
+> **Since v2.3.0:** the date fields you pass data *into* accept any `Carbon\CarbonInterface`
+> implementation — see the list below.
+
+Apps that call `Date::use(CarbonImmutable::class)` get a `CarbonImmutable` from every Eloquent
+`datetime` cast. `CarbonImmutable` is **not** a subclass of `Carbon` — both implement
+`CarbonInterface` — so before v2.3.0 passing a cast in either threw a `TypeError` (on the
+Carbon-only params) or, where the field also accepted a `string` and the caller had no
+`declare(strict_types=1)`, was silently coerced to a timezone-less string via `__toString()`.
+You can now pass model casts straight in:
+
+```php
+use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
+use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
+use BeeCoded\EFacturaSdk\Support\DateHelper;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Date;
+
+Date::use(CarbonImmutable::class);
+
+new InvoiceData(
+    invoiceNumber: $invoice->number,
+    issueDate: $invoice->issued_at,   // CarbonImmutable — accepted
+    dueDate: $invoice->due_at,
+    // ...
+);
+
+new OAuthTokensData(
+    accessToken: $token->access_token,
+    refreshToken: $token->refresh_token,
+    expiresAt: $token->expires_at,    // CarbonImmutable — accepted
+);
+
+DateHelper::formatForAnaf(CarbonImmutable::now());
+PaginatedMessagesParamsData::fromDateRange(cif: '12345678', startDate: $from, endDate: $to);
+```
+
+**Where it applies.** These are the entry points that take a date from you:
+
+| Entry point | Date parameters |
+|---|---|
+| `OAuthTokensData::__construct` | `$expiresAt` |
+| `EFacturaClient::__construct` | `$expiresAt` |
+| `InvoiceData::__construct` | `$issueDate`, `$dueDate` |
+| `PaginatedMessagesParamsData::fromDateRange` | `$startDate`, `$endDate` |
+| `DateHelper::formatForAnaf`, `toTimestamp`, `getDayRange`, `daysBetween` | date arguments |
+
+The company-lookup DTOs (`CompanyData`, `VatRegistrationData`, `SplitVatData`,
+`InactiveStatusData`, `VatPeriodData`) are **not** included: they are built by the SDK from ANAF
+responses and never receive a date from you, so their date parameters remain `?Carbon`.
+
+**What you get back is unchanged.** An immutable date is converted to a mutable `Carbon` on the
+way in (timezone and microseconds preserved); a date that is already a mutable `Carbon` is stored
+as the same instance, and a `string` is left as a `string`. Reading never gives you a
+`CarbonImmutable`: `$tokens->expiresAt` is `?Carbon`, `InvoiceData::$issueDate` is
+`Carbon|string`, and `getIssueDateAsCarbon()` returns a concrete `Carbon`.
 
 ## Enums
 

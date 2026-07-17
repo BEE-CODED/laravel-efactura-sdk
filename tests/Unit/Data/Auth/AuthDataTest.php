@@ -91,6 +91,36 @@ describe('OAuthTokensData', function () {
         expect($tokens->expiresAt)->toBe($expiresAt);
     });
 
+    it('serialises keys in the declared order', function () {
+        // The date properties are declared in the class body rather than promoted, and
+        // spatie derives serialisation order from declaration order. Declaring them out
+        // of constructor order would silently reorder every consumer's toArray()/toJson().
+        $tokens = new OAuthTokensData(
+            accessToken: 'access_token',
+            refreshToken: 'refresh_token',
+            expiresAt: Carbon::create(2024, 12, 31),
+            expiresIn: 3600,
+        );
+
+        expect(array_keys($tokens->toArray()))
+            ->toBe(['accessToken', 'refreshToken', 'expiresAt', 'expiresIn', 'tokenType']);
+    });
+
+    it('omits defaulted fields from validation rules', function () {
+        // The properties are declared in the class body, and laravel-data reads a
+        // non-promoted property's default from the property itself. Drop those defaults
+        // and tokenType becomes "required", rejecting payloads that were valid before.
+        expect(array_keys(OAuthTokensData::getValidationRules([])))
+            ->toBe(['accessToken', 'refreshToken']);
+    });
+
+    it('accepts a payload omitting the defaulted fields', function () {
+        // The assertion above only reads the rules; this proves the behaviour they drive.
+        $tokens = OAuthTokensData::validate(['accessToken' => 'AT', 'refreshToken' => 'RT']);
+
+        expect($tokens)->toBeArray();
+    });
+
     describe('fromAnafResponse', function () {
         it('parses ANAF token response', function () {
             Carbon::setTestNow(Carbon::create(2024, 6, 15, 12, 0, 0));
