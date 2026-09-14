@@ -85,9 +85,38 @@ Only `true`, `false`, `1`, `0`, `'1'` and `'0'` are accepted — exactly what La
 accepts, so `::from()` and `::validateAndCreate()` payloads are unaffected. Grep for
 `new PartyData(` and convert every call to named arguments.
 
+### Optional VAT applicability date
+
+`InvoiceData` accepts a trailing `CarbonInterface|string|null $taxPointDate = null` (BT-7).
+Supply the caller-selected tax date explicitly; the SDK never chooses today. Existing positional
+and named arguments retain their order and defaults. Omitted/null dates retain the legacy XML
+and exact `toArray()`/`toJson()` keys and order; a non-null date is appended to serialization.
+`InvoiceData::from()` preserves the same omission/null behavior and existing Spatie date casting.
+
+```php
+$invoice = new InvoiceData(
+    invoiceNumber: 'INV-2024-001',
+    issueDate: '2024-03-15',
+    supplier: $supplier,
+    customer: $customer,
+    lines: $lines,
+    taxPointDate: '2024-03-10',
+);
+```
+
+`getTaxPointDateAsCarbon()` returns a copy or null. Direct construction accepts mutable and
+immutable Carbon dates with the same normalization as issue/due dates. Empty or unparseable
+strings fail when read for XML generation. UBL Invoice places `TaxPointDate` after
+`InvoiceTypeCode` and before `DocumentCurrencyCode`; CreditNote places it after `IssueDate`
+and before `CreditNoteTypeCode`. Credit-note payment due dates stay in `PaymentMeans`.
+
+A nonzero document VAT amount may correctly round to `0.00` RON after conversion. The builder
+accepts that boundary while rejecting opposite nonzero signs or zero document VAT with nonzero
+RON VAT. Required non-RON and prohibited RON accounting-VAT inputs remain unchanged.
+
 ### 3. Non-RON invoices must declare `taxAmountRon` (loud)
 
-`InvoiceData` gained an optional trailing `?float $taxAmountRon` (BT-111) that is **required when
+`InvoiceData` gained an optional `?float $taxAmountRon` (BT-111) that is **required when
 `currency !== 'RON'`** and **rejected when it is** — otherwise `ValidationException`.
 
 v2 emitted the document-currency amount unchanged under `currencyID="RON"`: a EUR invoice with
@@ -1036,7 +1065,7 @@ PaginatedMessagesParamsData::fromDateRange(cif: '12345678', startDate: $from, en
 |---|---|
 | `OAuthTokensData::__construct` | `$expiresAt` |
 | `EFacturaClient::__construct` | `$expiresAt` |
-| `InvoiceData::__construct` | `$issueDate`, `$dueDate` |
+| `InvoiceData::__construct` | `$issueDate`, `$dueDate`, `$taxPointDate` |
 | `PaginatedMessagesParamsData::fromDateRange` | `$startDate`, `$endDate` |
 | `DateHelper::formatForAnaf`, `toTimestamp`, `getDayRange`, `daysBetween` | date arguments |
 

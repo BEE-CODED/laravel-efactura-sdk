@@ -9,6 +9,10 @@ use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
+use Spatie\LaravelData\Mappers\SnakeCaseMapper;
+use Spatie\LaravelData\Support\DataConfig;
+use Spatie\LaravelData\Support\DataContainer;
+use Spatie\LaravelData\Support\Transformation\TransformationContextFactory;
 
 function createTestInvoice(array $lines = [], array $overrides = []): InvoiceData
 {
@@ -490,4 +494,184 @@ describe('InvoiceData serialisation contract', function () {
 
         expect($invoice->taxAmountRon)->toBe(944.30);
     });
+});
+
+describe('InvoiceData optional tax point date compatibility', function () {
+    it('preserves old positional and named construction and null serialization', function () {
+        $named = createTestInvoice();
+        $positional = new InvoiceData(
+            $named->invoiceNumber, $named->issueDate, $named->supplier, $named->customer,
+            $named->lines, $named->dueDate, $named->currency, $named->paymentIban,
+            $named->invoiceTypeCode, $named->precedingInvoiceNumber, $named->taxAmountRon,
+        );
+        $explicitNull = new InvoiceData(
+            invoiceNumber: $named->invoiceNumber,
+            issueDate: $named->issueDate,
+            supplier: $named->supplier,
+            customer: $named->customer,
+            lines: $named->lines,
+            taxPointDate: null,
+        );
+
+        foreach ([$named, $positional, $explicitNull] as $invoice) {
+            expect($invoice->getTaxPointDateAsCarbon())->toBeNull()
+                ->and($invoice->toArray())->toBe($named->toArray())
+                ->and($invoice->toJson())->toBe($named->toJson())
+                ->and(array_keys($invoice->toArray()))->not->toContain('taxPointDate');
+        }
+    });
+
+    it('preserves omitted and explicit null dates through data-array and JSON round trips', function () {
+        $legacy = createTestInvoice()->toArray();
+        foreach ([$legacy, [...$legacy, 'taxPointDate' => null]] as $payload) {
+            $invoice = InvoiceData::from($payload);
+            $roundTrip = InvoiceData::from(json_decode($invoice->toJson(), true, flags: JSON_THROW_ON_ERROR));
+
+            expect($invoice->taxPointDate)->toBeNull()
+                ->and($invoice->toArray())->toBe($legacy)
+                ->and($roundTrip->toArray())->toBe($legacy)
+                ->and($roundTrip->toJson())->toBe($invoice->toJson());
+        }
+        expect(array_keys(InvoiceData::getValidationRules([])))->not->toContain('taxPointDate');
+    });
+
+    it('appends a supplied date and preserves it through hydration and JSON round trips', function () {
+        $legacy = createTestInvoice();
+        $date = CarbonImmutable::create(2024, 3, 10, 10, 30, 45, 'Europe/Bucharest')->addMicroseconds(123456);
+        $invoice = new InvoiceData(
+            $legacy->invoiceNumber, $legacy->issueDate, $legacy->supplier, $legacy->customer,
+            $legacy->lines, null, 'RON', null, null, null, null, $date,
+        );
+        $hydrated = InvoiceData::from([...$legacy->toArray(), 'taxPointDate' => $date]);
+        $roundTrip = InvoiceData::from(json_decode($invoice->toJson(), true, flags: JSON_THROW_ON_ERROR));
+
+        expect(array_keys($invoice->toArray()))->toBe([...array_keys($legacy->toArray()), 'taxPointDate'])
+            ->and($invoice->taxPointDate)->toBeInstanceOf(Carbon::class)
+            ->and($invoice->taxPointDate->format('Y-m-d H:i:s.u e'))->toBe('2024-03-10 10:30:45.123456 Europe/Bucharest')
+            ->and($hydrated->taxPointDate)->toBeInstanceOf(Carbon::class)
+            ->and($hydrated->toArray())->toBe($invoice->toArray())
+            ->and($roundTrip->toArray())->toBe($invoice->toArray());
+        $invoice->getTaxPointDateAsCarbon()->addYear();
+        expect($invoice->getTaxPointDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-10');
+    });
+
+    it('does not retain null serialization exclusions when a date is later supplied', function () {
+        $invoice = createTestInvoice();
+        $legacy = $invoice->toArray();
+        $date = Carbon::create(2024, 3, 10);
+        $invoice->taxPointDate = $date;
+
+        expect($invoice->taxPointDate)->toBe($date)
+            ->and(array_keys($invoice->toArray()))->toBe([...array_keys($legacy), 'taxPointDate']);
+        $invoice->taxPointDate = null;
+        expect($invoice->toArray())->toBe($legacy);
+    });
+
+    it('parses an explicit string and rejects unparseable or empty strings', function () {
+        $invoice = createTestInvoice();
+        $invoice->taxPointDate = '2024-03-10';
+        expect($invoice->getTaxPointDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-10');
+
+        foreach (['not-a-date', '', '   '] as $value) {
+            $invoice->taxPointDate = $value;
+            expect(fn () => $invoice->getTaxPointDateAsCarbon())
+                ->toThrow(InvalidArgumentException::class, 'Invalid tax point date format');
+        }
+    });
+});
+
+describe('optional tax point date transformation contexts', function () {
+    beforeEach(function () {
+        $originalMapping = config('data.name_mapping_strategy');
+        $this->beforeApplicationDestroyed(static function () use ($originalMapping): void {
+            config()->set('data.name_mapping_strategy', $originalMapping);
+            app(DataConfig::class)->reset();
+            DataContainer::get()->reset();
+        });
+
+        // DataContainer survives Testbench applications and holds resolvers with
+        // their original DataConfig. Clear both caches before changing mappers,
+        // and again at teardown even when an assertion fails.
+        DataContainer::get()->reset();
+        app(DataConfig::class)->reset();
+    });
+
+    it('omits null before global snake-case mapping and retains mapped hydration round trips', function () {
+        config()->set('data.name_mapping_strategy.input', SnakeCaseMapper::class);
+        config()->set('data.name_mapping_strategy.output', SnakeCaseMapper::class);
+        app(DataConfig::class)->reset();
+        $invoice = createTestInvoice();
+        $legacyKeys = [
+            'invoice_number', 'issue_date', 'supplier', 'customer', 'lines',
+            'due_date', 'currency', 'payment_iban', 'invoice_type_code',
+            'preceding_invoice_number', 'tax_amount_ron',
+        ];
+        $legacy = $invoice->toArray();
+        expect(array_keys($legacy))->toBe($legacyKeys);
+
+        foreach ([$legacy, [...$legacy, 'tax_point_date' => null]] as $payload) {
+            $hydrated = InvoiceData::from($payload);
+            expect($hydrated->toArray())->toBe($legacy)
+                ->and(array_keys(json_decode($hydrated->toJson(), true, flags: JSON_THROW_ON_ERROR)))->toBe($legacyKeys);
+            $roundTrip = InvoiceData::from(json_decode($hydrated->toJson(), true, flags: JSON_THROW_ON_ERROR));
+            expect($roundTrip->toArray())->toBe($legacy);
+        }
+
+        $invoice->taxPointDate = Carbon::create(2024, 3, 10);
+        $withDate = $invoice->toArray();
+        expect(array_keys($withDate))->toBe([...$legacyKeys, 'tax_point_date']);
+        $roundTrip = InvoiceData::from(json_decode($invoice->toJson(), true, flags: JSON_THROW_ON_ERROR));
+        expect($roundTrip->getTaxPointDateAsCarbon()->format('Y-m-d'))->toBe('2024-03-10')
+            ->and($roundTrip->toArray())->toBe($withDate);
+        $invoice->taxPointDate = null;
+        expect($invoice->toArray())->toBe($legacy);
+    });
+
+    it('omits null inside a wrapper and restores a subsequently supplied mapped date', function () {
+        config()->set('data.name_mapping_strategy.output', SnakeCaseMapper::class);
+        app(DataConfig::class)->reset();
+        $invoice = createTestInvoice()->wrap('invoice');
+        $factory = TransformationContextFactory::create()->withWrapping();
+        $legacy = $invoice->transform($factory);
+
+        expect(array_keys($legacy))->toBe(['invoice'])
+            ->and(array_keys($legacy['invoice']))->not->toContain('tax_point_date')
+            ->and(array_keys($invoice->toArray()))->not->toContain('tax_point_date')
+            ->and(array_keys(json_decode($invoice->toJson(), true, flags: JSON_THROW_ON_ERROR)))->not->toContain('tax_point_date');
+
+        $invoice->taxPointDate = Carbon::create(2024, 3, 10);
+        $withDate = $invoice->transform($factory);
+        expect(array_keys($withDate['invoice']))->toBe([...array_keys($legacy['invoice']), 'tax_point_date'])
+            ->and($withDate['invoice']['tax_point_date'])->toBe($invoice->toArray()['tax_point_date']);
+        $invoice->taxPointDate = null;
+        expect($invoice->transform($factory))->toBe($legacy);
+    });
+
+    it('preserves caller partials and context settings across null and non-null transformations', function (bool $useFactory) {
+        config()->set('data.name_mapping_strategy.output', SnakeCaseMapper::class);
+        app(DataConfig::class)->reset();
+        $invoice = createTestInvoice()->wrap('invoice');
+        $factory = TransformationContextFactory::create()
+            ->withoutPropertyNameMapping()
+            ->withoutValueTransformation()
+            ->withWrapping()
+            ->only('invoiceNumber', 'dueDate', 'taxPointDate')
+            ->except('dueDate')
+            ->maxDepth(8, false);
+        $context = $factory->get($invoice);
+        $context->depth = 2;
+        $caller = $useFactory ? $factory : $context;
+        $before = $useFactory ? $factory->get($invoice)->toArray() : $context->toArray();
+
+        expect($invoice->transform($caller))->toBe(['invoice' => ['invoiceNumber' => 'INV-001']]);
+        $date = Carbon::create(2024, 3, 10);
+        $invoice->taxPointDate = $date;
+        expect($invoice->transform($caller))->toBe(['invoice' => ['invoiceNumber' => 'INV-001', 'taxPointDate' => $date]]);
+        $invoice->taxPointDate = null;
+        expect($invoice->transform($caller))->toBe(['invoice' => ['invoiceNumber' => 'INV-001']])
+            ->and($useFactory ? $factory->get($invoice)->toArray() : $context->toArray())->toBe($before)
+            ->and($context->depth)->toBe(2)
+            ->and($context->maxDepth)->toBe(8)
+            ->and($context->throwWhenMaxDepthReached)->toBeFalse();
+    })->with(['factory' => true, 'context' => false]);
 });

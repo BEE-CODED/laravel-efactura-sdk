@@ -20,6 +20,22 @@ Complete invoice data for e-Factura submission. Extends \`Spatie\\LaravelData\\D
 | \`$invoiceTypeCode\` | \`?InvoiceTypeCode\` | no | \`null\` | Type of invoice — resolved via \`getInvoiceTypeCode()\` which defaults to \`CommercialInvoice\` |
 | \`$precedingInvoiceNumber\` | \`?string\` | no | \`null\` | Preceding invoice number for credit notes (BT-25, used in BillingReference element) |
 | \`$taxAmountRon\` | \`?float\` | conditional | \`null\` | Total VAT expressed in RON (BT-111). **Required when \`$currency\` is not \`'RON'\`, and rejected when it is.** See below |
+| \`$taxPointDate\` | \`CarbonInterface\|string\|null\` | no | \`null\` | Optional VAT applicability date (BT-7), appended after all existing constructor parameters |
+
+## Optional VAT applicability date
+
+Pass \`taxPointDate: '2024-03-10'\` when the caller has selected the tax date. The SDK never
+defaults it to today. Omitted/null values preserve legacy XML and the exact \`toArray()\`/\`toJson()\`
+keys/order; a non-null field is appended. \`InvoiceData::from()\` retains existing Spatie date
+casting and supports omitted/null and serialized date round trips.
+
+The stored property is \`Carbon|string|null\`; direct construction normalizes immutable Carbon
+and preserves mutable instances, like issue/due dates. \`getTaxPointDateAsCarbon(): ?Carbon\`
+returns a copy or null, and rejects empty/unparseable strings when generating XML.
+
+UBL Invoice writes \`TaxPointDate\` after \`InvoiceTypeCode\` and before \`DocumentCurrencyCode\`;
+CreditNote writes it after \`IssueDate\` and before \`CreditNoteTypeCode\`. Credit-note payment due
+dates retain their existing \`PaymentMeans/PaymentDueDate\` representation.
 
 ## Multi-currency: \`$taxAmountRon\` (BT-111) — new and required in v3.0.0
 
@@ -49,7 +65,8 @@ new InvoiceData(
   so a second RON total cannot be emitted; passing it throws rather than being silently discarded.
 - Supply it in the same positive sense as the per-line \`taxAmount\`; the builder sign-flips it for
   credit notes alongside the lines. It must agree in sign with the invoice VAT total, and is
-  rounded to 2 decimals (BR-DEC-RO-15).
+  rounded to 2 decimals (BR-DEC-RO-15). Nonzero document VAT may legitimately round to zero RON;
+  opposite nonzero signs and zero document VAT with nonzero RON remain rejected.
 
 ## Date handling (since v2.3.0)
 

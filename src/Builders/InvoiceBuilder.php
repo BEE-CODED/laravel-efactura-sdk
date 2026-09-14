@@ -207,9 +207,18 @@ class InvoiceBuilder
             $this->writeElement($writer, self::NS_CBC, 'DueDate', $dueDate->format('Y-m-d'));
         }
 
+        // UBL CreditNote places BT-7 before its type code; Invoice places it after.
+        $taxPointDate = $input->getTaxPointDateAsCarbon();
+        if ($isCreditNote && $taxPointDate !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'TaxPointDate', $taxPointDate->format('Y-m-d'));
+        }
+
         // Type code element name differs between Invoice and CreditNote
         $typeCodeElement = $isCreditNote ? 'CreditNoteTypeCode' : 'InvoiceTypeCode';
         $this->writeElement($writer, self::NS_CBC, $typeCodeElement, $input->getInvoiceTypeCode()->value);
+        if (! $isCreditNote && $taxPointDate !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'TaxPointDate', $taxPointDate->format('Y-m-d'));
+        }
         $this->writeElement($writer, self::NS_CBC, 'DocumentCurrencyCode', $currency);
 
         // BR-RO-030: If currency is not RON, TaxCurrencyCode must be RON
@@ -378,7 +387,11 @@ class InvoiceBuilder
         // A converted total must agree in sign with the total it converts. This
         // cannot verify the RATE (that is the caller's BNR figure), but it does
         // catch a credited VAT filed as collected, and vice versa.
-        if ((round($input->taxAmountRon, 2) <=> 0.0) !== ($input->getTotalVat() <=> 0.0)) {
+        // A nonzero document total can legitimately convert to zero after rounding.
+        // Zero document VAT cannot, however, produce nonzero accounting VAT.
+        $ronSign = round($input->taxAmountRon, 2) <=> 0.0;
+        $documentSign = $input->getTotalVat() <=> 0.0;
+        if ($ronSign !== 0 && $ronSign !== $documentSign) {
             throw new ValidationException(__('efactura-sdk::validation.tax_amount_ron_sign_mismatch'));
         }
     }

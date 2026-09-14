@@ -99,6 +99,7 @@ function createTestInvoiceForBuilder(array $lines = [], array $overrides = []): 
         invoiceTypeCode: $overrides['invoiceTypeCode'] ?? null,
         precedingInvoiceNumber: $overrides['precedingInvoiceNumber'] ?? null,
         taxAmountRon: $overrides['taxAmountRon'] ?? null,
+        taxPointDate: $overrides['taxPointDate'] ?? null,
     );
 }
 
@@ -1814,4 +1815,89 @@ describe('French VAT ids, whose key may be two letters', function () {
         expect(ublText($xml, '//cac:AccountingCustomerParty//cac:PartyTaxScheme/cbc:CompanyID'))
             ->toBe('EL123456789');
     });
+});
+
+describe('optional tax point date UBL ordering', function () {
+    it('writes the exact document-specific header sequence with optional due dates', function (InvoiceTypeCode $type, ?string $dueDate) {
+        $invoice = createTestInvoiceForBuilder(overrides: [
+            'invoiceTypeCode' => $type,
+            'dueDate' => $dueDate,
+            'taxPointDate' => '2024-03-10',
+        ]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+        $header = [];
+        foreach (ublXpath($xml, '/*/cbc:*') as $node) {
+            $header[] = $node->localName;
+        }
+        $expected = ['CustomizationID', 'ProfileID', 'ID', 'IssueDate'];
+        if ($type === InvoiceTypeCode::CreditNote) {
+            $expected = [...$expected, 'TaxPointDate', 'CreditNoteTypeCode', 'DocumentCurrencyCode'];
+        } else {
+            if ($dueDate !== null) {
+                $expected[] = 'DueDate';
+            }
+            $expected = [...$expected, 'InvoiceTypeCode', 'TaxPointDate', 'DocumentCurrencyCode'];
+        }
+
+        expect($header)->toBe($expected)
+            ->and(ublText($xml, '/*/cbc:TaxPointDate'))->toBe('2024-03-10')
+            ->and(ublXpath($xml, '/*/cbc:TaxPointDate')->length)->toBe(1);
+        if ($type === InvoiceTypeCode::CreditNote && $dueDate !== null) {
+            expect(ublText($xml, '/*/cac:PaymentMeans/cbc:PaymentDueDate'))->toBe($dueDate);
+        }
+    })->with([
+        'invoice with due date' => [InvoiceTypeCode::CommercialInvoice, '2024-04-15'],
+        'invoice without due date' => [InvoiceTypeCode::CommercialInvoice, null],
+        'credit with due date' => [InvoiceTypeCode::CreditNote, '2024-04-15'],
+        'credit without due date' => [InvoiceTypeCode::CreditNote, null],
+    ]);
+
+    it('keeps omitted and null dates out of legacy XML', function (InvoiceTypeCode $type) {
+        $builder = new InvoiceBuilder;
+        $legacy = createTestInvoiceForBuilder(overrides: ['invoiceTypeCode' => $type]);
+        $null = createTestInvoiceForBuilder(overrides: ['invoiceTypeCode' => $type, 'taxPointDate' => null]);
+        $xml = $builder->buildInvoiceXml($legacy);
+        expect($builder->buildInvoiceXml($null))->toBe($xml)
+            ->and(ublXpath($xml, '/*/cbc:TaxPointDate')->length)->toBe(0);
+    })->with([InvoiceTypeCode::CommercialInvoice, InvoiceTypeCode::CreditNote]);
+
+    it('rejects invalid tax dates on the real builder path', function () {
+        $invoice = createTestInvoiceForBuilder(overrides: ['taxPointDate' => 'not-a-date']);
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))
+            ->toThrow(InvalidArgumentException::class, 'Invalid tax point date format');
+    });
+});
+
+describe('RON VAT sign and zero-rounding boundary', function () {
+    it('accepts zero-rounded RON for nonzero document VAT and preserves valid signs', function (float $vat, float $ron, InvoiceTypeCode $type) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Small tax', quantity: $vat < 0 ? -1 : 1, unitPrice: $vat == 0.0 ? 0.01 : 0.05, taxAmount: $vat, taxPercent: 19),
+        ], ['currency' => 'JPY', 'taxAmountRon' => $ron, 'invoiceTypeCode' => $type]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+        $sign = $type === InvoiceTypeCode::CreditNote ? -1 : 1;
+
+        expect(ublText($xml, '/*/cac:TaxTotal/cbc:TaxAmount[@currencyID="JPY"]'))->toBe(number_format($sign * $vat, 2, '.', ''))
+            ->and(ublText($xml, '/*/cac:TaxTotal/cbc:TaxAmount[@currencyID="RON"]'))->toBe(number_format($sign * $ron, 2, '.', ''));
+    })->with([
+        'positive to zero' => [0.01, 0.0, InvoiceTypeCode::CommercialInvoice],
+        'negative to zero' => [-0.01, 0.0, InvoiceTypeCode::CommercialInvoice],
+        'positive sub-cent RON' => [0.01, 0.004, InvoiceTypeCode::CommercialInvoice],
+        'negative sub-cent RON' => [-0.01, -0.004, InvoiceTypeCode::CommercialInvoice],
+        'credit to zero' => [0.01, 0.0, InvoiceTypeCode::CreditNote],
+        'positive same sign' => [0.01, 0.02, InvoiceTypeCode::CommercialInvoice],
+        'negative same sign' => [-0.01, -0.02, InvoiceTypeCode::CommercialInvoice],
+        'zero to zero' => [0.0, 0.0, InvoiceTypeCode::CommercialInvoice],
+    ]);
+
+    it('rejects opposite nonzero signs and zero document VAT with nonzero RON', function (float $vat, float $ron) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Tax sign', quantity: $vat < 0 ? -1 : 1, unitPrice: $vat == 0.0 ? 0.01 : 0.05, taxAmount: $vat, taxPercent: 19),
+        ], ['currency' => 'JPY', 'taxAmountRon' => $ron]);
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
+    })->with([
+        'positive to negative' => [0.01, -0.01],
+        'negative to positive' => [-0.01, 0.01],
+        'zero to positive' => [0.0, 0.01],
+        'zero to negative' => [0.0, -0.01],
+    ]);
 });

@@ -605,6 +605,25 @@ amounts stay at exactly 2. Through v2 both were formatted as money, so \`quantit
 \`1.38\` and \`unitPrice: 0.0075\` filed as \`0.01\` — overstating that line by 33%. If you worked around
 this by pre-scaling quantities or prices, **remove the workaround**: it will now double-apply.
 
+## Optional taxPointDate (BT-7)
+
+Supply the caller-selected VAT applicability date using the trailing optional
+\`CarbonInterface|string|null $taxPointDate = null\` constructor parameter:
+
+\`\`\`php
+new InvoiceData(
+    // ... existing required invoice fields ...
+    taxPointDate: '2024-03-10',
+);
+\`\`\`
+
+No date is inferred by the SDK. Omitted/null values preserve legacy XML and exact serialized
+keys/order; non-null dates append \`taxPointDate\`. Array hydration retains Spatie date casting.
+\`getTaxPointDateAsCarbon()\` returns a copy or null. Invoice emits the date after its type code;
+CreditNote emits it before its type code, immediately after IssueDate. Payment due date
+handling is unchanged. A correctly zero-rounded RON VAT total is allowed for nonzero document
+VAT; opposite nonzero signs and zero document VAT with nonzero RON VAT remain rejected.
+
 ## Multi-Currency: taxAmountRon (new in v3.0.0)
 
 A non-RON invoice must declare its VAT total in RON as well (BT-111), and the builder now
@@ -1720,12 +1739,12 @@ accepted with a wrong figure.
 
 ### 3a. Non-RON invoices must declare \`taxAmountRon\` (BT-111)
 
-\`InvoiceData\` gained \`?float $taxAmountRon = null\` (last constructor parameter — purely additive,
+\`InvoiceData\` gained \`?float $taxAmountRon = null\` (appended after the original constructor parameters — purely additive,
 so RON-only apps need no change).
 
 - **Required** when \`currency !== 'RON'\`
 - **Rejected** when \`currency === 'RON'\`
-- Must agree in sign with \`getTotalVat()\`
+- Must agree in nonzero sign with \`getTotalVat()\`; nonzero document VAT may round to zero RON, while zero document VAT cannot produce nonzero RON VAT
 
 **Symptom (omitted on a non-RON invoice):**
 \`\`\`

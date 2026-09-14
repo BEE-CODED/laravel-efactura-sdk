@@ -9,6 +9,9 @@ use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
 use Spatie\LaravelData\Data;
+use Spatie\LaravelData\Support\Partials\Partial;
+use Spatie\LaravelData\Support\Transformation\TransformationContext;
+use Spatie\LaravelData\Support\Transformation\TransformationContextFactory;
 
 /**
  * Complete invoice data for e-Factura submission.
@@ -95,6 +98,9 @@ class InvoiceData extends Data
      */
     public ?float $taxAmountRon = null;
 
+    /** Optional VAT applicability date (BT-7); never inferred by the SDK. */
+    public Carbon|string|null $taxPointDate = null;
+
     /**
      * @param  string  $invoiceNumber  Invoice number/identifier
      * @param  CarbonInterface|string  $issueDate  Invoice issue date
@@ -107,6 +113,7 @@ class InvoiceData extends Data
      * @param  InvoiceTypeCode|null  $invoiceTypeCode  Type of invoice (default: CommercialInvoice)
      * @param  string|null  $precedingInvoiceNumber  Preceding invoice number for credit notes (BT-25, used in BillingReference)
      * @param  float|null  $taxAmountRon  Total VAT in RON (BT-111); required when $currency is not RON, rejected when it is
+     * @param  CarbonInterface|string|null  $taxPointDate  VAT applicability date (BT-7), omitted from XML and serialization when null
      */
     public function __construct(
         string $invoiceNumber,
@@ -120,6 +127,7 @@ class InvoiceData extends Data
         ?InvoiceTypeCode $invoiceTypeCode = null,
         ?string $precedingInvoiceNumber = null,
         ?float $taxAmountRon = null,
+        CarbonInterface|string|null $taxPointDate = null,
     ) {
         $this->invoiceNumber = $invoiceNumber;
         $this->issueDate = $issueDate instanceof CarbonInterface && ! $issueDate instanceof Carbon
@@ -136,6 +144,65 @@ class InvoiceData extends Data
         $this->invoiceTypeCode = $invoiceTypeCode;
         $this->precedingInvoiceNumber = $precedingInvoiceNumber;
         $this->taxAmountRon = $taxAmountRon;
+        $this->taxPointDate = $taxPointDate instanceof CarbonInterface && ! $taxPointDate instanceof Carbon
+            ? Carbon::instance($taxPointDate)
+            : $taxPointDate;
+    }
+
+    /**
+     * Preserve the legacy serialized key set when the optional date is absent.
+     * Spatie routes both toArray() and toJson() through this method. Filter each
+     * transformation without retaining an exclusion that would hide a later date.
+     *
+     * @return array<string, mixed>
+     */
+    public function transform(
+        TransformationContextFactory|TransformationContext|null $transformationContext = null,
+    ): array {
+        if ($this->taxPointDate !== null) {
+            return parent::transform($transformationContext);
+        }
+
+        $context = match (true) {
+            $transformationContext instanceof TransformationContext => clone $transformationContext,
+            $transformationContext instanceof TransformationContextFactory => clone $transformationContext->get($this),
+            default => clone TransformationContextFactory::create()->get($this),
+        };
+        // Visibility uses the original property name, before mapping or wrapping.
+        // Cloning preserves the caller's partials and all other context settings.
+        $context->addExceptPartial(Partial::create('taxPointDate'));
+
+        return parent::transform($context);
+    }
+
+    /**
+     * Return the caller's VAT applicability date as a copy, or null if omitted.
+     *
+     * @throws \InvalidArgumentException If the date string cannot be parsed
+     */
+    public function getTaxPointDateAsCarbon(): ?Carbon
+    {
+        if ($this->taxPointDate === null) {
+            return null;
+        }
+
+        if ($this->taxPointDate instanceof Carbon) {
+            return $this->taxPointDate->copy();
+        }
+
+        try {
+            if (trim($this->taxPointDate) === '') {
+                throw new \InvalidArgumentException('A tax point date cannot be empty.');
+            }
+
+            return Carbon::parse($this->taxPointDate);
+        } catch (\Exception $e) {
+            throw new \InvalidArgumentException(
+                "Invalid tax point date format: {$this->taxPointDate}",
+                0,
+                $e
+            );
+        }
     }
 
     /**

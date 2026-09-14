@@ -21688,6 +21688,22 @@ Complete invoice data for e-Factura submission. Extends \`Spatie\\LaravelData\\D
 | \`$invoiceTypeCode\` | \`?InvoiceTypeCode\` | no | \`null\` | Type of invoice \u2014 resolved via \`getInvoiceTypeCode()\` which defaults to \`CommercialInvoice\` |
 | \`$precedingInvoiceNumber\` | \`?string\` | no | \`null\` | Preceding invoice number for credit notes (BT-25, used in BillingReference element) |
 | \`$taxAmountRon\` | \`?float\` | conditional | \`null\` | Total VAT expressed in RON (BT-111). **Required when \`$currency\` is not \`'RON'\`, and rejected when it is.** See below |
+| \`$taxPointDate\` | \`CarbonInterface|string|null\` | no | \`null\` | Optional VAT applicability date (BT-7), appended after all existing constructor parameters |
+
+## Optional VAT applicability date
+
+Pass \`taxPointDate: '2024-03-10'\` when the caller has selected the tax date. The SDK never
+defaults it to today. Omitted/null values preserve legacy XML and the exact \`toArray()\`/\`toJson()\`
+keys/order; a non-null field is appended. \`InvoiceData::from()\` retains existing Spatie date
+casting and supports omitted/null and serialized date round trips.
+
+The stored property is \`Carbon|string|null\`; direct construction normalizes immutable Carbon
+and preserves mutable instances, like issue/due dates. \`getTaxPointDateAsCarbon(): ?Carbon\`
+returns a copy or null, and rejects empty/unparseable strings when generating XML.
+
+UBL Invoice writes \`TaxPointDate\` after \`InvoiceTypeCode\` and before \`DocumentCurrencyCode\`;
+CreditNote writes it after \`IssueDate\` and before \`CreditNoteTypeCode\`. Credit-note payment due
+dates retain their existing \`PaymentMeans/PaymentDueDate\` representation.
 
 ## Multi-currency: \`$taxAmountRon\` (BT-111) \u2014 new and required in v3.0.0
 
@@ -21717,7 +21733,8 @@ new InvoiceData(
   so a second RON total cannot be emitted; passing it throws rather than being silently discarded.
 - Supply it in the same positive sense as the per-line \`taxAmount\`; the builder sign-flips it for
   credit notes alongside the lines. It must agree in sign with the invoice VAT total, and is
-  rounded to 2 decimals (BR-DEC-RO-15).
+  rounded to 2 decimals (BR-DEC-RO-15). Nonzero document VAT may legitimately round to zero RON;
+  opposite nonzero signs and zero document VAT with nonzero RON remain rejected.
 
 ## Date handling (since v2.3.0)
 
@@ -23518,6 +23535,25 @@ amounts stay at exactly 2. Through v2 both were formatted as money, so \`quantit
 \`1.38\` and \`unitPrice: 0.0075\` filed as \`0.01\` \u2014 overstating that line by 33%. If you worked around
 this by pre-scaling quantities or prices, **remove the workaround**: it will now double-apply.
 
+## Optional taxPointDate (BT-7)
+
+Supply the caller-selected VAT applicability date using the trailing optional
+\`CarbonInterface|string|null $taxPointDate = null\` constructor parameter:
+
+\`\`\`php
+new InvoiceData(
+    // ... existing required invoice fields ...
+    taxPointDate: '2024-03-10',
+);
+\`\`\`
+
+No date is inferred by the SDK. Omitted/null values preserve legacy XML and exact serialized
+keys/order; non-null dates append \`taxPointDate\`. Array hydration retains Spatie date casting.
+\`getTaxPointDateAsCarbon()\` returns a copy or null. Invoice emits the date after its type code;
+CreditNote emits it before its type code, immediately after IssueDate. Payment due date
+handling is unchanged. A correctly zero-rounded RON VAT total is allowed for nonzero document
+VAT; opposite nonzero signs and zero document VAT with nonzero RON VAT remain rejected.
+
 ## Multi-Currency: taxAmountRon (new in v3.0.0)
 
 A non-RON invoice must declare its VAT total in RON as well (BT-111), and the builder now
@@ -24627,12 +24663,12 @@ accepted with a wrong figure.
 
 ### 3a. Non-RON invoices must declare \`taxAmountRon\` (BT-111)
 
-\`InvoiceData\` gained \`?float $taxAmountRon = null\` (last constructor parameter \u2014 purely additive,
+\`InvoiceData\` gained \`?float $taxAmountRon = null\` (appended after the original constructor parameters \u2014 purely additive,
 so RON-only apps need no change).
 
 - **Required** when \`currency !== 'RON'\`
 - **Rejected** when \`currency === 'RON'\`
-- Must agree in sign with \`getTotalVat()\`
+- Must agree in nonzero sign with \`getTotalVat()\`; nonzero document VAT may round to zero RON, while zero document VAT cannot produce nonzero RON VAT
 
 **Symptom (omitted on a non-RON invoice):**
 \`\`\`
