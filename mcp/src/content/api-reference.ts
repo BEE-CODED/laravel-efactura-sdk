@@ -343,7 +343,23 @@ Validates the \`InvoiceData\` DTO and generates a CIUS-RO compliant UBL 2.1 XML 
 
 | Field | Rules |
 |-------|-------|
-| \`taxAmountRon\` | **Required** when \`currency !== 'RON'\`; **rejected** when \`currency === 'RON'\`; must match the sign of \`getTotalVat()\` |
+| \`taxAmountRon\` | **Required** when \`currency !== 'RON'\`; **rejected** when \`currency === 'RON'\`; must match the sign of \`getTotalVat()\` when both rounded amounts are nonzero; either zero boundary is permitted |
+
+### Payable rounding and total helpers
+
+Optional \`InvoiceData::$payableRoundingAmount\` is a finite signed, cent-representable amount in
+document currency, with absolute value below 2^46 so adjacent cents remain distinguishable. Null is omitted from serialization; null/zero emits no BT-114. Meaningful
+sub-cent precision is rejected, harmless binary noise normalized. Supplied values are checked
+by the payable helper and builder after direct construction, hydration or property mutation.
+
+- \`getTotalIncludingVat()\` returns the payable amount including optional rounding (BT-115).
+- \`getTotalIncludingVatBeforeRounding()\` returns net plus VAT, excluding rounding (BT-112).
+- \`getTotalExcludingVat()\` and \`getTotalVat()\` are unchanged.
+
+For code380, XML uses those helper amounts; for code381, it negates them and rounding under
+the existing credit-note convention. BT-114 precedes BT-115 and is applied exactly once.
+No new setting or interface method is required. Existing callers omitting rounding keep their
+results. Opting-in callers that need the pre-rounding total use the new helper.
 
 ### Party (Supplier / Customer)
 

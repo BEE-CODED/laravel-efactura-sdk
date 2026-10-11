@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
@@ -101,6 +102,9 @@ class InvoiceData extends Data
     /** Optional VAT applicability date (BT-7); never inferred by the SDK. */
     public Carbon|string|null $taxPointDate = null;
 
+    /** Optional payable rounding (BT-114), in the same sign convention as the lines. */
+    public ?float $payableRoundingAmount = null;
+
     /**
      * @param  string  $invoiceNumber  Invoice number/identifier
      * @param  CarbonInterface|string  $issueDate  Invoice issue date
@@ -114,6 +118,7 @@ class InvoiceData extends Data
      * @param  string|null  $precedingInvoiceNumber  Preceding invoice number for credit notes (BT-25, used in BillingReference)
      * @param  float|null  $taxAmountRon  Total VAT in RON (BT-111); required when $currency is not RON, rejected when it is
      * @param  CarbonInterface|string|null  $taxPointDate  VAT applicability date (BT-7), omitted from XML and serialization when null
+     * @param  float|null  $payableRoundingAmount  Finite cent-precision payable adjustment (BT-114); null is omitted from serialization
      */
     public function __construct(
         string $invoiceNumber,
@@ -128,6 +133,7 @@ class InvoiceData extends Data
         ?string $precedingInvoiceNumber = null,
         ?float $taxAmountRon = null,
         CarbonInterface|string|null $taxPointDate = null,
+        ?float $payableRoundingAmount = null,
     ) {
         $this->invoiceNumber = $invoiceNumber;
         $this->issueDate = $issueDate instanceof CarbonInterface && ! $issueDate instanceof Carbon
@@ -147,10 +153,12 @@ class InvoiceData extends Data
         $this->taxPointDate = $taxPointDate instanceof CarbonInterface && ! $taxPointDate instanceof Carbon
             ? Carbon::instance($taxPointDate)
             : $taxPointDate;
+        $this->payableRoundingAmount = $payableRoundingAmount;
+        $this->payableRoundingAmount = $this->getPayableRoundingAmount();
     }
 
     /**
-     * Preserve the legacy serialized key set when the optional date is absent.
+     * Preserve the legacy serialized key set when optional date/rounding is absent.
      * Spatie routes both toArray() and toJson() through this method. Filter each
      * transformation without retaining an exclusion that would hide a later date.
      *
@@ -159,9 +167,7 @@ class InvoiceData extends Data
     public function transform(
         TransformationContextFactory|TransformationContext|null $transformationContext = null,
     ): array {
-        if ($this->taxPointDate !== null) {
-            return parent::transform($transformationContext);
-        }
+        $this->payableRoundingAmount = $this->getPayableRoundingAmount();
 
         $context = match (true) {
             $transformationContext instanceof TransformationContext => clone $transformationContext,
@@ -170,7 +176,12 @@ class InvoiceData extends Data
         };
         // Visibility uses the original property name, before mapping or wrapping.
         // Cloning preserves the caller's partials and all other context settings.
-        $context->addExceptPartial(Partial::create('taxPointDate'));
+        if ($this->taxPointDate === null) {
+            $context->addExceptPartial(Partial::create('taxPointDate'));
+        }
+        if ($this->payableRoundingAmount === null) {
+            $context->addExceptPartial(Partial::create('payableRoundingAmount'));
+        }
 
         return parent::transform($context);
     }
@@ -331,13 +342,53 @@ class InvoiceData extends Data
     }
 
     /**
-     * Calculate the total amount including VAT (BT-112 / BT-115).
+     * Return normalized payable rounding (BT-114), validating every consuming path.
      *
-     * Matches cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount and cbc:PayableAmount
-     * in the filed XML, which are likewise the sum of the two rounded totals.
+     * Spatie hydration and later public-property assignment can overwrite constructor
+     * normalization. Never silently round a meaningful sub-cent adjustment. The range
+     * keeps adjacent cents distinguishable in a double; the tolerance only admits
+     * binary representation noise, and is capped below meaningful sub-cent precision.
+     *
+     * @throws ValidationException
+     */
+    public function getPayableRoundingAmount(): ?float
+    {
+        $amount = $this->payableRoundingAmount;
+        if ($amount === null) {
+            return null;
+        }
+
+        if (! is_finite($amount) || abs($amount) >= 2 ** 46) {
+            throw new ValidationException(__('efactura-sdk::validation.payable_rounding_amount_invalid'));
+        }
+
+        $rounded = round($amount, 2);
+        $tolerance = min(0.000001, max(0.000000001, abs($amount) * PHP_FLOAT_EPSILON * 2));
+        if (abs($amount - $rounded) > $tolerance) {
+            throw new ValidationException(__('efactura-sdk::validation.payable_rounding_amount_invalid'));
+        }
+
+        return $rounded == 0.0 ? 0.0 : $rounded;
+    }
+
+    /**
+     * Calculate net plus VAT before payable rounding (BT-112).
+     *
+     * Matches TaxInclusiveAmount in caller sign; credit-note XML negates it.
+     */
+    public function getTotalIncludingVatBeforeRounding(): float
+    {
+        return round($this->getTotalExcludingVat() + $this->getTotalVat(), 2);
+    }
+
+    /**
+     * Calculate the amount payable including optional rounding (BT-115).
+     *
+     * Matches PayableAmount in caller sign; credit-note XML negates it. Consumers
+     * needing net plus VAT alone should use getTotalIncludingVatBeforeRounding().
      */
     public function getTotalIncludingVat(): float
     {
-        return round($this->getTotalExcludingVat() + $this->getTotalVat(), 2);
+        return round($this->getTotalIncludingVatBeforeRounding() + ($this->getPayableRoundingAmount() ?? 0.0), 2);
     }
 }

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Builders\InvoiceBuilder;
+use BeeCoded\EFacturaSdk\Contracts\UblBuilderInterface;
 use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
@@ -202,4 +203,44 @@ describe('UblBuilder', function () {
 
         $ubl->generateInvoiceXml($invoice);
     })->throws(ValidationException::class, 'Failed to generate invoice XML');
+});
+
+it('uses native payable rounding through direct container and custom injected builders with legacy config', function () {
+    $party = new PartyData(
+        registrationName: 'Supplier SRL', companyId: 'RO12345678',
+        address: new AddressData(street: 'Street 1', city: 'Cluj', postalZone: '400001', county: 'Cluj'),
+        isVatPayer: true,
+    );
+    $invoice = new InvoiceData(
+        invoiceNumber: 'ROUND-001', issueDate: '2024-06-15', supplier: $party, customer: $party,
+        lines: [new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 19, taxPercent: 19)],
+        payableRoundingAmount: -0.01,
+    );
+    config()->set('efactura-sdk', ['sandbox' => true]);
+    $custom = new class extends InvoiceBuilder
+    {
+        public bool $called = false;
+
+        public function buildInvoiceXml(InvoiceData $input): string
+        {
+            $this->called = true;
+
+            return parent::buildInvoiceXml($input);
+        }
+    };
+    foreach ([new UblBuilder, app(UblBuilderInterface::class), new UblBuilder($custom)] as $service) {
+        $xml = $service->generateInvoiceXml($invoice);
+        $dom = new DOMDocument;
+        expect($dom->loadXML($xml))->toBeTrue();
+        $xpath = new DOMXPath($dom);
+        $xpath->registerNamespace('cac', 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2');
+        $xpath->registerNamespace('cbc', 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2');
+        expect($xpath->evaluate('string(/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount)'))->toBe('119.00')
+            ->and($xpath->evaluate('string(/*/cac:LegalMonetaryTotal/cbc:PayableRoundingAmount)'))->toBe('-0.01')
+            ->and($xpath->evaluate('string(/*/cac:LegalMonetaryTotal/cbc:PayableAmount)'))->toBe('118.99');
+        $invoice->payableRoundingAmount = 0.001;
+        expect(fn () => $service->generateInvoiceXml($invoice))->toThrow(ValidationException::class);
+        $invoice->payableRoundingAmount = -0.01;
+    }
+    expect($custom->called)->toBeTrue();
 });

@@ -100,6 +100,7 @@ function createTestInvoiceForBuilder(array $lines = [], array $overrides = []): 
         precedingInvoiceNumber: $overrides['precedingInvoiceNumber'] ?? null,
         taxAmountRon: $overrides['taxAmountRon'] ?? null,
         taxPointDate: $overrides['taxPointDate'] ?? null,
+        payableRoundingAmount: $overrides['payableRoundingAmount'] ?? null,
     );
 }
 
@@ -1887,9 +1888,12 @@ describe('RON VAT sign and zero-rounding boundary', function () {
         'positive same sign' => [0.01, 0.02, InvoiceTypeCode::CommercialInvoice],
         'negative same sign' => [-0.01, -0.02, InvoiceTypeCode::CommercialInvoice],
         'zero to zero' => [0.0, 0.0, InvoiceTypeCode::CommercialInvoice],
+        'zero to positive' => [0.0, 0.01, InvoiceTypeCode::CommercialInvoice],
+        'zero to negative' => [0.0, -0.01, InvoiceTypeCode::CommercialInvoice],
+        'zero credit to positive' => [0.0, 0.01, InvoiceTypeCode::CreditNote],
     ]);
 
-    it('rejects opposite nonzero signs and zero document VAT with nonzero RON', function (float $vat, float $ron) {
+    it('rejects opposite nonzero signs', function (float $vat, float $ron) {
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData(name: 'Tax sign', quantity: $vat < 0 ? -1 : 1, unitPrice: $vat == 0.0 ? 0.01 : 0.05, taxAmount: $vat, taxPercent: 19),
         ], ['currency' => 'JPY', 'taxAmountRon' => $ron]);
@@ -1897,7 +1901,89 @@ describe('RON VAT sign and zero-rounding boundary', function () {
     })->with([
         'positive to negative' => [0.01, -0.01],
         'negative to positive' => [-0.01, 0.01],
-        'zero to positive' => [0.0, 0.01],
-        'zero to negative' => [0.0, -0.01],
+
     ]);
+});
+
+describe('native payable rounding', function () {
+    it('keeps net plus VAT separate from payable through the public builder', function () {
+        $legacy = createTestInvoiceForBuilder();
+        $invoice = new InvoiceData(
+            invoiceNumber: $legacy->invoiceNumber,
+            issueDate: $legacy->issueDate,
+            supplier: $legacy->supplier,
+            customer: $legacy->customer,
+            lines: $legacy->lines,
+            payableRoundingAmount: -0.01,
+        );
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect(ublText($xml, '//cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'))->toBe('1190.00')
+            ->and(ublText($xml, '//cac:LegalMonetaryTotal/cbc:PayableRoundingAmount'))->toBe('-0.01')
+            ->and(ublText($xml, '//cac:LegalMonetaryTotal/cbc:PayableAmount'))->toBe('1189.99')
+            ->and($invoice->getTotalIncludingVatBeforeRounding())->toBe(1190.0)
+            ->and($invoice->getTotalIncludingVat())->toBe(1189.99);
+    });
+});
+
+it('maps both monetary helpers and rounding to final XML across creation and sign boundaries', function (string $creation, InvoiceTypeCode $type, int $sign, float $rounding, bool $mixedRates) {
+    $invoice = createTestInvoiceForBuilder([
+        new InvoiceLineData(name: 'First', quantity: $sign * 0.5, unitPrice: 0.01, taxAmount: $sign * 0.005, taxPercent: 19),
+        new InvoiceLineData(name: 'Second', quantity: $sign * 0.5, unitPrice: 0.01, taxAmount: $sign * 0.005, taxPercent: $mixedRates ? 5 : 19),
+    ], ['invoiceTypeCode' => $type, 'payableRoundingAmount' => $creation === 'mutated' ? null : $rounding]);
+    $invoice = match ($creation) {
+        'from' => InvoiceData::from($invoice->toArray()),
+        'validated' => InvoiceData::validateAndCreate($invoice->toArray()),
+        default => $invoice,
+    };
+    if ($creation === 'mutated') {
+        $invoice->payableRoundingAmount = $rounding;
+    }
+    $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+    $xmlSign = $type === InvoiceTypeCode::CreditNote ? -1 : 1;
+    $beforeRounding = $sign * ($mixedRates ? 0.04 : 0.03);
+    $payable = round($beforeRounding + $rounding, 2);
+    $children = [];
+    foreach (ublXpath($xml, '/*/cac:LegalMonetaryTotal/*') as $node) {
+        $children[] = $node->localName;
+        expect($node->getAttribute('currencyID'))->toBe('RON');
+    }
+
+    expect($invoice->getTotalIncludingVatBeforeRounding())->toBe($beforeRounding)
+        ->and($invoice->getTotalIncludingVat())->toBe($payable)
+        ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'))->toBe(number_format($xmlSign * $beforeRounding, 2, '.', ''))
+        ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableAmount'))->toBe(number_format($xmlSign * $payable, 2, '.', ''))
+        ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableRoundingAmount'))->toBe(number_format($xmlSign * $rounding, 2, '.', ''))
+        ->and($children)->toBe(['LineExtensionAmount', 'TaxExclusiveAmount', 'TaxInclusiveAmount', 'PayableRoundingAmount', 'PayableAmount']);
+})->with(['direct', 'from', 'validated', 'mutated'])
+    ->with([InvoiceTypeCode::CommercialInvoice, InvoiceTypeCode::CreditNote])
+    ->with([1, -1])->with([0.01, -0.01])->with([true, false]);
+
+it('preserves legacy XML for omitted null and zero rounding', function (InvoiceTypeCode $type) {
+    $invoice = createTestInvoiceForBuilder(overrides: ['invoiceTypeCode' => $type]);
+    $builder = new InvoiceBuilder;
+    $legacy = $builder->buildInvoiceXml($invoice);
+    foreach ([null, 0.0, -0.0] as $rounding) {
+        $invoice->payableRoundingAmount = $rounding;
+        $xml = $builder->buildInvoiceXml($invoice);
+        expect($xml)->toBe($legacy)
+            ->and(ublXpath($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableRoundingAmount')->length)->toBe(0)
+            ->and($invoice->getTotalIncludingVat())->toBe($invoice->getTotalIncludingVatBeforeRounding());
+    }
+})->with([InvoiceTypeCode::CommercialInvoice, InvoiceTypeCode::CreditNote]);
+
+it('rejects invalid rounding assigned after construction at the public XML gate', function (float $rounding) {
+    $invoice = createTestInvoiceForBuilder();
+    $invoice->payableRoundingAmount = $rounding;
+    expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
+})->with([0.001, -0.015, 0.01000001, INF, -INF, NAN, PHP_FLOAT_MAX, 1e16]);
+
+it('normalizes binary noise once without changing taxes in generated XML', function () {
+    $invoice = createTestInvoiceForBuilder();
+    $invoice->payableRoundingAmount = 0.1 + 0.2;
+    $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+    expect(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableRoundingAmount'))->toBe('0.30')
+        ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'))->toBe('1190.00')
+        ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableAmount'))->toBe('1190.30')
+        ->and($invoice->getTotalIncludingVat())->toBe(1190.30);
 });

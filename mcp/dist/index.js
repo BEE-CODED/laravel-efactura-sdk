@@ -21688,7 +21688,8 @@ Complete invoice data for e-Factura submission. Extends \`Spatie\\LaravelData\\D
 | \`$invoiceTypeCode\` | \`?InvoiceTypeCode\` | no | \`null\` | Type of invoice \u2014 resolved via \`getInvoiceTypeCode()\` which defaults to \`CommercialInvoice\` |
 | \`$precedingInvoiceNumber\` | \`?string\` | no | \`null\` | Preceding invoice number for credit notes (BT-25, used in BillingReference element) |
 | \`$taxAmountRon\` | \`?float\` | conditional | \`null\` | Total VAT expressed in RON (BT-111). **Required when \`$currency\` is not \`'RON'\`, and rejected when it is.** See below |
-| \`$taxPointDate\` | \`CarbonInterface|string|null\` | no | \`null\` | Optional VAT applicability date (BT-7), appended after all existing constructor parameters |
+| \`$taxPointDate\` | \`CarbonInterface|string|null\` | no | \`null\` | Optional VAT applicability date (BT-7); existing argument position is unchanged |
+| \`$payableRoundingAmount\` | \`?float\` | no | \`null\` | Signed payable rounding in document currency (BT-114), appended after existing parameters |
 
 ## Optional VAT applicability date
 
@@ -21734,7 +21735,7 @@ new InvoiceData(
 - Supply it in the same positive sense as the per-line \`taxAmount\`; the builder sign-flips it for
   credit notes alongside the lines. It must agree in sign with the invoice VAT total, and is
   rounded to 2 decimals (BR-DEC-RO-15). Nonzero document VAT may legitimately round to zero RON;
-  opposite nonzero signs and zero document VAT with nonzero RON remain rejected.
+  the reverse zero-document/nonzero-RON boundary is also accepted. Opposite nonzero signs remain rejected.
 
 ## Date handling (since v2.3.0)
 
@@ -21783,11 +21784,46 @@ matching the filed \`cac:TaxSubtotal\` breakdown. The grouping is load-bearing: 
 all-lines sum understates across rate groups, and rounding per line overstates within one.
 
 ### \`getTotalIncludingVat(): float\`
-Returns \`getTotalExcludingVat() + getTotalVat()\`, rounded to 2 decimal places \u2014 matching
-\`cbc:TaxInclusiveAmount\` / \`cbc:PayableAmount\`.
+Returns \`getTotalIncludingVatBeforeRounding()\` plus normalized optional payable rounding, rounded
+to cents: \`cbc:PayableAmount\` (BT-115). Omitted/null/zero rounding preserves existing results.
+Do not add rounding again when recording the receivable.
 
-> Sign note: all three report totals in the same positive sense the lines are supplied in. A credit
+### \`getTotalIncludingVatBeforeRounding(): float\`
+Returns the existing \`getTotalExcludingVat() + getTotalVat()\` calculation, rounded to cents:
+\`cbc:TaxInclusiveAmount\` (BT-112). Payable rounding never changes this amount.
+
+> Sign note: these helpers report totals in the same positive sense the lines are supplied in. A credit
 > note sign-flips every line, so the filed document states the negation of these values.
+
+## Optional payable rounding
+
+\`InvoiceData\` accepts \`?float $payableRoundingAmount = null\` after the existing constructor
+parameters. It is a signed amount in the document currency, supplied by your accounting
+calculation; the SDK does not choose a rounding correction. No settings are required.
+
+- Omitted/null values preserve the existing XML and omit the field from serialized data.
+- Zero emits no \`PayableRoundingAmount\` element. A nonzero amount emits BT-114 immediately
+  before \`PayableAmount\` (BT-115).
+- Supply a finite amount representable to cents, with absolute value below 2^46. This numeric
+  bound keeps adjacent cents distinguishable in a double. Meaningful sub-cent precision is rejected;
+  harmless binary floating-point noise is normalized. The helper and builder check the same
+  contract, including values assigned after construction or populated through Spatie hydration.
+- \`getTotalIncludingVat()\` is the final payable amount: net plus VAT plus optional rounding.
+  Existing payment consumers can retain their calls when using rounding.
+- \`getTotalIncludingVatBeforeRounding()\` returns net plus VAT (BT-112), excluding rounding.
+  Use it when you opt into rounding and need the pre-rounding tax-inclusive total.
+
+\`\`\`php
+$invoice->payableRoundingAmount = 0.01;
+$invoice->getTotalIncludingVatBeforeRounding(); // e.g. 121.00
+$invoice->getTotalIncludingVat();               // 121.01 payable
+\`\`\`
+
+Rounding does not change the net amount, VAT or taxable base. Invoice 380 XML uses the helpers'
+input sign; CreditNote 381 XML negates the input totals and rounding consistently with its
+existing line convention. Do not add rounding again after calling \`getTotalIncludingVat()\`.
+Existing projects that omit rounding need no code or configuration change. This is independent
+of the optional tax applicability date; neither field is required to use the other.
 
 ## Usage Notes
 
@@ -23537,7 +23573,7 @@ this by pre-scaling quantities or prices, **remove the workaround**: it will now
 
 ## Optional taxPointDate (BT-7)
 
-Supply the caller-selected VAT applicability date using the trailing optional
+Supply the caller-selected VAT applicability date using the optional
 \`CarbonInterface|string|null $taxPointDate = null\` constructor parameter:
 
 \`\`\`php
@@ -23551,8 +23587,38 @@ No date is inferred by the SDK. Omitted/null values preserve legacy XML and exac
 keys/order; non-null dates append \`taxPointDate\`. Array hydration retains Spatie date casting.
 \`getTaxPointDateAsCarbon()\` returns a copy or null. Invoice emits the date after its type code;
 CreditNote emits it before its type code, immediately after IssueDate. Payment due date
-handling is unchanged. A correctly zero-rounded RON VAT total is allowed for nonzero document
-VAT; opposite nonzero signs and zero document VAT with nonzero RON VAT remain rejected.
+handling is unchanged. Either document VAT or accounting VAT may legitimately round to zero
+while the other remains nonzero; opposite nonzero signs remain rejected.
+
+## Optional payable rounding
+
+\`InvoiceData\` accepts \`?float $payableRoundingAmount = null\` after the existing constructor
+parameters. It is a signed amount in the document currency, supplied by your accounting
+calculation; the SDK does not choose a rounding correction. No settings are required.
+
+- Omitted/null values preserve the existing XML and omit the field from serialized data.
+- Zero emits no \`PayableRoundingAmount\` element. A nonzero amount emits BT-114 immediately
+  before \`PayableAmount\` (BT-115).
+- Supply a finite amount representable to cents, with absolute value below 2^46. This numeric
+  bound keeps adjacent cents distinguishable in a double. Meaningful sub-cent precision is rejected;
+  harmless binary floating-point noise is normalized. The helper and builder check the same
+  contract, including values assigned after construction or populated through Spatie hydration.
+- \`getTotalIncludingVat()\` is the final payable amount: net plus VAT plus optional rounding.
+  Existing payment consumers can retain their calls when using rounding.
+- \`getTotalIncludingVatBeforeRounding()\` returns net plus VAT (BT-112), excluding rounding.
+  Use it when you opt into rounding and need the pre-rounding tax-inclusive total.
+
+\`\`\`php
+$invoice->payableRoundingAmount = 0.01;
+$invoice->getTotalIncludingVatBeforeRounding(); // e.g. 121.00
+$invoice->getTotalIncludingVat();               // 121.01 payable
+\`\`\`
+
+Rounding does not change the net amount, VAT or taxable base. Invoice 380 XML uses the helpers'
+input sign; CreditNote 381 XML negates the input totals and rounding consistently with its
+existing line convention. Do not add rounding again after calling \`getTotalIncludingVat()\`.
+Existing projects that omit rounding need no code or configuration change. This is independent
+of the optional tax applicability date; neither field is required to use the other.
 
 ## Multi-Currency: taxAmountRon (new in v3.0.0)
 
@@ -23568,7 +23634,8 @@ $invoice = new InvoiceData(
 \`\`\`
 
 Omitting it on a non-RON invoice throws; passing it on a RON invoice also throws. It must agree in
-sign with \`getTotalVat()\`.
+sign with \`getTotalVat()\` when both rounded VAT amounts are nonzero. Either zero boundary
+is permitted; existing accounting-VAT formatting to two decimals is unchanged.
 `,
   "oauth-flow": `# Laravel e-Factura SDK \u2014 OAuth Flow
 
@@ -24824,7 +24891,8 @@ as the receivable could disagree with the legal document by a ban.
 |---|---|---|
 | \`getTotalExcludingVat()\` | raw line totals summed, rounded **once** at the end | sums per-line **rounded** net amounts (as \`cac:LegalMonetaryTotal\` does) |
 | \`getTotalVat()\` | all per-line \`taxAmount\` summed, rounded once | rounded **once per tax-rate group** (as the \`cac:TaxSubtotal\` breakdown does) |
-| \`getTotalIncludingVat()\` | sum of the two | sum of the two (now-corrected) values |
+| \`getTotalIncludingVat()\` | sum of the two | sum of the corrected values, plus optional payable rounding |
+| \`getTotalIncludingVatBeforeRounding()\` | not available | sum of the corrected net and VAT values, excluding payable rounding |
 
 **Only sub-cent inputs move.** Two lines of \`0.5 \xD7 0.01\`: each files \`0.01\`, so the document totals
 \`0.02\`; v2's helper rounded the raw \`0.01\` sum to **\`0.01\`**. Across rate groups, \`0.005 @19%\` +
@@ -24835,7 +24903,7 @@ amounts or per-unit prices below one ban. The v3 values are the ones ANAF has.
 
 ### Sign convention \u2014 unchanged, and deliberately so
 
-All three helpers report totals in the **same positive sense the lines are supplied in**. The
+The monetary helpers report totals in the **same positive sense the lines are supplied in**. The
 builder sign-flips every line for a credit note, so **the filed document states the negation**:
 
 \`\`\`php
@@ -25410,7 +25478,23 @@ Validates the \`InvoiceData\` DTO and generates a CIUS-RO compliant UBL 2.1 XML 
 
 | Field | Rules |
 |-------|-------|
-| \`taxAmountRon\` | **Required** when \`currency !== 'RON'\`; **rejected** when \`currency === 'RON'\`; must match the sign of \`getTotalVat()\` |
+| \`taxAmountRon\` | **Required** when \`currency !== 'RON'\`; **rejected** when \`currency === 'RON'\`; must match the sign of \`getTotalVat()\` when both rounded amounts are nonzero; either zero boundary is permitted |
+
+### Payable rounding and total helpers
+
+Optional \`InvoiceData::$payableRoundingAmount\` is a finite signed, cent-representable amount in
+document currency, with absolute value below 2^46 so adjacent cents remain distinguishable. Null is omitted from serialization; null/zero emits no BT-114. Meaningful
+sub-cent precision is rejected, harmless binary noise normalized. Supplied values are checked
+by the payable helper and builder after direct construction, hydration or property mutation.
+
+- \`getTotalIncludingVat()\` returns the payable amount including optional rounding (BT-115).
+- \`getTotalIncludingVatBeforeRounding()\` returns net plus VAT, excluding rounding (BT-112).
+- \`getTotalExcludingVat()\` and \`getTotalVat()\` are unchanged.
+
+For code380, XML uses those helper amounts; for code381, it negates them and rounding under
+the existing credit-note convention. BT-114 precedes BT-115 and is applied exactly once.
+No new setting or interface method is required. Existing callers omitting rounding keep their
+results. Opting-in callers that need the pre-rounding total use the new helper.
 
 ### Party (Supplier / Customer)
 

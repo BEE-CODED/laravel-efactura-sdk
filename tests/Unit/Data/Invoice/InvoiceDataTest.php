@@ -7,6 +7,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use Spatie\LaravelData\Mappers\SnakeCaseMapper;
@@ -674,4 +675,97 @@ describe('optional tax point date transformation contexts', function () {
             ->and($context->maxDepth)->toBe(8)
             ->and($context->throwWhenMaxDepthReached)->toBeFalse();
     })->with(['factory' => true, 'context' => false]);
+});
+
+describe('InvoiceData optional payable rounding compatibility', function () {
+    it('preserves legacy constructors and serialization while appending supplied rounding', function () {
+        $legacy = createTestInvoice();
+        $positional = new InvoiceData(
+            $legacy->invoiceNumber, $legacy->issueDate, $legacy->supplier, $legacy->customer,
+            $legacy->lines, $legacy->dueDate, $legacy->currency, $legacy->paymentIban,
+            $legacy->invoiceTypeCode, $legacy->precedingInvoiceNumber, $legacy->taxAmountRon,
+            $legacy->taxPointDate,
+        );
+        expect($positional->toArray())->toBe($legacy->toArray())
+            ->and($positional->toJson())->toBe($legacy->toJson());
+        foreach ([null, 0.0, 0.01, -0.01, 0.1 + 0.2] as $rounding) {
+            $direct = new InvoiceData(
+                $legacy->invoiceNumber, $legacy->issueDate, $legacy->supplier, $legacy->customer,
+                $legacy->lines, null, 'RON', null, null, null, null, null, $rounding,
+            );
+            $payload = [...$legacy->toArray(), 'payableRoundingAmount' => $rounding];
+            foreach ([$direct, InvoiceData::from($payload), InvoiceData::validateAndCreate($payload)] as $invoice) {
+                expect($invoice->getTotalIncludingVatBeforeRounding())->toBe(238.0)
+                    ->and($invoice->getTotalIncludingVat())->toBe(round(238 + ($rounding ?? 0.0), 2));
+                if ($rounding === null) {
+                    expect($invoice->toArray())->toBe($legacy->toArray())
+                        ->and($invoice->toJson())->toBe($legacy->toJson());
+                } else {
+                    expect($invoice->toArray()['payableRoundingAmount'])->toBe(round($rounding, 2))
+                        ->and(array_keys($invoice->toArray()))->toBe([...array_keys($legacy->toArray()), 'payableRoundingAmount']);
+                }
+                expect(InvoiceData::from(json_decode($invoice->toJson(), true, flags: JSON_THROW_ON_ERROR))->toArray())->toBe($invoice->toArray());
+            }
+        }
+        expect(array_keys(InvoiceData::getValidationRules([])))->not->toContain('payableRoundingAmount');
+    });
+
+    it('rejects invalid rounding across construction hydration and mutation consumers', function (float $rounding) {
+        $legacy = createTestInvoice();
+        $payload = [...$legacy->toArray(), 'payableRoundingAmount' => $rounding];
+        expect(fn () => new InvoiceData(
+            invoiceNumber: $legacy->invoiceNumber, issueDate: $legacy->issueDate,
+            supplier: $legacy->supplier, customer: $legacy->customer, lines: $legacy->lines,
+            payableRoundingAmount: $rounding,
+        ))->toThrow(ValidationException::class);
+        expect(fn () => InvoiceData::from($payload))->toThrow(ValidationException::class);
+        expect(fn () => InvoiceData::validateAndCreate($payload))->toThrow(ValidationException::class);
+        $legacy->payableRoundingAmount = $rounding;
+        expect($legacy->getTotalIncludingVatBeforeRounding())->toBe(238.0);
+        expect(fn () => $legacy->getTotalIncludingVat())->toThrow(ValidationException::class);
+        expect(fn () => $legacy->toArray())->toThrow(ValidationException::class);
+    })->with([0.001, -0.015, 0.01000001, INF, -INF, NAN, PHP_FLOAT_MAX, 1e16]);
+
+    it('preserves legacy validation rules and outcomes for omitted input', function () {
+        $payload = createTestInvoice()->toArray();
+        expect(InvoiceData::validateAndCreate($payload)->toArray())->toBe($payload);
+        unset($payload['invoiceNumber']);
+        expect(fn () => InvoiceData::validateAndCreate($payload))->toThrow(Illuminate\Validation\ValidationException::class);
+    });
+
+    it('keeps mapping wrapping and caller partial contexts through null value null transitions', function (bool $useFactory, bool $withTaxPointDate) {
+        $originalMapping = config('data.name_mapping_strategy');
+        $this->beforeApplicationDestroyed(static function () use ($originalMapping): void {
+            config()->set('data.name_mapping_strategy', $originalMapping);
+            app(DataConfig::class)->reset();
+            DataContainer::get()->reset();
+        });
+        DataContainer::get()->reset();
+        config()->set('data.name_mapping_strategy.output', SnakeCaseMapper::class);
+        app(DataConfig::class)->reset();
+        $invoice = createTestInvoice()->wrap('invoice')->except('currency');
+        $invoice->taxPointDate = $withTaxPointDate ? '2024-03-10' : null;
+        $factory = TransformationContextFactory::create()->withWrapping()
+            ->only('invoiceNumber', 'dueDate', 'taxPointDate', 'payableRoundingAmount')
+            ->except('dueDate')->include('payableRoundingAmount')->maxDepth(8, false);
+        $context = $factory->get($invoice);
+        $context->depth = 2;
+        $caller = $useFactory ? $factory : $context;
+        $before = $useFactory ? $factory->get($invoice)->toArray() : $context->toArray();
+        $legacyFields = ['invoice_number' => 'INV-001'];
+        if ($withTaxPointDate) {
+            $legacyFields['tax_point_date'] = '2024-03-10';
+        }
+        $legacy = ['invoice' => $legacyFields];
+        expect($invoice->transform($caller))->toBe($legacy);
+        $invoice->payableRoundingAmount = 0.1 + 0.2;
+        expect($invoice->transform($caller))->toBe(['invoice' => [...$legacyFields, 'payable_rounding_amount' => 0.3]]);
+        $invoice->payableRoundingAmount = null;
+        expect($invoice->transform($caller))->toBe($legacy)
+            ->and($useFactory ? $factory->get($invoice)->toArray() : $context->toArray())->toBe($before)
+            ->and($context->depth)->toBe(2)
+            ->and($context->maxDepth)->toBe(8);
+        $invoice->payableRoundingAmount = 0.01;
+        expect($invoice->transform(TransformationContextFactory::create()->only('invoiceNumber')->exclude('payableRoundingAmount')))->toBe(['invoice_number' => 'INV-001']);
+    })->with(['factory' => true, 'context' => false])->with([true, false]);
 });

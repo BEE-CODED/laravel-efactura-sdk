@@ -148,6 +148,7 @@ class InvoiceBuilder
     public function buildInvoiceXml(InvoiceData $input): string
     {
         $this->validateInvoiceInput($input);
+        $payableRoundingAmount = $input->getPayableRoundingAmount() ?? 0.0;
 
         $currency = $input->currency ?: self::DEFAULT_CURRENCY;
         $isSupplierVatPayer = $input->supplier->isVatPayer;
@@ -172,6 +173,8 @@ class InvoiceBuilder
 
         $taxExclusiveAmount = $lineExtensionAmount;
         $taxInclusiveAmount = $taxExclusiveAmount + $totalTaxAmount;
+        $payableRoundingAmount = $isCreditNote ? -$payableRoundingAmount : $payableRoundingAmount;
+        $payableAmount = round($taxInclusiveAmount, 2) + $payableRoundingAmount;
 
         // Determine root namespace based on document type
         $rootNamespace = $isCreditNote ? self::NS_CREDIT_NOTE : self::NS_INVOICE;
@@ -292,7 +295,9 @@ class InvoiceBuilder
             $lineExtensionAmount,
             $taxExclusiveAmount,
             $taxInclusiveAmount,
-            $currency
+            $currency,
+            $payableRoundingAmount,
+            $payableAmount
         );
 
         // Write invoice/credit note lines
@@ -387,11 +392,11 @@ class InvoiceBuilder
         // A converted total must agree in sign with the total it converts. This
         // cannot verify the RATE (that is the caller's BNR figure), but it does
         // catch a credited VAT filed as collected, and vice versa.
-        // A nonzero document total can legitimately convert to zero after rounding.
-        // Zero document VAT cannot, however, produce nonzero accounting VAT.
+        // Either total can round to zero independently when the caller converts
+        // the taxable base before rounding VAT in the accounting currency.
         $ronSign = round($input->taxAmountRon, 2) <=> 0.0;
         $documentSign = $input->getTotalVat() <=> 0.0;
-        if ($ronSign !== 0 && $ronSign !== $documentSign) {
+        if ($ronSign !== 0 && $documentSign !== 0 && $ronSign !== $documentSign) {
             throw new ValidationException(__('efactura-sdk::validation.tax_amount_ron_sign_mismatch'));
         }
     }
@@ -1028,7 +1033,9 @@ class InvoiceBuilder
         float $lineExtensionAmount,
         float $taxExclusiveAmount,
         float $taxInclusiveAmount,
-        string $currency
+        string $currency,
+        float $payableRoundingAmount,
+        float $payableAmount
     ): void {
         $writer->startElement('{'.self::NS_CAC.'}LegalMonetaryTotal');
 
@@ -1056,11 +1063,21 @@ class InvoiceBuilder
             ['currencyID' => $currency]
         );
 
+        if ($payableRoundingAmount != 0.0) {
+            $this->writeElementWithAttributes(
+                $writer,
+                self::NS_CBC,
+                'PayableRoundingAmount',
+                $this->formatAmount($payableRoundingAmount),
+                ['currencyID' => $currency]
+            );
+        }
+
         $this->writeElementWithAttributes(
             $writer,
             self::NS_CBC,
             'PayableAmount',
-            $this->formatAmount($taxInclusiveAmount),
+            $this->formatAmount($payableAmount),
             ['currencyID' => $currency]
         );
 

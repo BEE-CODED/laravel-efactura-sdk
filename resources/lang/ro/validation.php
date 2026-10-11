@@ -39,6 +39,9 @@ return [
     'tax_amount_ron_not_allowed_for_ron' => 'taxAmountRon nu trebuie setat pe o factură în RON: valoarea TVA este deja exprimată în RON, iar un al doilea total de TVA în RON nu este permis (BR-CO-15).',
     'tax_amount_ron_sign_mismatch' => 'taxAmountRon trebuie să aibă același semn ca totalul TVA al facturii: o sumă creditată nu poate fi declarată drept TVA colectată, și invers (BT-111).',
 
+    // Rotunjirea sumei de plată (BT-114)
+    'payable_rounding_amount_invalid' => 'payableRoundingAmount trebuie să fie o sumă finită reprezentabilă cu două zecimale; valorile semnificative sub un ban nu sunt acceptate (BT-114).',
+
     // Mapare județ
     'county_invalid_iso_code' => 'Județul ":county" nu a putut fi mapat la un cod ISO 3166-2:RO valid. Adresele din România necesită coduri de județ valide (ex: "RO-AB" pentru Alba, "RO-B" pentru București).',
 ];

@@ -39,6 +39,9 @@ return [
     'tax_amount_ron_not_allowed_for_ron' => 'taxAmountRon must not be set on a RON invoice: the VAT total is already stated in RON, and a second RON tax total is not permitted (BR-CO-15).',
     'tax_amount_ron_sign_mismatch' => 'taxAmountRon must have the same sign as the invoice VAT total: a credited amount cannot be declared as collected VAT, or vice versa (BT-111).',
 
+    // Payable rounding (BT-114)
+    'payable_rounding_amount_invalid' => 'payableRoundingAmount must be a finite amount representable to two decimal places; meaningful sub-cent values are not accepted (BT-114).',
+
     // County mapping
     'county_invalid_iso_code' => 'County ":county" could not be mapped to a valid ISO 3166-2:RO code. Romanian addresses require valid county codes (e.g., "RO-AB" for Alba, "RO-B" for Bucharest).',
 ];
