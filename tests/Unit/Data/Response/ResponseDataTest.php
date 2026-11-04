@@ -10,6 +10,7 @@ use BeeCoded\EFacturaSdk\Data\Response\UploadResponseData;
 use BeeCoded\EFacturaSdk\Data\Response\ValidationResultData;
 use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
 use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
+use BeeCoded\EFacturaSdk\Support\XmlParser;
 
 describe('UploadResponseData', function () {
     it('creates from successful ANAF response', function () {
@@ -97,6 +98,21 @@ describe('StatusResponseData', function () {
         $response = StatusResponseData::fromAnafResponse(['stare' => 'ok']);
 
         expect($response->isReady())->toBeTrue();
+    });
+
+    it('recognises the documented not-processed status from the XML answer', function () {
+        // stareMesaj documents this header for a file ANAF did not take in; it carries no id_descarcare.
+        $parsed = XmlParser::parseStatusResponse('<?xml version="1.0" encoding="UTF-8"?><header xmlns="mfp:anaf:dgti:efactura:stareMesajFactura:v1" stare="XML cu erori nepreluat de sistem"/>');
+        $response = StatusResponseData::fromAnafResponse(['stare' => $parsed['stare'], 'id_descarcare' => $parsed['idDescarcare'], 'Errors' => $parsed['errors']]);
+
+        expect($response->stare)->toBe(UploadStatusValue::NotProcessed);
+        expect($response->isNotProcessed())->toBeTrue();
+        expect($response->idDescarcare)->toBeNull();
+        expect($response->isReady())->toBeFalse();
+        expect($response->isFailed())->toBeFalse();
+        expect($response->isInProgress())->toBeFalse();
+        expect($response->hasAnafError())->toBeFalse();
+        expect(StatusResponseData::fromAnafResponse(['stare' => 'nok'])->isNotProcessed())->toBeFalse();
     });
 
     it('handles missing stare', function () {

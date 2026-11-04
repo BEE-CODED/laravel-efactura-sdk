@@ -22,6 +22,7 @@ describe('UploadStatusValue', function () {
         expect(UploadStatusValue::from('ok'))->toBe(UploadStatusValue::Ok);
         expect(UploadStatusValue::from('nok'))->toBe(UploadStatusValue::Failed);
         expect(UploadStatusValue::from('in prelucrare'))->toBe(UploadStatusValue::InProgress);
+        expect(UploadStatusValue::from('XML cu erori nepreluat de sistem'))->toBe(UploadStatusValue::NotProcessed);
     });
 
     it('returns null for invalid value using tryFrom', function () {

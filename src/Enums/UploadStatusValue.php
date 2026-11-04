@@ -18,4 +18,10 @@ enum UploadStatusValue: string
 
     /** Currently being processed */
     case InProgress = 'in prelucrare';
+
+    /**
+     * The file was not taken in by ANAF ("factura nu a fost preluata de sistem").
+     * A final answer for the upload index, without a download id.
+     */
+    case NotProcessed = 'XML cu erori nepreluat de sistem';
 }

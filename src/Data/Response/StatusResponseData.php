@@ -14,7 +14,7 @@ use Spatie\LaravelData\Data;
 class StatusResponseData extends Data
 {
     public function __construct(
-        /** Processing status (ok, nok, in prelucrare) */
+        /** Processing status (ok, nok, in prelucrare, XML cu erori nepreluat de sistem) */
         public ?UploadStatusValue $stare = null,
 
         /** Download ID (present for both ok and nok responses) */
@@ -77,6 +77,17 @@ class StatusResponseData extends Data
     public function isFailed(): bool
     {
         return $this->stare === UploadStatusValue::Failed;
+    }
+
+    /**
+     * Check if ANAF did not take in the uploaded file ("XML cu erori nepreluat de sistem").
+     *
+     * A final answer for the upload index, but not isFailed(): ANAF names no download id
+     * (no response archive) for it.
+     */
+    public function isNotProcessed(): bool
+    {
+        return $this->stare === UploadStatusValue::NotProcessed;
     }
 
     /**
