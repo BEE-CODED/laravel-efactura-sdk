@@ -89,6 +89,25 @@ describe('checkStatusQuery', function () {
         $limiter->checkStatusQuery('MSG123');
         $limiter->checkStatusQuery('MSG123');
     })->throws(RateLimitExceededException::class, 'Status query limit exceeded');
+
+    it('refuses the 51st read at the SDK limit but allows ANAF\'s 100 with the provider limit', function () {
+        $limiter = new RateLimiter;
+
+        for ($i = 0; $i < 50; $i++) {
+            $limiter->checkStatusQuery('MSG123');
+        }
+
+        expect(fn () => $limiter->checkStatusQuery('MSG123'))
+            ->toThrow(RateLimitExceededException::class, '(50/day)');
+
+        // Same counter: reads 51-100 pass only against the provider limit.
+        for ($i = 50; $i < 100; $i++) {
+            $limiter->checkStatusQuery('MSG123', true);
+        }
+
+        expect(fn () => $limiter->checkStatusQuery('MSG123', true))
+            ->toThrow(RateLimitExceededException::class, '(100/day)');
+    });
 });
 
 describe('checkSimpleList', function () {
@@ -186,6 +205,32 @@ describe('getRemainingQuota', function () {
         'paginated_list' => ['paginated_list', '12345678', 50000],
         'download' => ['download', 'MSG123', 5],
     ]);
+
+    it('reports the status quota against ANAF\'s 100 on the same counter when asked', function () {
+        $this->freezeTime();
+        $limiter = new RateLimiter;
+
+        for ($i = 0; $i < 60; $i++) {
+            $limiter->checkStatusQuery('MSG123', true);
+        }
+
+        expect($limiter->getRemainingQuota('status', 'MSG123'))
+            ->toBe(['limit' => 50, 'remaining' => 0, 'resetsIn' => 86400])
+            ->and($limiter->getRemainingQuota('status', 'MSG123', true))
+            ->toBe(['limit' => 100, 'remaining' => 40, 'resetsIn' => 86400]);
+    });
+
+    it('reads the provider limit from config, defaulting to 100 for a config published before it existed', function () {
+        config(['efactura-sdk.rate_limits.status_per_day_message_provider' => 80]);
+
+        expect((new RateLimiter)->getRemainingQuota('status', 'MSG123', true)['limit'])->toBe(80);
+
+        $limits = config('efactura-sdk.rate_limits');
+        unset($limits['status_per_day_message_provider']);
+        config(['efactura-sdk.rate_limits' => $limits]);
+
+        expect((new RateLimiter)->getRemainingQuota('status', 'MSG123', true)['limit'])->toBe(100);
+    });
 
     it('throws exception for unknown type', function () {
         $limiter = new RateLimiter;

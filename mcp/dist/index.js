@@ -21190,7 +21190,7 @@ Additional ANAF web service endpoints:
 
 ## \`rate_limits\`
 
-Rate limiting configuration to prevent exceeding ANAF API quotas. Defaults are set to **50% of ANAF's official limits** as a safety margin \u2014 with one exception: \`company_lookup_per_second\` defaults to \`1\`, which is **100%** of ANAF's cap. A 50% margin cannot be expressed as an integer limit over a 1-second window (any lower integer would be \`0\` and disable lookups entirely).
+Rate limiting configuration to prevent exceeding ANAF API quotas. Defaults are set to **50% of ANAF's official limits** as a safety margin \u2014 with one exception: \`company_lookup_per_second\` defaults to \`1\`, which is **100%** of ANAF's cap. A 50% margin cannot be expressed as an integer limit over a 1-second window (any lower integer would be \`0\` and disable lookups entirely). \`status_per_day_message_provider\` is ANAF's full status limit on purpose: only status reads that opt in use it.
 
 ### \`rate_limits.enabled\`
 
@@ -21238,6 +21238,18 @@ Maximum RASP file uploads per CUI (company tax ID) per day.
 | **Valid range** | 1 \u2013 100 |
 
 Maximum upload status queries per message ID per day.
+
+### \`rate_limits.status_per_day_message_provider\`
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Environment variable** | \`EFACTURA_RATE_LIMIT_STATUS_PROVIDER\` |
+| **Default** | \`100\` (also applied in code when an older published config lacks the key) |
+| **ANAF official limit** | 100/day/message |
+| **Valid range** | 1 \u2013 100 |
+
+ANAF's own status ceiling, used only by reads that opt in: \`EFacturaClient::getStatusMessage($uploadId, useProviderLimit: true)\` and \`RateLimiter::getRemainingQuota('status', $uploadId, useProviderLimit: true)\`. Those reads use the **same per-message counter** as \`status_per_day_message\`, so reads spent this way still count against ordinary polling, which keeps stopping at its own limit. Every HTTP retry of an opted-in read is checked against this ceiling too.
 
 ### \`rate_limits.simple_list_per_day_cui\`
 
@@ -21323,6 +21335,7 @@ EFACTURA_RATE_LIMIT_ENABLED=true
 EFACTURA_RATE_LIMIT_GLOBAL=500
 EFACTURA_RATE_LIMIT_RASP_UPLOAD=500
 EFACTURA_RATE_LIMIT_STATUS=50
+EFACTURA_RATE_LIMIT_STATUS_PROVIDER=100
 EFACTURA_RATE_LIMIT_SIMPLE_LIST=750
 EFACTURA_RATE_LIMIT_PAGINATED_LIST=50000
 EFACTURA_RATE_LIMIT_DOWNLOAD=5
@@ -24432,6 +24445,10 @@ Defaults are set to **50% of ANAF's actual limits** for safety \u2014 with one e
 | Downloads | 5/day/message | 10/day/message | \`download_per_day_message\` |
 | Company lookup | 1/second | 1/second | \`company_lookup_per_second\` |
 
+A status read a user explicitly asked for can opt in to ANAF's own 100/day per message
+(\`status_per_day_message_provider\`) with \`getStatusMessage($uploadId, useProviderLimit: true)\`.
+It uses the same per-message counter, and each of its retries is checked against that ceiling.
+
 **\`company_lookup_per_second\` is the exception: its default is 100% of ANAF's cap, not 50%.**
 ANAF's limit is already 1 request/second and a 50% margin cannot be expressed as an integer limit
 over a 1-second window \u2014 any lower integer would be \`0\` and disable lookups entirely.
@@ -24445,6 +24462,7 @@ over a 1-second window \u2014 any lower integer would be \`0\` and disable looku
     'global_per_minute'        => env('EFACTURA_RATE_LIMIT_GLOBAL', 500),
     'rasp_upload_per_day_cui'  => env('EFACTURA_RATE_LIMIT_RASP_UPLOAD', 500),
     'status_per_day_message'   => env('EFACTURA_RATE_LIMIT_STATUS', 50),
+    'status_per_day_message_provider' => env('EFACTURA_RATE_LIMIT_STATUS_PROVIDER', 100), // opt-in reads only
     'simple_list_per_day_cui'  => env('EFACTURA_RATE_LIMIT_SIMPLE_LIST', 750),
     'paginated_list_per_day_cui' => env('EFACTURA_RATE_LIMIT_PAGINATED_LIST', 50000),
     'download_per_day_message' => env('EFACTURA_RATE_LIMIT_DOWNLOAD', 5),
@@ -24547,6 +24565,11 @@ $uploadQuota = $rateLimiter->getRemainingQuota('rasp_upload', '12345678');
 // Check per-message quota
 $statusQuota = $rateLimiter->getRemainingQuota('status', '5067734920');
 // ['limit' => 50, 'remaining' => 49, 'resetsIn' => 86342]
+
+// The same counter against ANAF's own 100 (status_per_day_message_provider), for a read that
+// opts in with $client->getStatusMessage($uploadId, useProviderLimit: true)
+$providerQuota = $rateLimiter->getRemainingQuota('status', '5067734920', useProviderLimit: true);
+// ['limit' => 100, 'remaining' => 99, 'resetsIn' => 86342]
 
 // Company lookup \u2014 single bucket, no identifier (added in v3.0.0)
 $lookupQuota = $rateLimiter->getRemainingQuota('company_lookup');
@@ -25335,7 +25358,7 @@ Contract:
 \`\`\`php
 public function uploadDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
 public function uploadB2CDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
-public function getStatusMessage(string $uploadId): StatusResponseData
+public function getStatusMessage(string $uploadId, bool $useProviderLimit = false): StatusResponseData // flag: concrete class only, not on interface
 public function downloadDocument(string $downloadId): DownloadResponseData
 public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData
 public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData
@@ -25392,6 +25415,14 @@ Built-in rate limiting is enforced via the \`RateLimiter\` class. When the limit
 retry calls \`checkGlobal()\` again). With a tight \`global_per_minute\`, a retrying read can now throw
 \`RateLimitExceededException\` part-way through where v2 raised \`ApiException\` after exhausting its
 attempts. Catch \`RateLimitExceededException\` **before** \`ApiException\` \u2014 it does not extend it.
+
+**Status reads at ANAF's own limit.** \`getStatusMessage($uploadId, useProviderLimit: true)\` checks
+the same per-message status counter against \`rate_limits.status_per_day_message_provider\` (default
+100, ANAF's ceiling) instead of \`status_per_day_message\` (default 50), on its first attempt and on
+every retry. Use it for a check a user explicitly asked for; automatic polling keeps the default and
+still sees the units such reads spend. \`getRemainingQuota('status', $uploadId, useProviderLimit: true)\`
+reports that counter against the same ceiling. \`EFacturaClientInterface::getStatusMessage()\` is
+unchanged; the flag exists on the concrete \`EFacturaClient\` only.
 
 ## \`downloadDocument()\` \u2014 non-ZIP bodies now throw (changed in v3.0.0)
 

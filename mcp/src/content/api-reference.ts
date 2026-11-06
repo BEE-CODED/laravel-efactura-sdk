@@ -69,7 +69,7 @@ Contract:
 \`\`\`php
 public function uploadDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
 public function uploadB2CDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
-public function getStatusMessage(string $uploadId): StatusResponseData
+public function getStatusMessage(string $uploadId, bool $useProviderLimit = false): StatusResponseData // flag: concrete class only, not on interface
 public function downloadDocument(string $downloadId): DownloadResponseData
 public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData
 public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData
@@ -126,6 +126,14 @@ Built-in rate limiting is enforced via the \`RateLimiter\` class. When the limit
 retry calls \`checkGlobal()\` again). With a tight \`global_per_minute\`, a retrying read can now throw
 \`RateLimitExceededException\` part-way through where v2 raised \`ApiException\` after exhausting its
 attempts. Catch \`RateLimitExceededException\` **before** \`ApiException\` — it does not extend it.
+
+**Status reads at ANAF's own limit.** \`getStatusMessage($uploadId, useProviderLimit: true)\` checks
+the same per-message status counter against \`rate_limits.status_per_day_message_provider\` (default
+100, ANAF's ceiling) instead of \`status_per_day_message\` (default 50), on its first attempt and on
+every retry. Use it for a check a user explicitly asked for; automatic polling keeps the default and
+still sees the units such reads spend. \`getRemainingQuota('status', $uploadId, useProviderLimit: true)\`
+reports that counter against the same ceiling. \`EFacturaClientInterface::getStatusMessage()\` is
+unchanged; the flag exists on the concrete \`EFacturaClient\` only.
 
 ## \`downloadDocument()\` — non-ZIP bodies now throw (changed in v3.0.0)
 

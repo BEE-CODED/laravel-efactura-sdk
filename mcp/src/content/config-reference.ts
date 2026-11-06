@@ -202,7 +202,7 @@ Additional ANAF web service endpoints:
 
 ## \`rate_limits\`
 
-Rate limiting configuration to prevent exceeding ANAF API quotas. Defaults are set to **50% of ANAF's official limits** as a safety margin — with one exception: \`company_lookup_per_second\` defaults to \`1\`, which is **100%** of ANAF's cap. A 50% margin cannot be expressed as an integer limit over a 1-second window (any lower integer would be \`0\` and disable lookups entirely).
+Rate limiting configuration to prevent exceeding ANAF API quotas. Defaults are set to **50% of ANAF's official limits** as a safety margin — with one exception: \`company_lookup_per_second\` defaults to \`1\`, which is **100%** of ANAF's cap. A 50% margin cannot be expressed as an integer limit over a 1-second window (any lower integer would be \`0\` and disable lookups entirely). \`status_per_day_message_provider\` is ANAF's full status limit on purpose: only status reads that opt in use it.
 
 ### \`rate_limits.enabled\`
 
@@ -250,6 +250,18 @@ Maximum RASP file uploads per CUI (company tax ID) per day.
 | **Valid range** | 1 – 100 |
 
 Maximum upload status queries per message ID per day.
+
+### \`rate_limits.status_per_day_message_provider\`
+
+| | |
+|---|---|
+| **Type** | integer |
+| **Environment variable** | \`EFACTURA_RATE_LIMIT_STATUS_PROVIDER\` |
+| **Default** | \`100\` (also applied in code when an older published config lacks the key) |
+| **ANAF official limit** | 100/day/message |
+| **Valid range** | 1 – 100 |
+
+ANAF's own status ceiling, used only by reads that opt in: \`EFacturaClient::getStatusMessage($uploadId, useProviderLimit: true)\` and \`RateLimiter::getRemainingQuota('status', $uploadId, useProviderLimit: true)\`. Those reads use the **same per-message counter** as \`status_per_day_message\`, so reads spent this way still count against ordinary polling, which keeps stopping at its own limit. Every HTTP retry of an opted-in read is checked against this ceiling too.
 
 ### \`rate_limits.simple_list_per_day_cui\`
 
@@ -335,6 +347,7 @@ EFACTURA_RATE_LIMIT_ENABLED=true
 EFACTURA_RATE_LIMIT_GLOBAL=500
 EFACTURA_RATE_LIMIT_RASP_UPLOAD=500
 EFACTURA_RATE_LIMIT_STATUS=50
+EFACTURA_RATE_LIMIT_STATUS_PROVIDER=100
 EFACTURA_RATE_LIMIT_SIMPLE_LIST=750
 EFACTURA_RATE_LIMIT_PAGINATED_LIST=50000
 EFACTURA_RATE_LIMIT_DOWNLOAD=5

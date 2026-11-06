@@ -44,6 +44,16 @@ and the git history.
 - `UploadStatusValue::NotProcessed` and `StatusResponseData::isNotProcessed()` recognise ANAF's
   final "XML cu erori nepreluat de sistem" status: the file was not taken in and no download id
   exists. `isFailed()` keeps its meaning of a rejection with a response archive.
+- Status reads at ANAF's own limit: `EFacturaClient::getStatusMessage()`,
+  `RateLimiter::checkStatusQuery()` and `RateLimiter::getRemainingQuota()` accept an optional
+  `bool $useProviderLimit = false`. When true, the same per-message `status` counter is checked, on
+  the first attempt and on every retry, and reported against the new
+  `rate_limits.status_per_day_message_provider` (`EFACTURA_RATE_LIMIT_STATUS_PROVIDER`, default
+  100, ANAF's ceiling) instead of `status_per_day_message` (default 50). It is meant for a check a
+  user explicitly asked for; reads it spends still count against automatic polling, which keeps
+  stopping at 50. `getRemainingQuota()` ignores the flag for other types. A published config
+  without the new key uses 100. `EFacturaClientInterface` is unchanged, and calls without the new
+  argument behave as before.
 
 ### Compatibility
 
@@ -85,6 +95,9 @@ and the git history.
     Composer refuses it, or quietly keeps the previous SDK version, unless brick/math is
     downgraded.
 - Laravel 11 is no longer supported: `illuminate/*` is now `^12.0|^13.0`. CI also runs PHP 8.5.
+- A subclass that overrides `EFacturaClient::getStatusMessage()`, `RateLimiter::checkStatusQuery()`
+  or `RateLimiter::getRemainingQuota()` must add the optional `$useProviderLimit` parameter to its
+  signature. An ordinary status read still calls `checkStatusQuery($uploadId)` with one argument.
 
 **Note for applications that compute their own invoice totals:** Safe to upgrade: whole
 quantities, 2-decimal prices and per-line VAT already rounded to cents produce identical amounts

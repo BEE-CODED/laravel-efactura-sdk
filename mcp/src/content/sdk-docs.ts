@@ -1402,6 +1402,10 @@ Defaults are set to **50% of ANAF's actual limits** for safety — with one exce
 | Downloads | 5/day/message | 10/day/message | \`download_per_day_message\` |
 | Company lookup | 1/second | 1/second | \`company_lookup_per_second\` |
 
+A status read a user explicitly asked for can opt in to ANAF's own 100/day per message
+(\`status_per_day_message_provider\`) with \`getStatusMessage($uploadId, useProviderLimit: true)\`.
+It uses the same per-message counter, and each of its retries is checked against that ceiling.
+
 **\`company_lookup_per_second\` is the exception: its default is 100% of ANAF's cap, not 50%.**
 ANAF's limit is already 1 request/second and a 50% margin cannot be expressed as an integer limit
 over a 1-second window — any lower integer would be \`0\` and disable lookups entirely.
@@ -1415,6 +1419,7 @@ over a 1-second window — any lower integer would be \`0\` and disable lookups 
     'global_per_minute'        => env('EFACTURA_RATE_LIMIT_GLOBAL', 500),
     'rasp_upload_per_day_cui'  => env('EFACTURA_RATE_LIMIT_RASP_UPLOAD', 500),
     'status_per_day_message'   => env('EFACTURA_RATE_LIMIT_STATUS', 50),
+    'status_per_day_message_provider' => env('EFACTURA_RATE_LIMIT_STATUS_PROVIDER', 100), // opt-in reads only
     'simple_list_per_day_cui'  => env('EFACTURA_RATE_LIMIT_SIMPLE_LIST', 750),
     'paginated_list_per_day_cui' => env('EFACTURA_RATE_LIMIT_PAGINATED_LIST', 50000),
     'download_per_day_message' => env('EFACTURA_RATE_LIMIT_DOWNLOAD', 5),
@@ -1517,6 +1522,11 @@ $uploadQuota = $rateLimiter->getRemainingQuota('rasp_upload', '12345678');
 // Check per-message quota
 $statusQuota = $rateLimiter->getRemainingQuota('status', '5067734920');
 // ['limit' => 50, 'remaining' => 49, 'resetsIn' => 86342]
+
+// The same counter against ANAF's own 100 (status_per_day_message_provider), for a read that
+// opts in with $client->getStatusMessage($uploadId, useProviderLimit: true)
+$providerQuota = $rateLimiter->getRemainingQuota('status', '5067734920', useProviderLimit: true);
+// ['limit' => 100, 'remaining' => 99, 'resetsIn' => 86342]
 
 // Company lookup — single bucket, no identifier (added in v3.0.0)
 $lookupQuota = $rateLimiter->getRemainingQuota('company_lookup');

@@ -393,14 +393,21 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     /**
      * {@inheritdoc}
      *
+     * @param  bool  $useProviderLimit  Count this read, and each of its retries, against ANAF's own
+     *                                  status ceiling instead of the SDK's lower limit (same
+     *                                  per-message counter). Concrete class only, not on the interface.
+     *
      * @throws RateLimitExceededException When rate limit is exceeded
      */
-    public function getStatusMessage(string $uploadId): StatusResponseData
+    public function getStatusMessage(string $uploadId, bool $useProviderLimit = false): StatusResponseData
     {
         // Validate first - fail fast without consuming rate limit quota
         $this->validateUploadId($uploadId);
 
-        $this->meterCall(fn () => $this->rateLimiter->checkStatusQuery($uploadId));
+        // A default read keeps v3.1.1's exact call shape, so consumers' argument-matching mocks still match.
+        $this->meterCall(fn () => $useProviderLimit
+            ? $this->rateLimiter->checkStatusQuery($uploadId, true)
+            : $this->rateLimiter->checkStatusQuery($uploadId));
 
         $queryParams = [
             'id_incarcare' => $uploadId,

@@ -292,7 +292,7 @@ Add a dedicated logging channel in `config/logging.php`:
 
 ### Rate Limiting Configuration
 
-The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. Most defaults are set to **50% of ANAF's actual limits** for safety. The one exception is `company_lookup_per_second`, which defaults to **1 — 100% of ANAF's 1 request/second cap**, since that limit admits no lower positive value.
+The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. Most defaults are set to **50% of ANAF's actual limits** for safety. The one exception is `company_lookup_per_second`, which defaults to **1 — 100% of ANAF's 1 request/second cap**, since that limit admits no lower positive value. `status_per_day_message_provider` is ANAF's full status limit on purpose; only status reads that opt in use it (see [Status Reads at ANAF's Own Limit](#status-reads-at-anafs-own-limit)).
 
 ```env
 # Enable/disable rate limiting (default: true)
@@ -306,6 +306,9 @@ EFACTURA_RATE_LIMIT_RASP_UPLOAD=500
 
 # Status queries per message per day (ANAF limit: 100, default: 50)
 EFACTURA_RATE_LIMIT_STATUS=50
+
+# Status ceiling for reads that opt in with useProviderLimit: true (ANAF limit: 100, default: 100)
+EFACTURA_RATE_LIMIT_STATUS_PROVIDER=100
 
 # Simple list queries per CUI per day (ANAF limit: 1500, default: 750)
 EFACTURA_RATE_LIMIT_SIMPLE_LIST=750
@@ -650,6 +653,19 @@ $statusQuota = $rateLimiter->getRemainingQuota('status', $uploadId);
 $downloadQuota = $rateLimiter->getRemainingQuota('download', $downloadId);
 // ['limit' => 5, 'remaining' => 3, 'resetsIn' => 86400]
 ```
+
+#### Status Reads at ANAF's Own Limit
+
+A status check a user explicitly asked for can count against ANAF's own ceiling of 100 reads per message per day (`status_per_day_message_provider`) instead of the SDK's 50. It uses the same per-message counter, so automatic polling still sees those reads and keeps stopping at 50. The first attempt and every retry are checked against the higher ceiling.
+
+```php
+$status = $client->getStatusMessage($uploadId, useProviderLimit: true);
+
+$rateLimiter->getRemainingQuota('status', $uploadId, useProviderLimit: true);
+// ['limit' => 100, 'remaining' => 40, 'resetsIn' => 52000]  // 60 reads already spent
+```
+
+The flag exists on the concrete `EFacturaClient` only; `EFacturaClientInterface::getStatusMessage()` is unchanged.
 
 #### Disabling Rate Limiting
 

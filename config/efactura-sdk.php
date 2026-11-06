@@ -99,6 +99,8 @@ return [
     | Defaults are set to 50% of ANAF's actual limits for safety margin, with one
     | exception: company_lookup_per_second is 1, which is 100% of ANAF's cap. A
     | 50% margin cannot be expressed as an integer limit over a 1-second window.
+    | status_per_day_message_provider is ANAF's full status limit on purpose: only
+    | reads that opt in with useProviderLimit: true are checked against it.
     |
     | ANAF Official Limits:
     | - Global: 1000 calls/minute
@@ -121,6 +123,10 @@ return [
 
         // Status queries per message ID per day (ANAF limit: 100)
         'status_per_day_message' => env('EFACTURA_RATE_LIMIT_STATUS', 50),
+
+        // ANAF's own status ceiling, checked on the same per-message counter only by
+        // reads that pass useProviderLimit: true (e.g. a check a user asked for).
+        'status_per_day_message_provider' => env('EFACTURA_RATE_LIMIT_STATUS_PROVIDER', 100),
 
         // Simple list queries per CUI per day (ANAF limit: 1500)
         'simple_list_per_day_cui' => env('EFACTURA_RATE_LIMIT_SIMPLE_LIST', 750),

@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\Log;
  * Defaults are set to 50% of ANAF's actual limits for safety, with one exception:
  * company_lookup_per_second is 1, which is 100% of ANAF's 1 req/sec cap. A 50%
  * margin is unrepresentable as an integer limit over a 1-second window.
+ * status_per_day_message_provider (default 100) is ANAF's full status limit on purpose:
+ * it applies only to status reads that opt in with $useProviderLimit.
  *
  * Note: Uses atomic increment-then-check pattern via RateLimiter::attempt()
  * to prevent race conditions in concurrent environments.
@@ -35,6 +37,8 @@ class RateLimiter
     private int $raspUploadPerDayCui;
 
     private int $statusPerDayMessage;
+
+    private int $statusPerDayMessageProvider;
 
     private int $simpleListPerDayCui;
 
@@ -63,6 +67,11 @@ class RateLimiter
         $this->statusPerDayMessage = $this->validateLimit(
             (int) config('efactura-sdk.rate_limits.status_per_day_message', 50),
             'status_per_day_message'
+        );
+        // ANAF's own ceiling, for reads that opt in; the code default keeps older published configs working.
+        $this->statusPerDayMessageProvider = $this->validateLimit(
+            (int) config('efactura-sdk.rate_limits.status_per_day_message_provider', 100),
+            'status_per_day_message_provider'
         );
         $this->simpleListPerDayCui = $this->validateLimit(
             (int) config('efactura-sdk.rate_limits.simple_list_per_day_cui', 750),
@@ -225,9 +234,13 @@ class RateLimiter
     /**
      * Check status query limit for a message (atomic operation).
      *
+     * @param  bool  $useProviderLimit  Check the same per-message counter against ANAF's own
+     *                                  ceiling (status_per_day_message_provider, default 100)
+     *                                  instead of status_per_day_message
+     *
      * @throws RateLimitExceededException
      */
-    public function checkStatusQuery(string $messageId): void
+    public function checkStatusQuery(string $messageId, bool $useProviderLimit = false): void
     {
         if (! $this->isEnabled()) {
             return;
@@ -236,10 +249,11 @@ class RateLimiter
         $this->validateIdentifier($messageId, 'message ID');
 
         $key = "status:{$messageId}";
+        $limit = $useProviderLimit ? $this->statusPerDayMessageProvider : $this->statusPerDayMessage;
 
-        if (! $this->dailyStore->attemptOrFail($key, $this->statusPerDayMessage)) {
+        if (! $this->dailyStore->attemptOrFail($key, $limit)) {
             throw new RateLimitExceededException(
-                "Status query limit exceeded for message {$messageId} ({$this->statusPerDayMessage}/day).",
+                "Status query limit exceeded for message {$messageId} ({$limit}/day).",
                 remaining: 0,
                 retryAfterSeconds: $this->dailyStore->availableIn($key)
             );
@@ -324,11 +338,13 @@ class RateLimiter
      * @param  string  $type  The rate limit type ('global', 'company_lookup', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download')
      * @param  string  $identifier  The identifier (CUI or message ID) - required for all types
      *                              except 'global' and 'company_lookup', which are single buckets
+     * @param  bool  $useProviderLimit  For 'status' only: report the same counter against ANAF's own
+     *                                  ceiling (status_per_day_message_provider); other types ignore it
      * @return array{limit: int, remaining: int, resetsIn: int}
      *
      * @throws \InvalidArgumentException If type is unknown or identifier is empty for types that require it
      */
-    public function getRemainingQuota(string $type, string $identifier = ''): array
+    public function getRemainingQuota(string $type, string $identifier = '', bool $useProviderLimit = false): array
     {
         // Validate type first
         $validTypes = ['global', 'company_lookup', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download'];
@@ -345,6 +361,8 @@ class RateLimiter
                 "Identifier is required for rate limit type: {$type}"
             );
         }
+
+        $statusLimit = $useProviderLimit ? $this->statusPerDayMessageProvider : $this->statusPerDayMessage;
 
         return match ($type) {
             'global' => [
@@ -363,8 +381,8 @@ class RateLimiter
                 'resetsIn' => $this->dailyStore->availableIn("rasp_upload:{$identifier}"),
             ],
             'status' => [
-                'limit' => $this->statusPerDayMessage,
-                'remaining' => $this->dailyStore->getRemaining("status:{$identifier}", $this->statusPerDayMessage),
+                'limit' => $statusLimit,
+                'remaining' => $this->dailyStore->getRemaining("status:{$identifier}", $statusLimit),
                 'resetsIn' => $this->dailyStore->availableIn("status:{$identifier}"),
             ],
             'simple_list' => [

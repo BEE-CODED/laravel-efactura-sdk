@@ -639,6 +639,30 @@ describe('EFacturaClient', function () {
             expect($attempts)->toBe(3);
         });
 
+        it('charges every HTTP attempt of a provider-limit status read against the provider limit', function () {
+            // A retry is another real request on the same counter; it must not fall
+            // back to the SDK's lower limit half-way through the read.
+            $attempts = 0;
+            Http::fake(function () use (&$attempts) {
+                $attempts++;
+
+                return Http::response('Server Error', 500);
+            });
+
+            $this->rateLimiter->shouldReceive('checkGlobal')->times(3)->andReturn(null);
+            $this->rateLimiter->shouldReceive('checkStatusQuery')->times(3)->with('12345', true)->andReturn(null);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345', useProviderLimit: true))->toThrow(ApiException::class);
+            expect($attempts)->toBe(3);
+        });
+
         it('consumes the per-message download bucket once per HTTP attempt', function () {
             // download_per_day_message defaults to 5. Four retried downloads of one
             // message during a 5xx window are 12 real requests but would count as 4.
