@@ -31,6 +31,12 @@ return [
     'line_tax_not_allowed_for_non_vat_payer' => 'Line :lineNum: A supplier that is not registered for VAT cannot charge VAT (BR-O-09)',
     'line_tax_amount_must_be_zero_for_zero_rate' => 'Line :lineNum: A zero-rated line cannot carry a VAT amount (BR-Z-09)',
 
+    'reverse_charge_supplier_must_be_vat_payer' => 'Reverse-charge lines require a supplier registered for VAT; category O cannot be combined with AE.',
+    'reverse_charge_tax_must_be_zero' => 'Reverse-charge lines must declare an exactly zero raw VAT rate and VAT amount (BR-AE-05, BR-AE-09).',
+    'tax_category_inconsistent' => 'The explicit VAT category must agree with the supplier VAT status and line rate.',
+    'reverse_charge_vat_identifier_required' => ':Role must be registered for VAT and supply a usable VAT identifier for reverse charge (BR-AE-02).',
+    'reverse_charge_tax_amount_ron_must_be_zero' => 'A reverse-charge document without standard-rated lines must declare exactly zero taxAmountRon.',
+
     // Billing reference
     'preceding_invoice_number_max_length' => 'The preceding invoice number must not exceed 200 characters (BR-RO-L200)',
 

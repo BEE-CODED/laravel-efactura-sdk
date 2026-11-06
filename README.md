@@ -736,6 +736,51 @@ $invoice = new InvoiceData(
 $xml = UblBuilder::generateInvoiceXml($invoice);
 ```
 
+#### Explicit Reverse-Charge VAT
+
+`InvoiceLineData` accepts `?TaxCategoryId $taxCategoryId = null` after `taxPercent`.
+Omitting it or passing null preserves the existing supplier/rate inference and exact serialized
+keys/order. An explicit category serializes as the appended `taxCategoryId` string, such as `AE`.
+`InvoiceLineData::from()` accepts that serialized shape. Each transformation uses the current
+value: serializing null does not prevent a later `ReverseCharge` assignment from being included,
+and setting it back to null omits the key again.
+
+```php
+use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
+
+$line = new InvoiceLineData(
+    name: 'Eligible reverse-charge transaction',
+    quantity: 1.0,
+    unitPrice: 1000.00,
+    taxAmount: 0.0,
+    taxPercent: 0.0,
+    taxCategoryId: TaxCategoryId::ReverseCharge,
+);
+```
+
+- `ReverseCharge` has the UBL value `AE`. Both raw `taxPercent` and raw `taxAmount` must be
+  exactly zero; a small nonzero value that would round to zero is rejected.
+- Both supplier and customer must have `isVatPayer: true` and usable, nonempty `companyId`
+  values. The builder uses its existing VAT-identifier normalization for their `PartyTaxScheme`
+  identifiers. This does not verify registration or the transaction's legal eligibility.
+- Explicit `Standard` (`S`), `ZeroRated` (`Z`) and `NotSubject` (`O`) must match the category
+  that the existing supplier/rate inference would choose. They cannot override it. `O` cannot
+  coexist with any other category in the same invoice.
+- The builder and invoice total helpers group by resolved category plus normalized rate.
+  AE at 0% and Z at 0% therefore have separate subtotals; SDK callers may combine valid AE/Z/S
+  lines. AE emits `AE` and `0.00` on the line and tax subtotal, with zero category tax and subtotal
+  `TaxExemptionReasonCode` `VATEX-EU-AE` plus `TaxExemptionReason` `Taxare inversa`.
+- The existing document sign contract is unchanged: Invoice 380 preserves input signs,
+  including negative invoices, and CreditNote 381 negates quantities and amounts once. AE tax
+  remains zero. RON invoices must omit `taxAmountRon`; non-RON invoices still require it,
+  including `taxAmountRon: 0.0` for an all-AE or AE/Z invoice. A nonzero RON VAT total
+  is rejected when an AE document has no standard-rated lines.
+
+The caller selects the legally applicable treatment and submission profile. Setting AE does not
+establish that an arbitrary domestic or cross-border transaction qualifies, and local SDK checks
+are not full external-profile validation. A zero rate by itself continues to infer Z for a VAT
+payer, not AE.
+
 #### Creating a Credit Note
 
 ```php
@@ -832,7 +877,7 @@ $line->getLineTotalWithTax(); // 595.00
 
 // Invoice-level calculations. These reproduce the filed XML totals exactly:
 // getTotalExcludingVat() sums per-line ROUNDED net amounts (as cac:LegalMonetaryTotal does),
-// and getTotalVat() rounds once per tax-rate group (as the cac:TaxSubtotal breakdown does).
+// and getTotalVat() rounds once per resolved category/rate group (as cac:TaxSubtotal does).
 $invoice->getTotalExcludingVat(); // Sum of all line totals
 $invoice->getTotalVat();          // Sum of all per-line taxAmount values
 $invoice->getTotalIncludingVatBeforeRounding(); // Net plus VAT, before payable rounding

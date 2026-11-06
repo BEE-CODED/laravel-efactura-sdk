@@ -8,6 +8,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use Carbon\Carbon;
 
@@ -1986,4 +1987,167 @@ it('normalizes binary noise once without changing taxes in generated XML', funct
         ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'))->toBe('1190.00')
         ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableAmount'))->toBe('1190.30')
         ->and($invoice->getTotalIncludingVat())->toBe(1190.30);
+});
+
+describe('explicit reverse-charge UBL', function () {
+    it('separates AE Z and normalized S groups with correct reasons identifiers totals and signs', function (InvoiceTypeCode $type, int $sign, string $currency) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('AE first', $sign * 2, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
+            new InvoiceLineData('AE second', $sign, 25, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
+            new InvoiceLineData('Zero rated', $sign, 50, 0, taxCategoryId: TaxCategoryId::ZeroRated),
+            new InvoiceLineData('Standard first', $sign, 100, $sign * 19, taxPercent: 19),
+            new InvoiceLineData('Standard second', $sign, 100, $sign * 19, taxPercent: 19.00000001, taxCategoryId: TaxCategoryId::Standard),
+        ], [
+            'invoiceTypeCode' => $type, 'currency' => $currency,
+            'taxAmountRon' => $currency === 'RON' ? null : $sign * 190,
+        ]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+        $xmlSign = ($type === InvoiceTypeCode::CreditNote ? -1 : 1) * $sign;
+        $lineElement = $type === InvoiceTypeCode::CreditNote ? 'CreditNoteLine' : 'InvoiceLine';
+        $category = '/*/cac:TaxTotal/cac:TaxSubtotal[cac:TaxCategory/cbc:ID="AE"]';
+
+        expect(ublXpath($xml, '/*/cac:TaxTotal/cac:TaxSubtotal')->length)->toBe(3)
+            ->and(ublXpath($xml, $category)->length)->toBe(1)
+            ->and(ublText($xml, $category.'/cbc:TaxableAmount'))->toBe(number_format($xmlSign * 225, 2, '.', ''))
+            ->and(ublText($xml, $category.'/cbc:TaxAmount'))->toBe('0.00')
+            ->and(ublText($xml, $category.'/cac:TaxCategory/cbc:Percent'))->toBe('0.00')
+            ->and(ublText($xml, $category.'/cac:TaxCategory/cbc:TaxExemptionReasonCode'))->toBe('VATEX-EU-AE')
+            ->and(ublText($xml, $category.'/cac:TaxCategory/cbc:TaxExemptionReason'))->toBe('Taxare inversa')
+            ->and(ublXpath($xml, '/*/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:TaxExemptionReasonCode')->length)->toBe(1)
+            ->and(ublXpath($xml, '/*/cac:'.$lineElement.'/cac:Item/cac:ClassifiedTaxCategory[cbc:ID="AE"][cbc:Percent="0.00"]')->length)->toBe(2)
+            ->and(ublXpath($xml, '/*/cac:'.$lineElement.'/cac:Item/cac:ClassifiedTaxCategory/cbc:TaxExemptionReasonCode')->length)->toBe(0)
+            ->and(ublText($xml, '/*/cac:AccountingSupplierParty/cac:Party/cac:PartyTaxScheme/cbc:CompanyID'))->toBe('RO12345678')
+            ->and(ublText($xml, '/*/cac:AccountingCustomerParty/cac:Party/cac:PartyTaxScheme/cbc:CompanyID'))->toBe('RO87654321')
+            ->and(ublText($xml, '/*/cac:TaxTotal/cbc:TaxAmount[@currencyID="'.$currency.'"]'))->toBe(number_format($xmlSign * 38, 2, '.', ''))
+            ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableAmount'))->toBe(number_format($xmlSign * 513, 2, '.', ''))
+            ->and($invoice->getTotalVat())->toBe($sign * 38.0)
+            ->and($invoice->getTotalIncludingVat())->toBe($sign * 513.0)
+            ->and($xml)->not->toContain('TVA la incasare');
+        if ($currency !== 'RON') {
+            expect(ublText($xml, '/*/cac:TaxTotal/cbc:TaxAmount[@currencyID="RON"]'))->toBe(number_format($xmlSign * 190, 2, '.', ''))
+                ->and(ublXpath($xml, '/*/cac:TaxTotal[cbc:TaxAmount/@currencyID="RON"]/cac:TaxSubtotal')->length)->toBe(0);
+        }
+        $children = [];
+        foreach (ublXpath($xml, $category.'/cac:TaxCategory/*') as $child) {
+            $children[] = $child->localName;
+        }
+        expect($children)->toBe(['ID', 'Percent', 'TaxExemptionReasonCode', 'TaxExemptionReason', 'TaxScheme']);
+    })->with([
+        '380' => [InvoiceTypeCode::CommercialInvoice, 1],
+        'negative 380' => [InvoiceTypeCode::CommercialInvoice, -1],
+        '381' => [InvoiceTypeCode::CreditNote, 1],
+    ])->with(['RON', 'EUR']);
+
+    it('groups positive and negative zero AE rates into one VAT breakdown', function (InvoiceTypeCode $type, int $sign) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('Positive zero AE', $sign, 100, 0.0, taxPercent: 0.0, taxCategoryId: TaxCategoryId::ReverseCharge),
+            new InvoiceLineData('Negative zero AE', $sign, 100, -0.0, taxPercent: -0.0, taxCategoryId: TaxCategoryId::ReverseCharge),
+        ], ['invoiceTypeCode' => $type]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+        $xmlSign = ($type === InvoiceTypeCode::CreditNote ? -1 : 1) * $sign;
+        $category = '/*/cac:TaxTotal/cac:TaxSubtotal[cac:TaxCategory/cbc:ID="AE"]';
+
+        expect(ublXpath($xml, '/*/cac:TaxTotal/cac:TaxSubtotal')->length)->toBe(1)
+            ->and(ublXpath($xml, $category)->length)->toBe(1)
+            ->and(ublText($xml, $category.'/cbc:TaxableAmount'))->toBe(number_format($xmlSign * 200, 2, '.', ''))
+            ->and(ublText($xml, $category.'/cbc:TaxAmount'))->toBe('0.00')
+            ->and(ublText($xml, $category.'/cac:TaxCategory/cbc:Percent'))->toBe('0.00')
+            ->and(ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableAmount'))->toBe(number_format($xmlSign * 200, 2, '.', ''));
+    })->with([
+        '380' => [InvoiceTypeCode::CommercialInvoice, 1],
+        'negative 380' => [InvoiceTypeCode::CommercialInvoice, -1],
+        '381' => [InvoiceTypeCode::CreditNote, 1],
+    ]);
+
+    it('rejects raw nonzero AE rate and tax after construction or hydration', function (string $creation, string $field, float $value) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
+        ]);
+        if ($creation === 'hydrated') {
+            $payload = $invoice->toArray();
+            $payload['lines'][0][$field] = $value;
+            $invoice = InvoiceData::from($payload);
+        } else {
+            $invoice->lines[0]->{$field} = $value;
+        }
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))
+            ->toThrow(ValidationException::class, 'exactly zero raw');
+    })->with(['mutated', 'hydrated'])->with([
+        'positive rate' => ['taxPercent', 19.0],
+        'subprecision rate' => ['taxPercent', 0.000001],
+        'subprecision tax' => ['taxAmount', 0.000001],
+        'negative tax' => ['taxAmount', -0.000001],
+    ]);
+
+    it('requires usable VAT identifiers and actual VAT declarations for both parties', function (string $role, string $companyId, bool $isVatPayer) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
+        ]);
+        $invoice->{$role}->companyId = $companyId;
+        $invoice->{$role}->isVatPayer = $isVatPayer;
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
+    })->with(['supplier', 'customer'])->with([
+        'no identifier' => ['', true],
+        'whitespace' => ['   ', true],
+        'prefix only' => ['RO', true],
+        'punctuation' => ['RO!123', true],
+        'unregistered' => ['RO12345678', false],
+    ]);
+
+    it('normalizes party identifiers through the existing serializer path for AE', function () {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
+        ]);
+        $invoice->supplier->companyId = '12345678';
+        $invoice->customer->companyId = ' ro87654321 ';
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+        expect(ublText($xml, '/*/cac:AccountingSupplierParty/cac:Party/cac:PartyTaxScheme/cbc:CompanyID'))->toBe('RO12345678')
+            ->and(ublText($xml, '/*/cac:AccountingCustomerParty/cac:Party/cac:PartyTaxScheme/cbc:CompanyID'))->toBe('RO87654321');
+    });
+
+    it('rejects explicit legacy category contradictions and O combinations', function (TaxCategoryId $category, bool $vatPayer, float $rate, bool $withAe) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('Declared', 1, 100, 0, taxPercent: $rate, taxCategoryId: $category),
+        ]);
+        $invoice->supplier->isVatPayer = $vatPayer;
+        if ($withAe) {
+            $invoice->lines[] = new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge);
+        }
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
+    })->with([
+        'S at zero' => [TaxCategoryId::Standard, true, 0.0, false],
+        'Z at standard rate' => [TaxCategoryId::ZeroRated, true, 19.0, false],
+        'O at VAT payer' => [TaxCategoryId::NotSubject, true, 0.0, false],
+        'Z at nonpayer' => [TaxCategoryId::ZeroRated, false, 0.0, false],
+        'O and AE nonpayer' => [TaxCategoryId::NotSubject, false, 0.0, true],
+        'O and AE payer' => [TaxCategoryId::NotSubject, true, 0.0, true],
+    ]);
+
+    it('keeps complete legacy XML unchanged for omitted null and matching explicit categories', function (bool $vatPayer, float $rate, float $tax, TaxCategoryId $category) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('Legacy', 1, 100, $tax, taxPercent: $rate),
+        ]);
+        $invoice->supplier->isVatPayer = $vatPayer;
+        $builder = new InvoiceBuilder;
+        $legacy = $builder->buildInvoiceXml($invoice);
+        foreach ([null, $category] as $declared) {
+            $invoice->lines[0]->taxCategoryId = $declared;
+            expect($builder->buildInvoiceXml($invoice))->toBe($legacy);
+        }
+    })->with([
+        'standard' => [true, 19.0, 19.0, TaxCategoryId::Standard],
+        'zero' => [true, 0.0, 0.0, TaxCategoryId::ZeroRated],
+        'not subject' => [false, 0.0, 0.0, TaxCategoryId::NotSubject],
+    ]);
+
+    it('requires a zero RON VAT total for foreign AE-only and AE-Z invoices', function (bool $withZeroRated, float $ron) {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
+        ], ['currency' => 'EUR', 'taxAmountRon' => $ron]);
+        if ($withZeroRated) {
+            $invoice->lines[] = new InvoiceLineData('Z', 1, 50, 0);
+        }
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))
+            ->toThrow(ValidationException::class, 'exactly zero taxAmountRon');
+    })->with([false, true])->with([0.000001, -0.000001, 1.0, INF, NAN]);
 });

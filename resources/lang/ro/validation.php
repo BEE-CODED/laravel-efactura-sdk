@@ -31,6 +31,12 @@ return [
     'line_tax_not_allowed_for_non_vat_payer' => 'Linia :lineNum: Un furnizor neînregistrat în scopuri de TVA nu poate factura TVA (BR-O-09)',
     'line_tax_amount_must_be_zero_for_zero_rate' => 'Linia :lineNum: O linie cu cotă zero de TVA nu poate avea o valoare a TVA (BR-Z-09)',
 
+    'reverse_charge_supplier_must_be_vat_payer' => 'Liniile cu taxare inversă necesită un furnizor înregistrat în scopuri de TVA; categoria O nu poate fi combinată cu AE.',
+    'reverse_charge_tax_must_be_zero' => 'Liniile cu taxare inversă trebuie să declare o cotă și o valoare brută a TVA exact zero, înainte de rotunjire (BR-AE-05, BR-AE-09).',
+    'tax_category_inconsistent' => 'Categoria explicită de TVA trebuie să corespundă statutului TVA al furnizorului și cotei liniei.',
+    'reverse_charge_vat_identifier_required' => ':Role trebuie să fie înregistrat în scopuri de TVA și să furnizeze un identificator TVA utilizabil pentru taxare inversă (BR-AE-02).',
+    'reverse_charge_tax_amount_ron_must_be_zero' => 'O factură cu taxare inversă fără linii cu cotă standard trebuie să declare taxAmountRon exact zero.',
+
     // Referință facturare
     'preceding_invoice_number_max_length' => 'Numărul facturii precedente nu trebuie să depășească 200 de caractere (BR-RO-L200)',
 

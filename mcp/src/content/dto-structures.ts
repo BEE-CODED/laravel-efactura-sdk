@@ -111,9 +111,11 @@ files its own \`cbc:LineExtensionAmount\` capped at 2 decimals, and the document
 (Previously summed raw line totals and rounded once, which lost a bani per pair of sub-cent lines.)
 
 ### \`getTotalVat(): float\`
-Sums the pre-computed per-line \`taxAmount\` values rounded **once per tax-rate group** (BT-110),
+Sums the pre-computed per-line \`taxAmount\` values rounded **once per resolved category and
+normalized tax-rate group** (BT-110),
 matching the filed \`cac:TaxSubtotal\` breakdown. The grouping is load-bearing: rounding the raw
 all-lines sum understates across rate groups, and rounding per line overstates within one.
+AE at 0% and Z at 0% remain separate groups.
 
 ### \`getTotalIncludingVat(): float\`
 Returns \`getTotalIncludingVatBeforeRounding()\` plus normalized optional payable rounding, rounded
@@ -211,10 +213,43 @@ Invoice line item data. Extends \`Spatie\\LaravelData\\Data\`.
 | \`$description\` | \`?string\` | no | \`null\` | Additional description |
 | \`$unitCode\` | \`string\` | no | \`'EA'\` | Unit of measure code (UN/ECE rec 20, e.g. \`'EA'\` = each, \`'KGM'\` = kilogram) |
 | \`$taxPercent\` | \`float\` | no | \`0\` | VAT percentage (e.g. \`19\` for 19%). Must be non-negative (\`#[Min(0)]\` validation). |
+| \`$taxCategoryId\` | \`?TaxCategoryId\` | no | \`null\` | Optional explicit category, appended after \`$taxPercent\`; \`ReverseCharge\` is \`AE\`. Null preserves supplier/rate inference. |
 
 ## Validation
 
 - \`$taxPercent\` has a \`#[Min(0)]\` attribute from \`Spatie\\LaravelData\\Attributes\\Validation\\Min\`. Tax percent must be zero or positive.
+- The builder rejects explicit \`Standard\` (S), \`ZeroRated\` (Z) or \`NotSubject\` (O) unless it
+  agrees with the existing supplier/rate-derived category. O cannot coexist with other categories.
+- \`TaxCategoryId::ReverseCharge\` (AE) requires raw \`taxPercent === 0.0\` and raw
+  \`taxAmount === 0.0\`; values merely rounding to zero are invalid. Both invoice parties must
+  have \`isVatPayer: true\` and usable, nonempty \`companyId\` values through the existing
+  VAT-identifier normalization path. These checks do not establish legal eligibility or
+  registration validity; the caller owns those decisions.
+
+## Optional explicit category and serialization
+
+Import \`BeeCoded\\EFacturaSdk\\Enums\\TaxCategoryId\` to pass
+\`taxCategoryId: TaxCategoryId::ReverseCharge\`. A zero rate without this explicit category
+continues to resolve to Z for a VAT payer; a non-VAT-payer supplier resolves to O.
+
+Existing positional/named construction and omitted/null \`::from()\` payloads preserve the exact
+legacy \`toArray()\`/\`toJson()\` keys and order. A non-null category adds the final
+\`taxCategoryId\` key, serialized as the enum string (\`"AE"\` for reverse charge), and
+\`::from()\` accepts that shape. The omission is evaluated on each transformation: after
+serializing a null category, assigning \`ReverseCharge\` includes it on the next transformation;
+assigning null again omits it. No exclusion persists from an earlier serialization.
+
+The builder emits AE and 0.00 on the line and matching tax subtotal. Its zero-tax subtotal also
+carries \`TaxExemptionReasonCode\` = \`VATEX-EU-AE\` and \`TaxExemptionReason\` =
+\`Taxare inversa\`. Groups use resolved category plus normalized rate, so AE/0 and Z/0 never
+merge. Valid AE/Z/S lines may share an SDK invoice; O remains exclusive. These local checks do
+not constitute full external-profile validation.
+
+For AE the existing signs and currency contract remain: Invoice 380 preserves input signs,
+including negative 380, while CreditNote 381 negates quantities and amounts once. AE tax stays
+zero. RON invoices must omit \`taxAmountRon\`; non-RON invoices require it, including
+\`taxAmountRon: 0.0\` for an all-AE or AE/Z invoice. When AE is present without standard-rated
+lines, a nonzero RON VAT total is rejected.
 
 ## Precision of \`$quantity\` and \`$unitPrice\` (changed in v3.0.0)
 
@@ -314,7 +349,7 @@ Party information (supplier or customer) for an invoice. Extends \`Spatie\\Larav
 - **\`$isVatPayer\` affects XML output:** when \`true\`, the UBL builder emits a \`PartyTaxScheme\` block whose \`CompanyID\` is \`$companyId\` prefixed with the party's VAT country prefix (derived from \`$address->countryCode\`, uppercased, defaulting to \`RO\`) — so a Romanian address yields \`RO49296198\`. Pass the raw numeric CIF (without a prefix) and let the builder handle it.
   - The prefix is skipped when \`$companyId\` already carries a recognised VAT prefix. That prefix is not always the country code: Greece files under \`EL\` (country \`GR\`) and Northern Ireland under \`XI\` (country \`GB\`), and a party may hold a VAT id issued by another state. A supplied \`EL123456789\` stays \`EL123456789\` rather than becoming \`GREL123456789\` (fixed in v3.0.0).
   - \`PartyLegalEntity/CompanyID\` is emitted for **every** party, VAT payer or not, and carries \`$companyId\` passed through \`VatNumberValidator::stripPrefix()\`. That helper strips **only** a leading \`RO\` — a \`companyId\` of \`'EL123456789'\` or \`'XI123456789'\` reaches \`PartyLegalEntity/CompanyID\` unchanged. Supplying the bare national number remains the safe input.
-- **\`$isVatPayer: false\` on the supplier forces VAT category "O" on every line.** A supplier not registered for VAT cannot charge it: every line must carry \`taxPercent: 0\` and \`taxAmount: 0.0\`, or the builder throws (BR-O-09). Category "O" has two further effects, both new in v3.0.0:
+- **\`$isVatPayer: false\` on the supplier resolves every line to VAT category "O".** An incompatible explicit category is rejected, including AE. A supplier not registered for VAT cannot charge it: every line must carry \`taxPercent: 0\` and \`taxAmount: 0.0\`, or the builder throws (BR-O-09). Category "O" has two further effects, both new in v3.0.0:
   - the line's \`ClassifiedTaxCategory\` omits \`cbc:Percent\` entirely (BR-O-05). The document-level \`TaxSubtotal/TaxCategory\` **still** carries \`<cbc:Percent>0.00</cbc:Percent>\` plus \`<cbc:TaxExemptionReasonCode>VATEX-EU-O</cbc:TaxExemptionReasonCode>\` — the suppression applies to the line only;
   - the **buyer's** \`PartyTaxScheme\` (BT-48) is suppressed too, per BR-O-02 — even when the customer's own \`isVatPayer\` is \`true\`. A non-VAT supplier therefore files a document with **zero** \`PartyTaxScheme\` blocks.
 - \`$address\` is \`BeeCoded\\EFacturaSdk\\Data\\Invoice\\AddressData\`, not the Company namespace AddressData.

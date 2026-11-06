@@ -7,6 +7,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
@@ -768,4 +769,37 @@ describe('InvoiceData optional payable rounding compatibility', function () {
         $invoice->payableRoundingAmount = 0.01;
         expect($invoice->transform(TransformationContextFactory::create()->only('invoiceNumber')->exclude('payableRoundingAmount')))->toBe(['invoice_number' => 'INV-001']);
     })->with(['factory' => true, 'context' => false])->with([true, false]);
+});
+
+describe('explicit VAT categories in invoice totals', function () {
+    it('retains nested category serialization and category-rate totals through hydration', function () {
+        $invoice = createTestInvoice([
+            new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
+            new InvoiceLineData('Z', 1, 50, 0),
+            new InvoiceLineData('S first', 1, 0.03, 0.005, taxPercent: 19),
+            new InvoiceLineData('S second', 1, 0.03, 0.005, taxPercent: 19.00000001),
+        ]);
+        $array = $invoice->toArray();
+        expect($array['lines'][0]['taxCategoryId'])->toBe('AE')
+            ->and(array_keys($array['lines'][1]))->not->toContain('taxCategoryId');
+        foreach ([$invoice, InvoiceData::from($array), InvoiceData::validateAndCreate($array)] as $candidate) {
+            expect($candidate->getTotalExcludingVat())->toBe(150.06)
+                ->and($candidate->getTotalVat())->toBe(0.01)
+                ->and($candidate->getTotalIncludingVat())->toBe(150.07)
+                ->and($candidate->toArray())->toBe($array);
+        }
+    });
+
+    it('rejects a mutated or hydrated nonzero AE amount on the totals path', function (string $creation) {
+        $invoice = createTestInvoice([new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge)]);
+        if ($creation === 'hydrated') {
+            $payload = $invoice->toArray();
+            $payload['lines'][0]['taxAmount'] = 0.000001;
+            $invoice = InvoiceData::from($payload);
+        } else {
+            $invoice->lines[0]->taxAmount = 0.000001;
+        }
+        expect(fn () => $invoice->getTotalVat())->toThrow(ValidationException::class, 'exactly zero raw');
+        expect(fn () => $invoice->getTotalIncludingVat())->toThrow(ValidationException::class, 'exactly zero raw');
+    })->with(['hydrated', 'mutated']);
 });

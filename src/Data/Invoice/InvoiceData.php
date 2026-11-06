@@ -303,8 +303,8 @@ class InvoiceData extends Data
     /**
      * Calculate the total VAT amount (BT-110).
      *
-     * Sums the pre-computed per-line tax amounts ROUNDED ONCE PER TAX-RATE GROUP,
-     * because that is what the filed XML sums: lines are grouped by rate into
+     * Sums the pre-computed per-line tax amounts ROUNDED ONCE PER CATEGORY/RATE GROUP,
+     * because that is what the filed XML sums: lines are grouped by category and rate into
      * cac:TaxSubtotal elements, each subtotal's cbc:TaxAmount is rounded to 2
      * decimals, and BT-110 is the sum of those subtotals.
      *
@@ -327,9 +327,7 @@ class InvoiceData extends Data
         $groups = [];
 
         foreach ($this->lines as $line) {
-            // Round the rate to 2 decimals so 19.0 and 19.00000001 share a group,
-            // matching InvoiceBuilder::groupLinesByTax().
-            $key = (string) round($line->taxPercent, 2);
+            $key = $line->getTaxGroupKey($this->supplier->isVatPayer);
             $groups[$key] = ($groups[$key] ?? 0.0) + $line->taxAmount;
         }
 

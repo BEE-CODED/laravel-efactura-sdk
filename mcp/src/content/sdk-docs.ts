@@ -284,6 +284,11 @@ The builder validates these constraints and throws \`ValidationException\` on fa
 - \`quantity\` cannot be zero (negative allowed for credit notes)
 - \`unitPrice\` cannot be negative
 - \`taxPercent\` must be between 0 and 100
+- Optional \`taxCategoryId\` accepts \`TaxCategoryId\`; explicit S/Z/O must agree with the
+  supplier/rate-derived category, and O cannot coexist with another category.
+- Explicit AE requires raw \`taxPercent\` and \`taxAmount\` to equal zero exactly, plus supplier
+  and customer \`isVatPayer: true\` with usable, nonempty \`companyId\` values. Registration
+  validity and legal eligibility remain the caller's responsibility.
 
 ### Preceding Invoice Number (Credit Notes)
 - Optional, max 200 characters if provided
@@ -541,11 +546,12 @@ $line = new InvoiceLineData(
 
 ## Zero VAT Rate
 
-For zero-rated or exempt items, set \`taxPercent\` to 0 and \`taxAmount\` to 0:
+For a caller-determined zero-rated item from a VAT-payer supplier, set \`taxPercent\` and
+\`taxAmount\` to zero. A zero rate alone does not select reverse charge or another exemption:
 
 \`\`\`php
 $line = new InvoiceLineData(
-    name: 'Export — zero VAT',
+    name: 'Zero-rated item',
     quantity: 1.0,
     unitPrice: 500.00,
     taxAmount: 0.0,    // No tax
@@ -555,9 +561,10 @@ $line = new InvoiceLineData(
 
 ## Non-VAT Payer Supplier
 
-When \`PartyData::isVatPayer = false\`, all lines receive \`TaxCategoryId::NotSubject\` (category \`O\`)
-regardless of \`taxPercent\`. Since v3.0.0 every line **must** carry \`taxPercent: 0\` and
-\`taxAmount: 0.0\` — a supplier not registered for VAT cannot legally charge it, and BR-O-09 asserts
+When \`PartyData::isVatPayer = false\`, all lines resolve to \`TaxCategoryId::NotSubject\` (category \`O\`);
+an incompatible explicit category, including AE, is rejected. Since v3.0.0 every line **must**
+carry \`taxPercent: 0\` and \`taxAmount: 0.0\` — a supplier not registered for VAT cannot legally
+charge it, and BR-O-09 asserts
 the category tax amount is exactly \`0\` with no tolerance. Anything else throws:
 
 \`\`\`
@@ -590,13 +597,61 @@ suppressed (BR-O-02) even when the customer is itself a VAT payer. See the \`Tax
 
 ## Tax Category Determination
 
-The builder determines the \`TaxCategoryId\` automatically from \`taxPercent\` and supplier VAT status:
+With omitted/null \`InvoiceLineData::taxCategoryId\`, the builder retains its existing inference
+from \`taxPercent\` and supplier VAT status:
 
 | Supplier isVatPayer | taxPercent | TaxCategoryId | UBL Code |
 |---------------------|------------|---------------|----------|
 | false | any (but must be 0 — see above) | NotSubject | O |
 | true | ~0 (\`abs(taxPercent) < 0.01\`) | ZeroRated | Z |
-| true | > 0 | Standard | S |
+| true | >= 0.01 | Standard | S |
+
+An explicit \`Standard\`, \`ZeroRated\` or \`NotSubject\` must agree with this inference.
+O cannot coexist with any other category in an invoice. The builder and invoice total helpers
+group by resolved category plus normalized rate, so AE at 0% and Z at 0% stay separate.
+
+## Explicit Reverse Charge (AE)
+
+\`InvoiceLineData\` appends \`?TaxCategoryId $taxCategoryId = null\` after \`$taxPercent\`.
+Existing constructor arguments retain their order. Omitted/null values keep the exact legacy
+\`toArray()\`/\`toJson()\` keys and order; an explicit category adds the final \`taxCategoryId\`
+key as an enum string. \`InvoiceLineData::from()\` accepts \`taxCategoryId: 'AE'\` in its payload.
+Each transformation checks the current value: serializing null does not exclude a later
+\`ReverseCharge\` assignment, and resetting it to null omits the key again.
+
+\`\`\`php
+use BeeCoded\\EFacturaSdk\\Enums\\TaxCategoryId;
+
+$line = new InvoiceLineData(
+    name: 'Eligible reverse-charge transaction',
+    quantity: 1.0,
+    unitPrice: 1000.00,
+    taxAmount: 0.0,
+    taxPercent: 0.0,
+    taxCategoryId: TaxCategoryId::ReverseCharge,
+);
+\`\`\`
+
+\`ReverseCharge\` is backed by \`'AE'\`. Both raw \`taxPercent\` and raw \`taxAmount\` must be
+exactly zero; nonzero values are rejected even if they would round to zero. Both supplier and
+customer must have \`isVatPayer: true\` and usable, nonempty \`companyId\` values. The existing
+VAT-identifier normalization supplies their \`PartyTaxScheme/CompanyID\` values; it does not
+verify registration or the transaction's legal eligibility.
+
+The line and matching tax subtotal emit AE and \`Percent\` = \`0.00\`. The AE subtotal has
+zero tax, \`TaxExemptionReasonCode\` = \`VATEX-EU-AE\` and \`TaxExemptionReason\` =
+\`Taxare inversa\`. SDK callers may combine valid AE, Z and S lines; category/rate grouping
+keeps their tax breakdowns distinct. O remains exclusive.
+
+Invoice 380 preserves the supplied signs, including negative 380 invoices. CreditNote 381 keeps
+its existing once-only negation of quantities and amounts; AE tax remains zero. RON invoices
+must omit \`taxAmountRon\`; non-RON invoices still require it, including \`taxAmountRon: 0.0\`
+for an all-AE or AE/Z invoice. A nonzero RON VAT total is rejected when AE is present without
+standard-rated lines.
+
+The caller chooses the legally applicable category and submission profile. AE support does not
+establish that every domestic or cross-border transaction qualifies; local SDK checks are not
+full external-profile validation.
 
 ## Quantity and Unit-Price Precision (changed in v3.0.0)
 

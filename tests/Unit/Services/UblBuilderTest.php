@@ -8,6 +8,8 @@ use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
+use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
+use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\UblBuilder;
 
@@ -244,3 +246,36 @@ it('uses native payable rounding through direct container and custom injected bu
     }
     expect($custom->called)->toBeTrue();
 });
+
+it('serializes AE through the live container binding with document and accounting currency zeros', function (InvoiceTypeCode $type, int $sign, string $currency) {
+    $party = new PartyData(
+        registrationName: 'Supplier SRL', companyId: 'RO12345678',
+        address: new AddressData(street: 'Street 1', city: 'Cluj', postalZone: '400001', county: 'Cluj'),
+        isVatPayer: true,
+    );
+    $invoice = InvoiceData::from((new InvoiceData(
+        invoiceNumber: 'AE-001', issueDate: '2026-10-21T00:00:00+00:00', supplier: $party, customer: $party,
+        lines: [new InvoiceLineData('Reverse charge', $sign, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge)],
+        currency: $currency, invoiceTypeCode: $type, taxAmountRon: $currency === 'RON' ? null : 0,
+    ))->toArray());
+    $service = app(UblBuilderInterface::class);
+    $xml = $service->generateInvoiceXml($invoice);
+    $dom = new DOMDocument;
+    expect($dom->loadXML($xml))->toBeTrue();
+    $xpath = new DOMXPath($dom);
+    $xpath->registerNamespace('cac', 'urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2');
+    $xpath->registerNamespace('cbc', 'urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2');
+    $xmlSign = ($type === InvoiceTypeCode::CreditNote ? -1 : 1) * $sign;
+    expect($dom->documentElement->localName)->toBe($type === InvoiceTypeCode::CreditNote ? 'CreditNote' : 'Invoice')
+        ->and($xpath->evaluate('count(/*/cac:TaxTotal/cac:TaxSubtotal[cac:TaxCategory/cbc:ID="AE"])'))->toBe(1.0)
+        ->and($xpath->evaluate('string(/*/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:TaxExemptionReasonCode)'))->toBe('VATEX-EU-AE')
+        ->and($xpath->evaluate('string(/*/cac:TaxTotal/cac:TaxSubtotal/cac:TaxCategory/cbc:TaxExemptionReason)'))->toBe('Taxare inversa')
+        ->and($xpath->evaluate('string(/*/cac:LegalMonetaryTotal/cbc:PayableAmount)'))->toBe(number_format($xmlSign * 100, 2, '.', ''))
+        ->and($xpath->evaluate('count(/*/cac:TaxTotal/cbc:TaxAmount[text()="0.00"])'))->toBe($currency === 'RON' ? 1.0 : 2.0);
+    $invoice->lines[0]->taxAmount = 0.000001;
+    expect(fn () => $service->generateInvoiceXml($invoice))->toThrow(ValidationException::class, 'exactly zero raw');
+})->with([
+    '380' => [InvoiceTypeCode::CommercialInvoice, 1],
+    'negative 380' => [InvoiceTypeCode::CommercialInvoice, -1],
+    '381' => [InvoiceTypeCode::CreditNote, 1],
+])->with(['RON', 'EUR']);

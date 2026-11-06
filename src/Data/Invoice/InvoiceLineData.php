@@ -4,8 +4,13 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
+use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use Spatie\LaravelData\Attributes\Validation\Min;
 use Spatie\LaravelData\Data;
+use Spatie\LaravelData\Support\Partials\Partial;
+use Spatie\LaravelData\Support\Transformation\TransformationContext;
+use Spatie\LaravelData\Support\Transformation\TransformationContextFactory;
 
 /**
  * Invoice line item data.
@@ -37,7 +42,71 @@ class InvoiceLineData extends Data
         /** VAT percentage (e.g., 19 for 19%). Must be non-negative. */
         #[Min(0)]
         public float $taxPercent = 0,
+        /** Explicit VAT category; null retains legacy supplier/rate inference. */
+        public ?TaxCategoryId $taxCategoryId = null,
     ) {}
+
+    /**
+     * Preserve the legacy serialized shape when no category was declared.
+     * Clone the live context so null exclusions never hide a later assignment.
+     *
+     * @return array<string, mixed>
+     */
+    public function transform(
+        TransformationContextFactory|TransformationContext|null $transformationContext = null,
+    ): array {
+        $context = match (true) {
+            $transformationContext instanceof TransformationContext => clone $transformationContext,
+            $transformationContext instanceof TransformationContextFactory => clone $transformationContext->get($this),
+            default => clone TransformationContextFactory::create()->get($this),
+        };
+        if ($this->taxCategoryId === null) {
+            $context->addExceptPartial(Partial::create('taxCategoryId'));
+        }
+
+        return parent::transform($context);
+    }
+
+    /**
+     * Resolve the category identically for DTO totals and the real serializer.
+     * Validate explicit declarations on consumption: hydration and subsequent
+     * public-property mutation must not bypass the zero-tax AE contract.
+     *
+     * @throws ValidationException
+     */
+    public function getTaxCategory(bool $isSupplierVatPayer): TaxCategoryId
+    {
+        if ($this->taxCategoryId === TaxCategoryId::ReverseCharge) {
+            if (! $isSupplierVatPayer) {
+                throw new ValidationException(__('efactura-sdk::validation.reverse_charge_supplier_must_be_vat_payer'));
+            }
+            if ($this->taxPercent !== 0.0 || $this->taxAmount !== 0.0) {
+                throw new ValidationException(__('efactura-sdk::validation.reverse_charge_tax_must_be_zero'));
+            }
+
+            return TaxCategoryId::ReverseCharge;
+        }
+
+        $inferred = match (true) {
+            ! $isSupplierVatPayer => TaxCategoryId::NotSubject,
+            abs($this->taxPercent) < 0.01 => TaxCategoryId::ZeroRated,
+            default => TaxCategoryId::Standard,
+        };
+        if ($this->taxCategoryId !== null && $this->taxCategoryId !== $inferred) {
+            throw new ValidationException(__('efactura-sdk::validation.tax_category_inconsistent'));
+        }
+
+        return $inferred;
+    }
+
+    /** Category and normalized percentage jointly identify a VAT breakdown. */
+    public function getTaxGroupKey(bool $isSupplierVatPayer): string
+    {
+        $category = $this->getTaxCategory($isSupplierVatPayer);
+        $taxPercent = $category === TaxCategoryId::ReverseCharge ? 0.0 : round($this->taxPercent, 2);
+
+        return $category->value.':'.(string) $taxPercent;
+    }
 
     /**
      * Calculate the line total (quantity * unitPrice).

@@ -17,4 +17,7 @@ enum TaxCategoryId: string
 
     /** Zero-rated VAT */
     case ZeroRated = 'Z';
+
+    /** VAT accounted for by the recipient */
+    case ReverseCharge = 'AE';
 }

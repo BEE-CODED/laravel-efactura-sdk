@@ -154,7 +154,7 @@ class InvoiceBuilder
         $isSupplierVatPayer = $input->supplier->isVatPayer;
         $isCreditNote = $input->getInvoiceTypeCode()->isCreditNote();
 
-        // Group lines by tax percentage
+        // Group lines by resolved VAT category and normalized percentage
         $taxGroups = $this->groupLinesByTax($input->lines, $isSupplierVatPayer, $isCreditNote);
 
         // Calculate totals
@@ -347,6 +347,7 @@ class InvoiceBuilder
         foreach ($input->lines as $index => $line) {
             $this->validateLine($line, $index, $input->supplier->isVatPayer);
         }
+        $this->validateReverseCharge($input);
 
         // BR-RO-L200: Preceding invoice number max 200 characters
         if ($input->precedingInvoiceNumber !== null && mb_strlen($input->precedingInvoiceNumber) > 200) {
@@ -354,6 +355,40 @@ class InvoiceBuilder
         }
 
         $this->validateTaxAccountingCurrency($input);
+    }
+
+    /**
+     * AE requires both VAT identifiers through the existing PartyTaxScheme path
+     * and zero accounting-currency VAT when no standard-rated lines are present.
+     * This checks usable identifiers, not national checksums or legal eligibility.
+     *
+     * @throws ValidationException
+     */
+    private function validateReverseCharge(InvoiceData $input): void
+    {
+        $hasReverseCharge = false;
+        $hasStandard = false;
+        foreach ($input->lines as $line) {
+            $category = $line->getTaxCategory($input->supplier->isVatPayer);
+            $hasReverseCharge = $hasReverseCharge || $category === TaxCategoryId::ReverseCharge;
+            $hasStandard = $hasStandard || $category === TaxCategoryId::Standard;
+        }
+        if (! $hasReverseCharge) {
+            return;
+        }
+
+        foreach (['Supplier' => $input->supplier, 'Customer' => $input->customer] as $role => $party) {
+            $vatNumber = $this->normalizeVatNumber($party->companyId, $party->address->countryCode);
+            if (! $party->isVatPayer || preg_match('/^[A-Z]{2}[A-Z0-9]+$/D', $vatNumber) !== 1) {
+                throw new ValidationException(__('efactura-sdk::validation.reverse_charge_vat_identifier_required', ['role' => $role]));
+            }
+        }
+
+        // A document containing only AE/Z cannot declare collected VAT in RON.
+        // Mixed AE/S retains the existing caller-owned conversion contract.
+        if (! $hasStandard && $input->taxAmountRon !== null && $input->taxAmountRon !== 0.0) {
+            throw new ValidationException(__('efactura-sdk::validation.reverse_charge_tax_amount_ron_must_be_zero'));
+        }
     }
 
     /**
@@ -470,6 +505,7 @@ class InvoiceBuilder
     private function validateLine(InvoiceLineData $line, int $index, bool $isSupplierVatPayer = true): void
     {
         $lineNum = $index + 1;
+        $line->getTaxCategory($isSupplierVatPayer);
 
         if (empty($line->name)) {
             throw new ValidationException(__('efactura-sdk::validation.line_item_name_required', ['lineNum' => $lineNum]));
@@ -504,8 +540,8 @@ class InvoiceBuilder
         // fails fatally otherwise. A supplier not registered for VAT cannot
         // legally charge it, so this is caller error rather than a lost rounding
         // penny: fail fast here instead of letting ANAF reject the submission.
-        // The epsilon mirrors getTaxCategory(); the tax amount is compared as it
-        // will be emitted (rounded to 2 decimals).
+        // The epsilon mirrors InvoiceLineData::getTaxCategory(); the tax amount
+        // is compared as it will be emitted (rounded to 2 decimals).
         if (! $isSupplierVatPayer && (abs($line->taxPercent) >= 0.01 || round($line->taxAmount, 2) != 0.0)) {
             throw new ValidationException(
                 __('efactura-sdk::validation.line_tax_not_allowed_for_non_vat_payer', ['lineNum' => $lineNum])
@@ -518,8 +554,8 @@ class InvoiceBuilder
         // BR-Z-09 tests xs:decimal(cbc:TaxAmount) = 0 with no tolerance, and BR-CO-17 fails
         // alongside it because the amount cannot match TaxableAmount x 0%. Both are fatal, so
         // this fails fast for the same reason BR-O-09 does rather than letting ANAF reject the
-        // submission. The condition mirrors getTaxCategory()'s epsilon so it binds exactly when
-        // category Z (or O) is emitted, and compares the tax amount as it will be emitted
+        // submission. The condition mirrors InvoiceLineData::getTaxCategory()'s epsilon
+        // so it binds exactly when category Z (or O) is emitted, and compares the tax amount
         // (rounded to 2 decimals) so a sub-cent residue that files as 0.00 is not rejected.
         if (abs($line->taxPercent) < 0.01 && round($line->taxAmount, 2) != 0.0) {
             throw new ValidationException(
@@ -529,7 +565,7 @@ class InvoiceBuilder
     }
 
     /**
-     * Group invoice lines by tax percentage for tax subtotals.
+     * Group invoice lines by VAT category and normalized percentage for tax subtotals.
      *
      * Tax calculation approach: the group's taxable amount is the sum of the per-line net
      * amounts ROUNDED INDIVIDUALLY by calculateLineExtension(); the group's tax amount is the
@@ -570,14 +606,12 @@ class InvoiceBuilder
 
         foreach ($lines as $line) {
             $taxPercent = $line->taxPercent;
-            // Round to 2 decimal places to avoid floating-point precision issues
-            // e.g., 19.0 vs 19.00000001 producing different keys
-            $key = (string) round($taxPercent, 2);
+            $key = $line->getTaxGroupKey($isSupplierVatPayer);
 
             if (! isset($groups[$key])) {
                 $groups[$key] = [
                     'taxPercent' => $taxPercent,
-                    'taxCategoryId' => $this->getTaxCategory($taxPercent, $isSupplierVatPayer),
+                    'taxCategoryId' => $line->getTaxCategory($isSupplierVatPayer),
                     'taxableAmount' => 0.0,
                     'taxAmount' => 0.0,
                 ];
@@ -601,31 +635,6 @@ class InvoiceBuilder
         }
 
         return array_values($groups);
-    }
-
-    /**
-     * Determine the tax category based on tax percent and VAT payer status.
-     *
-     * @param  float  $taxPercent  The tax percentage
-     * @param  bool  $isVatPayer  Whether the party is a VAT payer
-     * @return TaxCategoryId The determined tax category
-     */
-    private function getTaxCategory(float $taxPercent, bool $isVatPayer): TaxCategoryId
-    {
-        // If not a VAT payer, the tax category is "Not subject" (O)
-        if (! $isVatPayer) {
-            return TaxCategoryId::NotSubject;
-        }
-
-        // For VAT payers:
-        // - Zero percent -> Zero-rated (Z)
-        // - Greater than zero -> Standard (S)
-        // Use epsilon comparison for floating-point safety (less than 0.01%)
-        if (abs($taxPercent) < 0.01) {
-            return TaxCategoryId::ZeroRated;
-        }
-
-        return TaxCategoryId::Standard;
     }
 
     /**
@@ -983,6 +992,9 @@ class InvoiceBuilder
 
             if ($group['taxCategoryId'] === TaxCategoryId::NotSubject) {
                 $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReasonCode', 'VATEX-EU-O');
+            } elseif ($group['taxCategoryId'] === TaxCategoryId::ReverseCharge) {
+                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReasonCode', 'VATEX-EU-AE');
+                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReason', 'Taxare inversa');
             }
 
             $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
@@ -1136,7 +1148,7 @@ class InvoiceBuilder
 
         // Classified tax category
         $writer->startElement('{'.self::NS_CAC.'}ClassifiedTaxCategory');
-        $taxCategory = $this->getTaxCategory($line->taxPercent, $isSupplierVatPayer);
+        $taxCategory = $line->getTaxCategory($isSupplierVatPayer);
         $this->writeElement($writer, self::NS_CBC, 'ID', $taxCategory->value);
 
         // BR-O-05: an invoice line with VAT category "O" (Not subject to VAT) must
