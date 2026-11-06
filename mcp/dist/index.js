@@ -21795,6 +21795,10 @@ Returns \`$invoiceTypeCode ?? InvoiceTypeCode::CommercialInvoice\`. Use this acc
 > legal document by a bani. They now reproduce the filed totals exactly, and are pinned against
 > generated XML by tests.
 
+Money is exact decimal: line inputs are read at 6 decimals, every sum is a decimal sum, and each
+line net and each group's tax is rounded half-up once (\`3 \xD7 1.005\` \u2192 \`3.02\`). The helpers return
+those amounts as floats.
+
 ### \`getTotalExcludingVat(): float\`
 Sums the per-line **rounded** net amounts (BT-106), matching \`cac:LegalMonetaryTotal\` \u2014 every line
 files its own \`cbc:LineExtensionAmount\` capped at 2 decimals, and the document total adds those up.
@@ -21964,13 +21968,20 @@ Amount fields \u2014 \`cbc:LineExtensionAmount\`, all VAT amounts, and the docum
 exactly 2 decimals. Beyond 6 decimals the value is truncated by rounding, which also keeps binary
 floating-point noise out of the XML (a quantity of \`1/3\` files as \`0.333333\`, not seventeen digits).
 
+Money is exact decimal. \`quantity\`, \`unitPrice\` and \`taxAmount\` are read at those 6 decimals and
+multiplied and summed as decimals; each line net and each VAT group's tax is rounded half-up once.
+\`3 \xD7 1.005\` files \`3.02\` (float arithmetic gave \`3.01\` on PHP 8.4+), and the line net always
+reconciles with the filed quantity and price: \`1/3 \xD7 30000.00\` files \`0.333333\` and \`9999.99\`.
+
 ## Public Methods
 
 ### \`getLineTotal(): float\`
-Returns \`round(quantity * unitPrice, 2)\`.
+Returns \`quantity \xD7 unitPrice\` as filed: both read at 6 decimals, multiplied exactly, rounded
+half-up to 2 decimals.
 
 ### \`getTaxAmount(): float\`
-Returns \`round(taxAmount, 2)\`. This is the pre-computed value passed at construction.
+Returns \`taxAmount\` read at 6 decimals and rounded half-up to 2 decimals. This is the pre-computed
+value passed at construction.
 
 ### \`getRawLineTotal(): float\`
 Returns unrounded \`quantity * unitPrice\`. **Not** what the invoice files \u2014 \`cbc:LineExtensionAmount\`
@@ -21979,7 +21990,7 @@ document totals are built from. Summing this across lines and rounding once at t
 reproduce the filed total.
 
 ### \`getLineTotalWithTax(): float\`
-Returns \`round(getLineTotal() + getTaxAmount(), 2)\`.
+Returns \`getLineTotal() + getTaxAmount()\`, summed exactly.
 
 ## Critical Notes
 
@@ -23682,6 +23693,11 @@ full external-profile validation.
 amounts stay at exactly 2. Through v2 both were formatted as money, so \`quantity: 1.375\` filed as
 \`1.38\` and \`unitPrice: 0.0075\` filed as \`0.01\` \u2014 overstating that line by 33%. If you worked around
 this by pre-scaling quantities or prices, **remove the workaround**: it will now double-apply.
+
+Money is exact decimal: \`quantity\`, \`unitPrice\`, \`taxAmount\` and \`taxAmountRon\` are read at
+6 decimals, and each line net and each VAT group's tax sum is rounded half-up once. \`3 \xD7 1.005\`
+files \`3.02\` and per-line taxes \`1285.8489 + 130.7061\` file \`1416.56\` (float arithmetic gave
+\`3.01\` and \`1416.55\` on PHP 8.4+). Inputs with more than 6 decimals are read at 6.
 
 ## Optional taxPointDate (BT-7)
 

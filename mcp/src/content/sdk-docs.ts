@@ -660,6 +660,11 @@ amounts stay at exactly 2. Through v2 both were formatted as money, so \`quantit
 \`1.38\` and \`unitPrice: 0.0075\` filed as \`0.01\` — overstating that line by 33%. If you worked around
 this by pre-scaling quantities or prices, **remove the workaround**: it will now double-apply.
 
+Money is exact decimal: \`quantity\`, \`unitPrice\`, \`taxAmount\` and \`taxAmountRon\` are read at
+6 decimals, and each line net and each VAT group's tax sum is rounded half-up once. \`3 × 1.005\`
+files \`3.02\` and per-line taxes \`1285.8489 + 130.7061\` file \`1416.56\` (float arithmetic gave
+\`3.01\` and \`1416.55\` on PHP 8.4+). Inputs with more than 6 decimals are read at 6.
+
 ## Optional taxPointDate (BT-7)
 
 Supply the caller-selected VAT applicability date using the optional

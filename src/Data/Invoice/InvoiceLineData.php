@@ -6,6 +6,8 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use Spatie\LaravelData\Attributes\Validation\Min;
 use Spatie\LaravelData\Data;
 use Spatie\LaravelData\Support\Partials\Partial;
@@ -109,21 +111,42 @@ class InvoiceLineData extends Data
     }
 
     /**
-     * Calculate the line total (quantity * unitPrice).
-     * Rounded to 2 decimal places for consistency with UBL XML output.
+     * Calculate the line total (quantity * unitPrice), exactly as cbc:LineExtensionAmount files it:
+     * both read at 6 decimals and multiplied as decimals, rounded half-up once.
      */
     public function getLineTotal(): float
     {
-        return round($this->quantity * $this->unitPrice, 2);
+        return $this->exactLineTotal()->toFloat();
     }
 
     /**
      * Get the pre-computed tax amount for this line.
-     * Returns the value passed at construction, rounded to 2 decimal places.
+     * Returns the value passed at construction, read at 6 decimals and rounded half-up to 2 decimals.
      */
     public function getTaxAmount(): float
     {
-        return round($this->taxAmount, 2);
+        return $this->exactTaxAmount()->toFloat();
+    }
+
+    private function exactLineTotal(): BigDecimal
+    {
+        return self::decimal($this->quantity)->multipliedBy(self::decimal($this->unitPrice))->toScale(2, RoundingMode::HalfUp);
+    }
+
+    private function exactTaxAmount(): BigDecimal
+    {
+        return self::decimal($this->taxAmount)->toScale(2, RoundingMode::HalfUp);
+    }
+
+    /**
+     * Read an amount at the 6 decimals the XML files quantities and prices with.
+     *
+     * Float products and sums misplace half-cent ties (3 x 1.005 = 3.0149999...), which PHP 8.4+
+     * round() no longer hides. number_format() is ini-independent and never emits exponents.
+     */
+    private static function decimal(float $value): BigDecimal
+    {
+        return BigDecimal::of(number_format($value, 6, '.', ''));
     }
 
     /**
@@ -141,11 +164,10 @@ class InvoiceLineData extends Data
     }
 
     /**
-     * Calculate the line total including tax.
-     * Rounded to 2 decimal places for consistency with UBL XML output.
+     * Calculate the line total including tax: getLineTotal() + getTaxAmount(), summed exactly.
      */
     public function getLineTotalWithTax(): float
     {
-        return round($this->getLineTotal() + $this->getTaxAmount(), 2);
+        return $this->exactLineTotal()->plus($this->exactTaxAmount())->toFloat();
     }
 }

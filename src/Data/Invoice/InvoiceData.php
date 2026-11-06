@@ -6,6 +6,8 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
@@ -291,13 +293,7 @@ class InvoiceData extends Data
      */
     public function getTotalExcludingVat(): float
     {
-        $total = array_reduce(
-            $this->lines,
-            fn (float $total, InvoiceLineData $line) => $total + $line->getLineTotal(),
-            0.0
-        );
-
-        return round($total, 2);
+        return $this->exactTotalExcludingVat()->toFloat();
     }
 
     /**
@@ -323,20 +319,7 @@ class InvoiceData extends Data
      */
     public function getTotalVat(): float
     {
-        /** @var array<string, float> $groups */
-        $groups = [];
-
-        foreach ($this->lines as $line) {
-            $key = $line->getTaxGroupKey($this->supplier->isVatPayer);
-            $groups[$key] = ($groups[$key] ?? 0.0) + $line->taxAmount;
-        }
-
-        $total = 0.0;
-        foreach ($groups as $groupTaxAmount) {
-            $total += round($groupTaxAmount, 2);
-        }
-
-        return round($total, 2);
+        return $this->exactTotalVat()->toFloat();
     }
 
     /**
@@ -376,7 +359,7 @@ class InvoiceData extends Data
      */
     public function getTotalIncludingVatBeforeRounding(): float
     {
-        return round($this->getTotalExcludingVat() + $this->getTotalVat(), 2);
+        return $this->exactTotalExcludingVat()->plus($this->exactTotalVat())->toFloat();
     }
 
     /**
@@ -387,6 +370,44 @@ class InvoiceData extends Data
      */
     public function getTotalIncludingVat(): float
     {
-        return round($this->getTotalIncludingVatBeforeRounding() + ($this->getPayableRoundingAmount() ?? 0.0), 2);
+        $rounding = self::decimal($this->getPayableRoundingAmount() ?? 0.0)->toScale(2, RoundingMode::HalfUp);
+
+        return $this->exactTotalExcludingVat()->plus($this->exactTotalVat())->plus($rounding)->toFloat();
+    }
+
+    /** The per-line nets as getLineTotal() and the XML compute them, summed exactly. */
+    private function exactTotalExcludingVat(): BigDecimal
+    {
+        $total = BigDecimal::zero();
+        foreach ($this->lines as $line) {
+            $total = $total->plus(self::decimal($line->quantity)->multipliedBy(self::decimal($line->unitPrice))->toScale(2, RoundingMode::HalfUp));
+        }
+
+        return $total;
+    }
+
+    /** Each VAT group's raw tax summed exactly and rounded half-up once, then summed. */
+    private function exactTotalVat(): BigDecimal
+    {
+        /** @var array<string, BigDecimal> $groups */
+        $groups = [];
+
+        foreach ($this->lines as $line) {
+            $key = $line->getTaxGroupKey($this->supplier->isVatPayer);
+            $groups[$key] = ($groups[$key] ?? BigDecimal::zero())->plus(self::decimal($line->taxAmount));
+        }
+
+        $total = BigDecimal::zero();
+        foreach ($groups as $groupTaxAmount) {
+            $total = $total->plus($groupTaxAmount->toScale(2, RoundingMode::HalfUp));
+        }
+
+        return $total;
+    }
+
+    /** Read an amount at the 6 decimals the XML files, as InvoiceLineData and InvoiceBuilder do. */
+    private static function decimal(float $value): BigDecimal
+    {
+        return BigDecimal::of(number_format($value, 6, '.', ''));
     }
 }

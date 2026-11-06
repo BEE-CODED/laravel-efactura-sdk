@@ -12,6 +12,9 @@ use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Support\AddressSanitizer;
 use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
+use Brick\Math\BigDecimal;
+use Brick\Math\Exception\NumberFormatException;
+use Brick\Math\RoundingMode;
 use Carbon\Carbon;
 use Sabre\Xml\Service as XmlService;
 use Sabre\Xml\Writer;
@@ -144,11 +147,12 @@ class InvoiceBuilder
      * @return string The generated UBL 2.1 XML string
      *
      * @throws ValidationException If the invoice data is invalid
+     * @throws NumberFormatException If a quantity, price or amount is not finite (INF/NAN)
      */
     public function buildInvoiceXml(InvoiceData $input): string
     {
         $this->validateInvoiceInput($input);
-        $payableRoundingAmount = $input->getPayableRoundingAmount() ?? 0.0;
+        $payableRoundingAmount = $this->decimal($input->getPayableRoundingAmount() ?? 0.0)->toScale(2, RoundingMode::HalfUp);
 
         $currency = $input->currency ?: self::DEFAULT_CURRENCY;
         $isSupplierVatPayer = $input->supplier->isVatPayer;
@@ -157,24 +161,22 @@ class InvoiceBuilder
         // Group lines by resolved VAT category and normalized percentage
         $taxGroups = $this->groupLinesByTax($input->lines, $isSupplierVatPayer, $isCreditNote);
 
-        // Calculate totals
-        $lineExtensionAmount = 0.0;
-        $taxExclusiveAmount = 0.0;
-        $taxInclusiveAmount = 0.0;
-        $totalTaxAmount = 0.0;
+        // Calculate totals as exact decimal sums of the 2-decimal amounts the XML files
+        $lineExtensionAmount = BigDecimal::zero();
+        $totalTaxAmount = BigDecimal::zero();
 
         foreach ($input->lines as $line) {
-            $lineExtensionAmount += $this->calculateLineExtension($line, $isCreditNote);
+            $lineExtensionAmount = $lineExtensionAmount->plus($this->calculateLineExtension($line, $isCreditNote));
         }
 
         foreach ($taxGroups as $group) {
-            $totalTaxAmount += $group['taxAmount'];
+            $totalTaxAmount = $totalTaxAmount->plus($group['taxAmount']);
         }
 
         $taxExclusiveAmount = $lineExtensionAmount;
-        $taxInclusiveAmount = $taxExclusiveAmount + $totalTaxAmount;
-        $payableRoundingAmount = $isCreditNote ? -$payableRoundingAmount : $payableRoundingAmount;
-        $payableAmount = round($taxInclusiveAmount, 2) + $payableRoundingAmount;
+        $taxInclusiveAmount = $taxExclusiveAmount->plus($totalTaxAmount);
+        $payableRoundingAmount = $isCreditNote ? $payableRoundingAmount->negated() : $payableRoundingAmount;
+        $payableAmount = $taxInclusiveAmount->plus($payableRoundingAmount);
 
         // Determine root namespace based on document type
         $rootNamespace = $isCreditNote ? self::NS_CREDIT_NOTE : self::NS_INVOICE;
@@ -285,7 +287,7 @@ class InvoiceBuilder
             // are, so BT-111 agrees with the document-currency total it converts.
             $this->buildTaxTotalInAccountingCurrency(
                 $writer,
-                $isCreditNote ? -$taxAmountRon : $taxAmountRon
+                $this->decimal($isCreditNote ? -$taxAmountRon : $taxAmountRon)
             );
         }
 
@@ -429,7 +431,7 @@ class InvoiceBuilder
         // catch a credited VAT filed as collected, and vice versa.
         // Either total can round to zero independently when the caller converts
         // the taxable base before rounding VAT in the accounting currency.
-        $ronSign = round($input->taxAmountRon, 2) <=> 0.0;
+        $ronSign = $this->decimal($input->taxAmountRon)->toScale(2, RoundingMode::HalfUp)->getSign();
         $documentSign = $input->getTotalVat() <=> 0.0;
         if ($ronSign !== 0 && $documentSign !== 0 && $ronSign !== $documentSign) {
             throw new ValidationException(__('efactura-sdk::validation.tax_amount_ron_sign_mismatch'));
@@ -541,8 +543,10 @@ class InvoiceBuilder
         // legally charge it, so this is caller error rather than a lost rounding
         // penny: fail fast here instead of letting ANAF reject the submission.
         // The epsilon mirrors InvoiceLineData::getTaxCategory(); the tax amount
-        // is compared as it will be emitted (rounded to 2 decimals).
-        if (! $isSupplierVatPayer && (abs($line->taxPercent) >= 0.01 || round($line->taxAmount, 2) != 0.0)) {
+        // is compared as it will be emitted (rounded to 2 decimals). A non-finite
+        // amount cannot be emitted at all, so it fails here as it always has.
+        $emitsTax = ! is_finite($line->taxAmount) || $line->getTaxAmount() != 0.0;
+        if (! $isSupplierVatPayer && (abs($line->taxPercent) >= 0.01 || $emitsTax)) {
             throw new ValidationException(
                 __('efactura-sdk::validation.line_tax_not_allowed_for_non_vat_payer', ['lineNum' => $lineNum])
             );
@@ -557,7 +561,7 @@ class InvoiceBuilder
         // submission. The condition mirrors InvoiceLineData::getTaxCategory()'s epsilon
         // so it binds exactly when category Z (or O) is emitted, and compares the tax amount
         // (rounded to 2 decimals) so a sub-cent residue that files as 0.00 is not rejected.
-        if (abs($line->taxPercent) < 0.01 && round($line->taxAmount, 2) != 0.0) {
+        if (abs($line->taxPercent) < 0.01 && $emitsTax) {
             throw new ValidationException(
                 __('efactura-sdk::validation.line_tax_amount_must_be_zero_for_zero_rate', ['lineNum' => $lineNum])
             );
@@ -569,8 +573,10 @@ class InvoiceBuilder
      *
      * Tax calculation approach: the group's taxable amount is the sum of the per-line net
      * amounts ROUNDED INDIVIDUALLY by calculateLineExtension(); the group's tax amount is the
-     * sum of the per-line tax amounts the CALLER supplied, accumulated raw. Both sums are
-     * rounded once more at the end. Tax is never recalculated from the group total.
+     * sum of the per-line tax amounts the CALLER supplied, accumulated raw and rounded half-up
+     * once at the end. Both sums are exact decimals of the amounts read at 6 decimals, so a
+     * half-cent sum (1285.8489 + 130.7061) files as 1416.56. Tax is never recalculated from
+     * the group total.
      *
      * The per-line rounding is required rather than a compromise: BR-S-08 compares the VAT
      * category taxable amount (BT-116) against the sum of the EMITTED
@@ -597,11 +603,11 @@ class InvoiceBuilder
      *
      * @param  InvoiceLineData[]  $lines  The invoice lines
      * @param  bool  $isSupplierVatPayer  Whether the supplier is a VAT payer
-     * @return array<int, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: float, taxAmount: float}> Grouped tax data
+     * @return array<int, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}> Grouped tax data
      */
     private function groupLinesByTax(array $lines, bool $isSupplierVatPayer, bool $isCreditNote = false): array
     {
-        /** @var array<string, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: float, taxAmount: float}> $groups */
+        /** @var array<string, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}> $groups */
         $groups = [];
 
         foreach ($lines as $line) {
@@ -612,26 +618,25 @@ class InvoiceBuilder
                 $groups[$key] = [
                     'taxPercent' => $taxPercent,
                     'taxCategoryId' => $line->getTaxCategory($isSupplierVatPayer),
-                    'taxableAmount' => 0.0,
-                    'taxAmount' => 0.0,
+                    'taxableAmount' => BigDecimal::zero(),
+                    'taxAmount' => BigDecimal::zero(),
                 ];
             }
 
             // Accumulate the line's net amount as EMITTED — calculateLineExtension() rounds it
             // to 2 decimals, which BR-S-08 requires (see the docblock).
             $lineAmount = $this->calculateLineExtension($line, $isCreditNote);
-            $groups[$key]['taxableAmount'] += $lineAmount;
+            $groups[$key]['taxableAmount'] = $groups[$key]['taxableAmount']->plus($lineAmount);
 
             // Accumulate pre-computed per-line tax (negate for credit notes, matching quantity sign handling)
-            $lineTax = $isCreditNote ? -$line->taxAmount : $line->taxAmount;
-            $groups[$key]['taxAmount'] += $lineTax;
+            $lineTax = $this->decimal($line->taxAmount);
+            $groups[$key]['taxAmount'] = $groups[$key]['taxAmount']->plus($isCreditNote ? $lineTax->negated() : $lineTax);
         }
 
-        // Round group totals once at the end
+        // Round each group's tax once at the end; the taxable sum of 2-decimal nets is already exact
         foreach ($groups as &$group) {
-            $group['taxableAmount'] = round($group['taxableAmount'], 2);
             // Use accumulated per-line tax amounts instead of recalculating from group totals
-            $group['taxAmount'] = round($group['taxAmount'], 2);
+            $group['taxAmount'] = $group['taxAmount']->toScale(2, RoundingMode::HalfUp);
         }
 
         return array_values($groups);
@@ -640,16 +645,21 @@ class InvoiceBuilder
     /**
      * Calculate line extension amount (quantity * unit price).
      *
+     * Exact decimal: quantity and unit price are read at the 6 decimals the line files
+     * (BT-129, BT-146) and the product is rounded half-up once, so the filed amount always
+     * reconciles with them — 3 x 1.005 files 3.02 (a float product, 3.0149999..., gave 3.01).
+     *
      * For credit notes, quantities are negated (sign-flipped) because ANAF treats
      * credit notes as inherently negative. This correctly handles mixed signs:
      * - Normal lines (qty=-1) → become +1 (ANAF credits it)
      * - Discount lines (qty=+1) → become -1 (ANAF debits the discount back)
+     * Half-up rounds ties away from zero, so negating the rounded product is the same.
      */
-    private function calculateLineExtension(InvoiceLineData $line, bool $isCreditNote = false): float
+    private function calculateLineExtension(InvoiceLineData $line, bool $isCreditNote = false): BigDecimal
     {
-        $quantity = $isCreditNote ? -$line->quantity : $line->quantity;
+        $amount = $this->decimal($line->quantity)->multipliedBy($this->decimal($line->unitPrice))->toScale(2, RoundingMode::HalfUp);
 
-        return round($quantity * $line->unitPrice, 2);
+        return $isCreditNote ? $amount->negated() : $amount;
     }
 
     /**
@@ -952,9 +962,9 @@ class InvoiceBuilder
     /**
      * Build tax total XML with subtotals.
      *
-     * @param  array<int, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: float, taxAmount: float}>  $taxGroups
+     * @param  array<int, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}>  $taxGroups
      */
-    private function buildTaxTotalXml(Writer $writer, array $taxGroups, float $totalTaxAmount, string $currency): void
+    private function buildTaxTotalXml(Writer $writer, array $taxGroups, BigDecimal $totalTaxAmount, string $currency): void
     {
         $writer->startElement('{'.self::NS_CAC.'}TaxTotal');
 
@@ -988,7 +998,8 @@ class InvoiceBuilder
 
             $writer->startElement('{'.self::NS_CAC.'}TaxCategory');
             $this->writeElement($writer, self::NS_CBC, 'ID', $group['taxCategoryId']->value);
-            $this->writeElement($writer, self::NS_CBC, 'Percent', $this->formatAmount($group['taxPercent']));
+            // A rate is not money: format it as the group key rounds it, so lines and group agree.
+            $this->writeElement($writer, self::NS_CBC, 'Percent', number_format($group['taxPercent'], 2, '.', ''));
 
             if ($group['taxCategoryId'] === TaxCategoryId::NotSubject) {
                 $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReasonCode', 'VATEX-EU-O');
@@ -1022,7 +1033,7 @@ class InvoiceBuilder
      *
      * BR-DEC-RO-15 caps BT-111 at 2 decimals, which formatAmount() enforces.
      */
-    private function buildTaxTotalInAccountingCurrency(Writer $writer, float $taxAmount): void
+    private function buildTaxTotalInAccountingCurrency(Writer $writer, BigDecimal $taxAmount): void
     {
         $writer->startElement('{'.self::NS_CAC.'}TaxTotal');
 
@@ -1042,12 +1053,12 @@ class InvoiceBuilder
      */
     private function buildLegalMonetaryTotalXml(
         Writer $writer,
-        float $lineExtensionAmount,
-        float $taxExclusiveAmount,
-        float $taxInclusiveAmount,
+        BigDecimal $lineExtensionAmount,
+        BigDecimal $taxExclusiveAmount,
+        BigDecimal $taxInclusiveAmount,
         string $currency,
-        float $payableRoundingAmount,
-        float $payableAmount
+        BigDecimal $payableRoundingAmount,
+        BigDecimal $payableAmount
     ): void {
         $writer->startElement('{'.self::NS_CAC.'}LegalMonetaryTotal');
 
@@ -1075,7 +1086,7 @@ class InvoiceBuilder
             ['currencyID' => $currency]
         );
 
-        if ($payableRoundingAmount != 0.0) {
+        if (! $payableRoundingAmount->isZero()) {
             $this->writeElementWithAttributes(
                 $writer,
                 self::NS_CBC,
@@ -1156,7 +1167,7 @@ class InvoiceBuilder
         // not(cbc:Percent) on such a line and fails fatally otherwise, which
         // rejects every invoice issued by a non-VAT-payer supplier.
         if ($taxCategory !== TaxCategoryId::NotSubject) {
-            $this->writeElement($writer, self::NS_CBC, 'Percent', $this->formatAmount($line->taxPercent));
+            $this->writeElement($writer, self::NS_CBC, 'Percent', number_format($line->taxPercent, 2, '.', ''));
         }
 
         $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
@@ -1184,11 +1195,24 @@ class InvoiceBuilder
      * Format a monetary amount with 2 decimal places.
      *
      * The EN 16931 BR-DEC-* rules cap the number of decimals at 2 for amount
-     * fields (line net amount, VAT amounts, document totals).
+     * fields (line net amount, VAT amounts, document totals). Computed amounts
+     * already carry exactly 2; only the caller's BT-111 is rounded here, half-up.
      */
-    private function formatAmount(float $amount): string
+    private function formatAmount(BigDecimal $amount): string
     {
-        return number_format($amount, 2, '.', '');
+        return (string) $amount->toScale(2, RoundingMode::HalfUp);
+    }
+
+    /**
+     * Read a caller's float at the precision formatQuantity() files (QUANTITY_PRECISION).
+     *
+     * All amount arithmetic is exact decimal on these values. Float products and sums
+     * misplace half-cent ties (3 x 1.005 = 3.0149999...), which PHP 8.4+ round() no
+     * longer hides.
+     */
+    private function decimal(float $value): BigDecimal
+    {
+        return BigDecimal::of(number_format($value, self::QUANTITY_PRECISION, '.', ''));
     }
 
     /**

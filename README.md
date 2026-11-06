@@ -15,7 +15,8 @@ A Laravel package for integrating with Romania's ANAF e-Factura (electronic invo
 ## Requirements
 
 - PHP 8.4+
-- Laravel 11.0+
+- Laravel 12 (laravel/framework 12.27.1 or later) or Laravel 13, with brick/math 0.14.2–0.19
+  (see [CHANGELOG.md](CHANGELOG.md))
 - Valid ANAF OAuth credentials
 
 ## Installation
@@ -883,6 +884,15 @@ $invoice->getTotalVat();          // Sum of all per-line taxAmount values
 $invoice->getTotalIncludingVatBeforeRounding(); // Net plus VAT, before payable rounding
 $invoice->getTotalIncludingVat();               // Amount payable, including optional rounding
 ```
+
+**Money is exact decimal.** The SDK reads `quantity`, `unitPrice`, `taxAmount` and `taxAmountRon`
+at 6 decimals (the precision it files quantities and prices with), then computes every amount
+in decimal arithmetic: each line net is rounded half-up once, and each
+VAT group's tax sum is rounded half-up once. So `3 × 1.005` files `3.02`, and per-line taxes of
+`1285.8489 + 130.7061` file a group VAT of `1416.56`; float arithmetic gave `3.01` and `1416.55`
+on PHP 8.4+. The helpers above return the same amounts as floats. An input with more than 6
+decimals is read at 6: a quantity of `1/3` files as `0.333333`, so `× 30000.00` files `9999.99`.
+See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 #### Why `taxAmount` is Required (Breaking Change in v2.0)
 

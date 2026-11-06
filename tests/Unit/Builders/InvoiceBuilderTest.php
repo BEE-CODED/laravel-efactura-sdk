@@ -10,7 +10,11 @@ use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use Brick\Math\BigDecimal;
+use Brick\Math\RoundingMode;
 use Carbon\Carbon;
+use Random\Engine\Mt19937;
+use Random\Randomizer;
 
 /**
  * Query generated UBL XML with XPath.
@@ -1572,13 +1576,17 @@ describe('BT-111 VAT total in the RON accounting currency', function () {
     });
 
     // BR-DEC-RO-15 (message tag [BR-RO-Z2]): BT-111 allows at most 2 decimals.
-    it('rounds the RON tax amount to 2 decimals (BR-DEC-RO-15)', function () {
-        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => 944.3049]);
+    it('rounds the RON tax amount to 2 decimals (BR-DEC-RO-15)', function (float $taxAmountRon, string $filed) {
+        $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => $taxAmountRon]);
 
         $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
 
-        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='RON']"))->toBe('944.30');
-    });
+        expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='RON']"))->toBe($filed);
+    })->with([
+        'sub-cent remainder' => [944.3049, '944.30'],
+        // Read at 6 decimals as 3.015000 and rounded half-up; the float 3.0149999... filed 3.01.
+        'computed half-cent tie' => [3 * 1.005, '3.02'],
+    ]);
 
     // A credit note sign-flips its line tax amounts, so BT-111 is supplied in the
     // same positive sense as the lines and flipped alongside them. Filing +945 RON
@@ -2150,4 +2158,210 @@ describe('explicit reverse-charge UBL', function () {
         expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))
             ->toThrow(ValidationException::class, 'exactly zero taxAmountRon');
     })->with([false, true])->with([0.000001, -0.000001, 1.0, INF, NAN]);
+});
+
+/**
+ * Lines as a host that freezes exact decimals hands them over: floats of exact decimal
+ * strings, with the raw per-line tax at 6 decimals. Alongside
+ * the DTOs, returns what the same strings give in exact decimal arithmetic: each line net rounded
+ * half-up once, each VAT group's raw tax summed and rounded half-up once.
+ *
+ * @param  list<array{string, string, string}>  $specs  [quantity, unit price, VAT rate]
+ * @return array{lines: list<InvoiceLineData>, nets: list<string>, groups: array<string, array{base: string, tax: string}>, net: string, tax: string, payable: string}
+ */
+function exactDecimalCase(array $specs): array
+{
+    $lines = $nets = $bases = $taxes = [];
+    $net = BigDecimal::zero();
+    foreach ($specs as $index => [$quantity, $price, $rate]) {
+        $lineNet = BigDecimal::of($quantity)->multipliedBy($price)->toScale(2, RoundingMode::HalfUp);
+        $rawTax = $lineNet->multipliedBy($rate)->multipliedBy('0.01');
+        $lines[] = new InvoiceLineData('Line '.($index + 1), (float) $quantity, (float) $price, (float) (string) $rawTax, taxPercent: (float) $rate);
+        $nets[] = (string) $lineNet;
+        $bases[$rate] = ($bases[$rate] ?? BigDecimal::zero())->plus($lineNet);
+        $taxes[$rate] = ($taxes[$rate] ?? BigDecimal::zero())->plus($rawTax);
+        $net = $net->plus($lineNet);
+    }
+    $groups = [];
+    $tax = BigDecimal::zero();
+    foreach ($taxes as $rate => $raw) {
+        $groupTax = $raw->toScale(2, RoundingMode::HalfUp);
+        $groups[number_format((float) $rate, 2, '.', '')] = ['base' => (string) $bases[$rate], 'tax' => (string) $groupTax];
+        $tax = $tax->plus($groupTax);
+    }
+
+    return ['lines' => $lines, 'nets' => $nets, 'groups' => $groups, 'net' => (string) $net, 'tax' => (string) $tax, 'payable' => (string) $net->plus($tax)];
+}
+
+/**
+ * Compare every amount the XML files with the exact reference (negated for a credit note).
+ *
+ * @param  array{nets: list<string>, groups: array<string, array{base: string, tax: string}>, net: string, tax: string, payable: string}  $case
+ * @return list<string> one entry per amount that differs
+ */
+function exactDecimalMismatches(string $xml, array $case, InvoiceTypeCode $type): array
+{
+    $credit = $type === InvoiceTypeCode::CreditNote;
+    $filed = fn (string $amount): string => $credit ? (string) BigDecimal::of($amount)->negated() : $amount;
+    $expected = [
+        '/*/cac:LegalMonetaryTotal/cbc:LineExtensionAmount' => $filed($case['net']),
+        '/*/cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount' => $filed($case['net']),
+        '/*/cac:TaxTotal/cbc:TaxAmount' => $filed($case['tax']),
+        '/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount' => $filed($case['payable']),
+        '/*/cac:LegalMonetaryTotal/cbc:PayableAmount' => $filed($case['payable']),
+    ];
+    foreach ($case['nets'] as $index => $net) {
+        $expected['/*/cac:'.($credit ? 'CreditNoteLine' : 'InvoiceLine').'['.($index + 1).']/cbc:LineExtensionAmount'] = $filed($net);
+    }
+    foreach ($case['groups'] as $percent => $group) {
+        $subtotal = '/*/cac:TaxTotal/cac:TaxSubtotal[cac:TaxCategory/cbc:Percent="'.$percent.'"]';
+        $expected[$subtotal.'/cbc:TaxableAmount'] = $filed($group['base']);
+        $expected[$subtotal.'/cbc:TaxAmount'] = $filed($group['tax']);
+    }
+    $mismatches = [];
+    foreach ($expected as $query => $amount) {
+        $actual = ublText($xml, $query);
+        if ($actual !== $amount) {
+            $mismatches[] = "{$query}: XML {$actual}, exact {$amount}";
+        }
+    }
+
+    return $mismatches;
+}
+
+/**
+ * PHP 8.4 removed round()'s "pre-rounding", so a float product or sum that should be a half-cent
+ * tie (3 x 1.005 = 3.0149999...) rounded down. Amounts are exact decimals: inputs are read at the
+ * 6 decimals the XML files, and each amount is rounded half-up exactly once.
+ */
+describe('exact decimal amounts', function () {
+    it('files a half-cent line net rounded up: 3 x 1.005 at 21%', function () {
+        $case = exactDecimalCase([['3', '1.005', '21']]);
+        $invoice = createTestInvoiceForBuilder($case['lines']);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect([$case['net'], $case['tax'], $case['payable']])->toBe(['3.02', '0.63', '3.65'])
+            ->and(exactDecimalMismatches($xml, $case, InvoiceTypeCode::CommercialInvoice))->toBe([])
+            ->and($case['lines'][0]->getLineTotal())->toBe(3.02)
+            ->and($case['lines'][0]->getLineTotalWithTax())->toBe(3.65)
+            ->and($invoice->getTotalExcludingVat())->toBe(3.02)
+            ->and($invoice->getTotalIncludingVat())->toBe(3.65);
+    });
+
+    it('files a half-cent VAT group sum rounded up: 1285.8489 + 130.7061 at 21%', function () {
+        $case = exactDecimalCase([['1', '6123.09', '21'], ['1', '622.41', '21']]);
+        $invoice = createTestInvoiceForBuilder($case['lines']);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect([$case['net'], $case['tax'], $case['payable']])->toBe(['6745.50', '1416.56', '8162.06'])
+            ->and(exactDecimalMismatches($xml, $case, InvoiceTypeCode::CommercialInvoice))->toBe([])
+            ->and($invoice->getTotalVat())->toBe(1416.56)
+            ->and($invoice->getTotalIncludingVatBeforeRounding())->toBe(8162.06)
+            ->and($invoice->getTotalIncludingVat())->toBe(8162.06);
+    });
+
+    it('rounds ties away from zero for negative lines and credit notes across rates', function (InvoiceTypeCode $type, string $minus) {
+        $case = exactDecimalCase([
+            [$minus.'3', '1.005', '9'],      // line net 3.015
+            [$minus.'1', '6123.09', '21'],   // with the next line, VAT sum 1416.555
+            [$minus.'1', '622.41', '21'],
+            [$minus.'0.75', '0.30', '0'],    // zero-rated line net 0.225
+        ]);
+        $invoice = createTestInvoiceForBuilder($case['lines'], ['invoiceTypeCode' => $type]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        expect([$case['net'], $case['tax'], $case['payable']])->toBe([$minus.'6748.75', $minus.'1416.83', $minus.'8165.58'])
+            ->and(exactDecimalMismatches($xml, $case, $type))->toBe([])
+            ->and($invoice->getTotalExcludingVat())->toBe((float) $case['net'])
+            ->and($invoice->getTotalVat())->toBe((float) $case['tax'])
+            ->and($invoice->getTotalIncludingVat())->toBe((float) $case['payable']);
+    })->with([
+        '380' => [InvoiceTypeCode::CommercialInvoice, ''],
+        'negative 380' => [InvoiceTypeCode::CommercialInvoice, '-'],
+        '381' => [InvoiceTypeCode::CreditNote, '-'],
+        'positive 381' => [InvoiceTypeCode::CreditNote, ''],
+    ]);
+
+    it('sums large documents exactly, in the XML and in every helper', function () {
+        $case = exactDecimalCase(array_fill(0, 200, ['1', '999999999999.99', '21']));
+        $invoice = createTestInvoiceForBuilder($case['lines']);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        // Float accumulation filed a net of 199999999999998.25, and float helpers summed
+        // net + VAT to 241999999999997.56.
+        expect([$case['net'], $case['tax'], $case['payable']])->toBe(['199999999999998.00', '41999999999999.58', '241999999999997.58'])
+            ->and(exactDecimalMismatches($xml, $case, InvoiceTypeCode::CommercialInvoice))->toBe([])
+            ->and($invoice->getTotalExcludingVat())->toBe((float) $case['net'])
+            ->and($invoice->getTotalVat())->toBe((float) $case['tax'])
+            ->and($invoice->getTotalIncludingVatBeforeRounding())->toBe((float) ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:TaxInclusiveAmount'))
+            ->and($invoice->getTotalIncludingVat())->toBe((float) ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableAmount'));
+
+        // One line: 39999999999999.97 + VAT 8399999999999.99; the float sum gave 48399999999999.97.
+        $line = exactDecimalCase([['1', '39999999999999.97', '21']])['lines'][0];
+        expect($line->getLineTotalWithTax())->toBe((float) '48399999999999.96');
+    });
+
+    it('files every Percent of a VAT group alike, as rates are not read as money', function () {
+        $invoice = createTestInvoiceForBuilder([
+            new InvoiceLineData('Rate', 1, 100.00, 19.00, taxPercent: 19.0),
+            new InvoiceLineData('Noisy rate', 1, 100.00, 19.00, taxPercent: 19.0049999),
+        ]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        $percents = [];
+        foreach (ublXpath($xml, '//cbc:Percent') as $node) {
+            $percents[] = $node->textContent;
+        }
+        // One VAT group (19.0049999 rounds to the 19% key) and two lines, all at 19.00.
+        expect($percents)->toBe(['19.00', '19.00', '19.00']);
+    });
+
+    it('agrees with a decimal reference across a seeded sweep of fractional inputs', function () {
+        $random = new Randomizer(new Mt19937(20261106));
+        $rates = ['21', '19', '11', '9', '5', '0'];
+        $mismatches = [];
+        for ($document = 1; $document <= 300; $document++) {
+            $type = $random->getInt(0, 3) === 0 ? InvoiceTypeCode::CreditNote : InvoiceTypeCode::CommercialInvoice;
+            $minus = $random->getInt(0, 1) === 0 ? '' : '-';
+            $specs = [];
+            for ($count = $random->getInt(1, 4); $count > 0; $count--) {
+                $quarters = $random->getInt(1, 40);
+                $units = $random->getInt(1, 99999);
+                $specs[] = [
+                    $minus.($random->getInt(0, 1) === 0 ? (string) $random->getInt(1, 20) : sprintf('%d.%02d', intdiv($quarters, 4), $quarters % 4 * 25)),
+                    $random->getInt(0, 1) === 0 ? sprintf('%d.%02d', intdiv($units, 100), $units % 100) : sprintf('%d.%03d', intdiv($units, 1000), $units % 1000),
+                    $rates[$random->getInt(0, count($rates) - 1)],
+                ];
+            }
+            $case = exactDecimalCase($specs);
+            $invoice = createTestInvoiceForBuilder($case['lines'], ['invoiceTypeCode' => $type]);
+            $found = exactDecimalMismatches((new InvoiceBuilder)->buildInvoiceXml($invoice), $case, $type);
+            foreach (['getTotalExcludingVat' => 'net', 'getTotalVat' => 'tax', 'getTotalIncludingVat' => 'payable'] as $helper => $field) {
+                if ((float) $case[$field] !== $invoice->{$helper}()) {
+                    $found[] = "{$helper}(): ".$invoice->{$helper}().", exact {$case[$field]}";
+                }
+            }
+            foreach ($found as $mismatch) {
+                $mismatches[] = "#{$document} {$type->value} ".json_encode($specs).": {$mismatch}";
+            }
+        }
+
+        expect($mismatches)->toBe([]);
+    });
+
+    it('reads inputs at the 6 decimals it files', function () {
+        $third = new InvoiceLineData('Third', 1 / 3, 30000.00, 0.0);
+        $tax = new InvoiceLineData('Tax', 1, 10.00, 0.0049999999, taxPercent: 19);
+        $invoice = createTestInvoiceForBuilder([$third, $tax]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
+
+        // 0.333333 x 30000.00 = 9999.99 reconciles with the filed quantity; the float product was 10000.00.
+        expect(ublText($xml, '/*/cac:InvoiceLine[1]/cbc:InvoicedQuantity'))->toBe('0.333333')
+            ->and(ublText($xml, '/*/cac:InvoiceLine[1]/cbc:LineExtensionAmount'))->toBe('9999.99')
+            ->and($third->getLineTotal())->toBe(9999.99)
+            ->and(ublText($xml, '/*/cac:TaxTotal/cac:TaxSubtotal[cac:TaxCategory/cbc:Percent="19.00"]/cbc:TaxAmount'))->toBe('0.01')
+            ->and($tax->getTaxAmount())->toBe(0.01)
+            ->and($invoice->getTotalExcludingVat())->toBe(10009.99)
+            ->and($invoice->getTotalVat())->toBe(0.01);
+    });
 });

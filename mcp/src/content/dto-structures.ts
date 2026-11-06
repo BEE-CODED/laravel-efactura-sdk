@@ -105,6 +105,10 @@ Returns \`$invoiceTypeCode ?? InvoiceTypeCode::CommercialInvoice\`. Use this acc
 > legal document by a bani. They now reproduce the filed totals exactly, and are pinned against
 > generated XML by tests.
 
+Money is exact decimal: line inputs are read at 6 decimals, every sum is a decimal sum, and each
+line net and each group's tax is rounded half-up once (\`3 × 1.005\` → \`3.02\`). The helpers return
+those amounts as floats.
+
 ### \`getTotalExcludingVat(): float\`
 Sums the per-line **rounded** net amounts (BT-106), matching \`cac:LegalMonetaryTotal\` — every line
 files its own \`cbc:LineExtensionAmount\` capped at 2 decimals, and the document total adds those up.
@@ -275,13 +279,20 @@ Amount fields — \`cbc:LineExtensionAmount\`, all VAT amounts, and the document
 exactly 2 decimals. Beyond 6 decimals the value is truncated by rounding, which also keeps binary
 floating-point noise out of the XML (a quantity of \`1/3\` files as \`0.333333\`, not seventeen digits).
 
+Money is exact decimal. \`quantity\`, \`unitPrice\` and \`taxAmount\` are read at those 6 decimals and
+multiplied and summed as decimals; each line net and each VAT group's tax is rounded half-up once.
+\`3 × 1.005\` files \`3.02\` (float arithmetic gave \`3.01\` on PHP 8.4+), and the line net always
+reconciles with the filed quantity and price: \`1/3 × 30000.00\` files \`0.333333\` and \`9999.99\`.
+
 ## Public Methods
 
 ### \`getLineTotal(): float\`
-Returns \`round(quantity * unitPrice, 2)\`.
+Returns \`quantity × unitPrice\` as filed: both read at 6 decimals, multiplied exactly, rounded
+half-up to 2 decimals.
 
 ### \`getTaxAmount(): float\`
-Returns \`round(taxAmount, 2)\`. This is the pre-computed value passed at construction.
+Returns \`taxAmount\` read at 6 decimals and rounded half-up to 2 decimals. This is the pre-computed
+value passed at construction.
 
 ### \`getRawLineTotal(): float\`
 Returns unrounded \`quantity * unitPrice\`. **Not** what the invoice files — \`cbc:LineExtensionAmount\`
@@ -290,7 +301,7 @@ document totals are built from. Summing this across lines and rounding once at t
 reproduce the filed total.
 
 ### \`getLineTotalWithTax(): float\`
-Returns \`round(getLineTotal() + getTaxAmount(), 2)\`.
+Returns \`getLineTotal() + getTaxAmount()\`, summed exactly.
 
 ## Critical Notes
 
