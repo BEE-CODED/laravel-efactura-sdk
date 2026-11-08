@@ -305,6 +305,7 @@ Status values for upload processing, corresponding to the \`stare\` (state) fiel
 | \`Ok\` | \`'ok'\` | Processing completed successfully |
 | \`Failed\` | \`'nok'\` | Processing failed |
 | \`InProgress\` | \`'in prelucrare'\` | Currently being processed by ANAF |
+| \`NotProcessed\` | \`'XML cu erori nepreluat de sistem'\` | Final: ANAF did not take the file in. No download id (no response archive) |
 
 Note: \`InProgress\` has a **multi-word** backed value with a space: \`'in prelucrare'\`.
 
@@ -319,6 +320,7 @@ match ($status) {
     UploadStatusValue::Ok         => $this->markAsAccepted($uploadId),
     UploadStatusValue::Failed     => $this->markAsFailed($uploadId),
     UploadStatusValue::InProgress => $this->scheduleRetry($uploadId),
+    UploadStatusValue::NotProcessed => $this->markAsNotTakenIn($uploadId), // final, nothing to download
 };
 \`\`\`
 `,

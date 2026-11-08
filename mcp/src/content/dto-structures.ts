@@ -743,8 +743,8 @@ Response from a status check operation for a previously uploaded document. Exten
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| \`$stare\` | \`?UploadStatusValue\` | no | \`null\` | Processing status (ok, nok, in prelucrare) |
-| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID — present for both \`ok\` and \`nok\` responses; use to download the result ZIP |
+| \`$stare\` | \`?UploadStatusValue\` | no | \`null\` | Processing status (ok, nok, in prelucrare, XML cu erori nepreluat de sistem) |
+| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID — present for both \`ok\` and \`nok\` responses (absent for \`XML cu erori nepreluat de sistem\`); use to download the result ZIP |
 | \`$errors\` | \`string[]\|null\` | no | \`null\` | Error messages |
 
 ## Static Factory Methods
@@ -760,7 +760,10 @@ Expected keys: \`stare\`, \`id_descarcare\`, \`Errors\`.
 Returns \`true\` when \`$stare === UploadStatusValue::Ok\` (processing complete and successful).
 
 ### \`isFailed(): bool\`
-Returns \`true\` when \`$stare === UploadStatusValue::Failed\`.
+Returns \`true\` when \`$stare === UploadStatusValue::Failed\` (\`nok\`: ANAF rejected the document and produced a response archive).
+
+### \`isNotProcessed(): bool\`
+Returns \`true\` when \`$stare === UploadStatusValue::NotProcessed\` (\`XML cu erori nepreluat de sistem\`: ANAF did not take the file in). A final answer, but not \`isFailed()\`: there is no \`$idDescarcare\` and nothing to download.
 
 ### \`isInProgress(): bool\`
 Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being processed by ANAF).
@@ -768,7 +771,7 @@ Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being 
 ## Usage Notes
 
 - When \`isInProgress()\` is true, wait and retry the status check (ANAF typically processes within minutes).
-- \`$idDescarcare\` is available for both \`ok\` and \`nok\` results — for \`nok\` it points to an error report ZIP.
+- \`$idDescarcare\` is available for both \`ok\` and \`nok\` results — for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
 
 ## Example
 
@@ -779,6 +782,8 @@ if ($status->isReady()) {
     $downloadId = $status->idDescarcare;
 } elseif ($status->isFailed()) {
     // download error report using $status->idDescarcare
+} elseif ($status->isNotProcessed()) {
+    // final: ANAF did not take the file in — no download id; correct and resubmit
 } elseif ($status->isInProgress()) {
     // schedule retry
 }

@@ -457,6 +457,8 @@ if ($status->isReady()) {
 } elseif ($status->isFailed()) {
     // Processing failed
     $errors = $status->errors;
+} elseif ($status->isNotProcessed()) {
+    // Final: ANAF did not take the file in ("XML cu erori nepreluat de sistem"); no download id
 }
 ```
 

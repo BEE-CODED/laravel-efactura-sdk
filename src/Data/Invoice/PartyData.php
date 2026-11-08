@@ -44,10 +44,12 @@ class PartyData extends Data
      * Whether the party is registered for VAT. REQUIRED — deliberately no default.
      *
      * This is a declaration about the party's tax status, not a preference, and
-     * it decides what gets filed: InvoiceBuilder::getTaxCategory() puts EVERY
-     * line under VAT category "O" (Not subject to VAT) when this is false, and
-     * omits the party's VAT identifier (BT-31 for the seller, BT-48 for the
-     * buyer). A default would let a caller who simply forgot the flag file a
+     * it decides what gets filed: on the supplier, InvoiceLineData::getTaxCategory()
+     * resolves EVERY line to VAT category "O" (Not subject to VAT) when this is
+     * false — only the supplier's flag decides the category — and rejects an
+     * explicit line category incompatible with that (reverse-charge AE included).
+     * On either party, false omits its VAT identifier (BT-31 for the seller,
+     * BT-48 for the buyer). A default would let a caller who simply forgot the flag file a
      * VAT-registered company as a non-payer — and because that document is
      * internally consistent, ANAF accepts it. There is no error to notice.
      *

@@ -21645,6 +21645,7 @@ Status values for upload processing, corresponding to the \`stare\` (state) fiel
 | \`Ok\` | \`'ok'\` | Processing completed successfully |
 | \`Failed\` | \`'nok'\` | Processing failed |
 | \`InProgress\` | \`'in prelucrare'\` | Currently being processed by ANAF |
+| \`NotProcessed\` | \`'XML cu erori nepreluat de sistem'\` | Final: ANAF did not take the file in. No download id (no response archive) |
 
 Note: \`InProgress\` has a **multi-word** backed value with a space: \`'in prelucrare'\`.
 
@@ -21659,6 +21660,7 @@ match ($status) {
     UploadStatusValue::Ok         => $this->markAsAccepted($uploadId),
     UploadStatusValue::Failed     => $this->markAsFailed($uploadId),
     UploadStatusValue::InProgress => $this->scheduleRetry($uploadId),
+    UploadStatusValue::NotProcessed => $this->markAsNotTakenIn($uploadId), // final, nothing to download
 };
 \`\`\`
 `,
@@ -22436,8 +22438,8 @@ Response from a status check operation for a previously uploaded document. Exten
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| \`$stare\` | \`?UploadStatusValue\` | no | \`null\` | Processing status (ok, nok, in prelucrare) |
-| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID \u2014 present for both \`ok\` and \`nok\` responses; use to download the result ZIP |
+| \`$stare\` | \`?UploadStatusValue\` | no | \`null\` | Processing status (ok, nok, in prelucrare, XML cu erori nepreluat de sistem) |
+| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID \u2014 present for both \`ok\` and \`nok\` responses (absent for \`XML cu erori nepreluat de sistem\`); use to download the result ZIP |
 | \`$errors\` | \`string[]|null\` | no | \`null\` | Error messages |
 
 ## Static Factory Methods
@@ -22453,7 +22455,10 @@ Expected keys: \`stare\`, \`id_descarcare\`, \`Errors\`.
 Returns \`true\` when \`$stare === UploadStatusValue::Ok\` (processing complete and successful).
 
 ### \`isFailed(): bool\`
-Returns \`true\` when \`$stare === UploadStatusValue::Failed\`.
+Returns \`true\` when \`$stare === UploadStatusValue::Failed\` (\`nok\`: ANAF rejected the document and produced a response archive).
+
+### \`isNotProcessed(): bool\`
+Returns \`true\` when \`$stare === UploadStatusValue::NotProcessed\` (\`XML cu erori nepreluat de sistem\`: ANAF did not take the file in). A final answer, but not \`isFailed()\`: there is no \`$idDescarcare\` and nothing to download.
 
 ### \`isInProgress(): bool\`
 Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being processed by ANAF).
@@ -22461,7 +22466,7 @@ Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being 
 ## Usage Notes
 
 - When \`isInProgress()\` is true, wait and retry the status check (ANAF typically processes within minutes).
-- \`$idDescarcare\` is available for both \`ok\` and \`nok\` results \u2014 for \`nok\` it points to an error report ZIP.
+- \`$idDescarcare\` is available for both \`ok\` and \`nok\` results \u2014 for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
 
 ## Example
 
@@ -22472,6 +22477,8 @@ if ($status->isReady()) {
     $downloadId = $status->idDescarcare;
 } elseif ($status->isFailed()) {
     // download error report using $status->idDescarcare
+} elseif ($status->isNotProcessed()) {
+    // final: ANAF did not take the file in \u2014 no download id; correct and resubmit
 } elseif ($status->isInProgress()) {
     // schedule retry
 }
@@ -23288,14 +23295,25 @@ for ($i = 0; $i < $maxAttempts; $i++) {
     }
 
     if ($status->isFailed()) {                 // $status->stare === UploadStatusValue::Failed
-        // Invoice rejected \u2014 check $status->errors
+        // Invoice rejected \u2014 check $status->errors; $status->idDescarcare is the error report
         break;
     }
-    // $status->stare === UploadStatusValue::InProgress ('in prelucrare') \u2014 keep polling
+
+    if ($status->isNotProcessed()) {           // $status->stare === UploadStatusValue::NotProcessed
+        // Final: ANAF did not take the file in \u2014 no download id; correct and resubmit
+        break;
+    }
+    if ($status->hasAnafError()) {            // null stare with $status->errors: ANAF told us nothing about this upload
+        // Park it for a human: do not complete it, fail it or keep polling
+        break;
+    }
+    // Otherwise 'in prelucrare' (isInProgress()) \u2014 keep polling.
 }
 \`\`\`
 
 ## Step 6: Download Document
+
+Only when Step 5 ended with a download id (\`$downloadId !== null\`):
 
 \`\`\`php
 $download = $client->downloadDocument($downloadId);
@@ -24886,7 +24904,7 @@ so RON-only apps need no change).
 
 - **Required** when \`currency !== 'RON'\`
 - **Rejected** when \`currency === 'RON'\`
-- Must agree in nonzero sign with \`getTotalVat()\`; nonzero document VAT may round to zero RON, while zero document VAT cannot produce nonzero RON VAT
+- Must agree in nonzero sign with \`getTotalVat()\`; either amount may round to zero independently, and only opposite nonzero signs are rejected
 
 **Symptom (omitted on a non-RON invoice):**
 \`\`\`

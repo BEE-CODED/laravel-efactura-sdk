@@ -239,14 +239,25 @@ for ($i = 0; $i < $maxAttempts; $i++) {
     }
 
     if ($status->isFailed()) {                 // $status->stare === UploadStatusValue::Failed
-        // Invoice rejected — check $status->errors
+        // Invoice rejected — check $status->errors; $status->idDescarcare is the error report
         break;
     }
-    // $status->stare === UploadStatusValue::InProgress ('in prelucrare') — keep polling
+
+    if ($status->isNotProcessed()) {           // $status->stare === UploadStatusValue::NotProcessed
+        // Final: ANAF did not take the file in — no download id; correct and resubmit
+        break;
+    }
+    if ($status->hasAnafError()) {            // null stare with $status->errors: ANAF told us nothing about this upload
+        // Park it for a human: do not complete it, fail it or keep polling
+        break;
+    }
+    // Otherwise 'in prelucrare' (isInProgress()) — keep polling.
 }
 \`\`\`
 
 ## Step 6: Download Document
+
+Only when Step 5 ended with a download id (\`$downloadId !== null\`):
 
 \`\`\`php
 $download = $client->downloadDocument($downloadId);
@@ -1845,7 +1856,7 @@ so RON-only apps need no change).
 
 - **Required** when \`currency !== 'RON'\`
 - **Rejected** when \`currency === 'RON'\`
-- Must agree in nonzero sign with \`getTotalVat()\`; nonzero document VAT may round to zero RON, while zero document VAT cannot produce nonzero RON VAT
+- Must agree in nonzero sign with \`getTotalVat()\`; either amount may round to zero independently, and only opposite nonzero signs are rejected
 
 **Symptom (omitted on a non-RON invoice):**
 \`\`\`
