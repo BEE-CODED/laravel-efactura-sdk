@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Response;
 
 use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Attributes\MapInputName;
 use Spatie\LaravelData\Data;
 use Spatie\LaravelData\Mappers\SnakeCaseMapper;
@@ -37,6 +38,11 @@ class UploadResponseData extends Data
     /**
      * Create from ANAF API response.
      *
+     * Values are normalised, never taken verbatim: an int index or dateResponse
+     * becomes a string (a float or an array becomes null), and Errors may be a
+     * string, an {errorMessage} object or a list of either -- empty messages are
+     * dropped and an empty list is null.
+     *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
@@ -50,9 +56,9 @@ class UploadResponseData extends Data
 
         return new self(
             executionStatus: $executionStatus,
-            dateResponse: $response['dateResponse'] ?? null,
-            indexIncarcare: $response['index_incarcare'] ?? null,
-            errors: $response['Errors'] ?? null,
+            dateResponse: AnafValue::id($response['dateResponse'] ?? null),
+            indexIncarcare: AnafValue::id($response['index_incarcare'] ?? null),
+            errors: AnafValue::errors($response['Errors'] ?? null),
         );
     }
 

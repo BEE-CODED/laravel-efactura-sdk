@@ -102,7 +102,7 @@ interface EFacturaClientInterface
      *
      * @throws ValidationException When parameters are invalid
      * @throws AuthenticationException When authentication fails
-     * @throws ApiException When API call fails
+     * @throws ApiException When API call fails, or the 2xx body is not a JSON object
      */
     public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData;
 
@@ -116,7 +116,7 @@ interface EFacturaClientInterface
      *
      * @throws ValidationException When parameters are invalid
      * @throws AuthenticationException When authentication fails
-     * @throws ApiException When API call fails
+     * @throws ApiException When API call fails, or the 2xx body is not a JSON object
      */
     public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData;
 

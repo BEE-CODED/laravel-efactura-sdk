@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Response;
 
 use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Data;
 
 /**
@@ -17,7 +18,12 @@ class StatusResponseData extends Data
         /** Processing status (ok, nok, in prelucrare, XML cu erori nepreluat de sistem) */
         public ?UploadStatusValue $stare = null,
 
-        /** Download ID (present for both ok and nok responses) */
+        /**
+         * Download ID. Normally present for ok and nok, but not guaranteed: an XML
+         * <header> carrying only <Errors/> (unknown upload id, "Nu aveti dreptul")
+         * maps to nok with errors and NO download id -- that nok is not a verdict
+         * on the document, so callers should not treat it as a validation failure.
+         */
         public ?string $idDescarcare = null,
 
         /** Error messages */
@@ -40,26 +46,24 @@ class StatusResponseData extends Data
      * mark a possibly-filed invoice as validation-failed, so callers must keep
      * treating it as indeterminate. See hasAnafError().
      *
+     * Values are normalised, never taken verbatim: an int id_descarcare becomes a
+     * string, a stare that is not a string (or not a known status) is null, and
+     * Errors / eroare may be a string, an {errorMessage} object or a list of
+     * either -- empty messages are dropped and an empty list is null.
+     *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
     {
-        $stare = null;
-        if (isset($response['stare'])) {
-            $stare = UploadStatusValue::tryFrom($response['stare']);
-        }
-
-        $errors = $response['Errors'] ?? null;
-
-        // Only when ANAF sent no structured Errors list: a real one always wins.
-        if ($errors === null && isset($response['eroare']) && is_string($response['eroare'])) {
-            $errors = [$response['eroare']];
-        }
+        $stare = $response['stare'] ?? null;
 
         return new self(
-            stare: $stare,
-            idDescarcare: $response['id_descarcare'] ?? null,
-            errors: $errors,
+            // A non-string stare (e.g. a number) is not a status ANAF defines: unknown, so null.
+            stare: is_string($stare) ? UploadStatusValue::tryFrom($stare) : null,
+            idDescarcare: AnafValue::id($response['id_descarcare'] ?? null),
+            // Only when ANAF sent no usable Errors: a real one always wins over eroare.
+            errors: AnafValue::errors($response['Errors'] ?? null)
+                ?? AnafValue::errors($response['eroare'] ?? null),
         );
     }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Closure;
 use Exception;
 use Illuminate\Http\Client\ConnectionException;
@@ -469,9 +470,21 @@ abstract class BaseApiClient implements HasLogger
      */
     protected function extractErrorMessage(Response $response): string
     {
-        return $response->json('message')
-            ?? $response->json('eroare')
-            ?? $response->json('error')
+        return AnafValue::text($response->json('message'))
+            ?? AnafValue::text($response->json('eroare'))
+            ?? AnafValue::text($response->json('error'))
             ?? 'No error message in API response';
+    }
+
+    /**
+     * Decode an ANAF JSON body, keeping integers too big for PHP as strings.
+     *
+     * Response::json() takes no decode flags, and without JSON_BIGINT_AS_STRING a
+     * big index or id becomes a float that has already lost digits. Callers must
+     * check the result is an array: ANAF can answer 2xx with a bare scalar.
+     */
+    protected static function decodeJson(Response $response): mixed
+    {
+        return json_decode($response->body(), true, 512, JSON_BIGINT_AS_STRING);
     }
 }

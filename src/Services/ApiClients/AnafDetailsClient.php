@@ -10,6 +10,7 @@ use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use BeeCoded\EFacturaSdk\Support\DateHelper;
 use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use Illuminate\Support\Facades\Log;
@@ -201,12 +202,12 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             }
 
             $response = $this->callRaw('', 'post', $jsonBody, 'application/json');
-            $data = $response->json();
+            $data = self::decodeJson($response);
 
-            // Use strict null check to distinguish between:
-            // - null: JSON parsing failed (invalid response)
+            // Distinguish between:
+            // - not an array: JSON parsing failed, or a bare scalar (invalid response)
             // - []: Valid but unexpected empty response (handled by transformResponse)
-            if ($data === null) {
+            if (! is_array($data)) {
                 return CompanyLookupResultData::failure(
                     'Invalid or malformed JSON response from ANAF API.',
                     $invalidCodes
@@ -227,7 +228,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             // queried CUIs exist. That is a documented "not found" response, not an
             // error — parse the preserved body and surface the notFound CUIs.
             if ($e->statusCode === 404 && $e->details !== null) {
-                $decoded = json_decode($e->details, true);
+                $decoded = json_decode($e->details, true, 512, JSON_BIGINT_AS_STRING);
                 if (is_array($decoded)
                     && (isset($decoded['found']) || isset($decoded['notFound']) || isset($decoded['notfound']))) {
                     $this->logger->info('ANAF API 404 with not-found body for batch request');
@@ -329,6 +330,12 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
         // Process found companies
         if (isset($response['found']) && is_array($response['found'])) {
             foreach ($response['found'] as $companyData) {
+                if (! is_array($companyData)) {
+                    $this->logger->warning('Skipping a found company entry that is not an object');
+
+                    continue;
+                }
+
                 try {
                     $companies[] = CompanyData::fromAnafResponse($companyData);
                 } catch (\Exception $e) {
@@ -346,10 +353,9 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
         $notFoundRaw = $response['notFound'] ?? $response['notfound'] ?? null;
         if (is_array($notFoundRaw)) {
             foreach ($notFoundRaw as $item) {
-                if (is_int($item) || (is_string($item) && ctype_digit($item))) {
-                    $notFound[] = (int) $item;
-                } elseif (is_array($item) && isset($item['cui'])) {
-                    $notFound[] = (int) $item['cui'];
+                $cui = AnafValue::int(is_array($item) ? ($item['cui'] ?? null) : $item);
+                if ($cui !== null) {
+                    $notFound[] = $cui;
                 }
             }
         }

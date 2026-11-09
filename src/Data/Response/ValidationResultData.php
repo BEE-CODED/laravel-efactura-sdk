@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Response;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Data;
 
 /**
@@ -35,10 +36,10 @@ class ValidationResultData extends Data
     public static function fromAnafResponse(array $response): self
     {
         return new self(
-            valid: (bool) ($response['valid'] ?? false),
-            details: $response['details'] ?? null,
-            info: $response['info'] ?? null,
-            errors: $response['Errors'] ?? null,
+            valid: AnafValue::flag($response['valid'] ?? null),
+            details: AnafValue::text($response['details'] ?? null),
+            info: AnafValue::text($response['info'] ?? null),
+            errors: AnafValue::errors($response['Errors'] ?? null),
         );
     }
 

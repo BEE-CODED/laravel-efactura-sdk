@@ -226,10 +226,11 @@ describe('MessageDetailsData', function () {
         expect($message->idSolicitare)->toBe('REQ-001');
     });
 
-    it('handles missing fields with empty strings', function () {
+    it('handles missing fields with empty strings and a null id', function () {
         $message = MessageDetailsData::fromAnafResponse([]);
 
-        expect($message->id)->toBe('');
+        // No id must never become '': two id-less messages would then share one key.
+        expect($message->id)->toBeNull();
         expect($message->cif)->toBe('');
         expect($message->dataCreare)->toBe('');
         expect($message->tip)->toBe('');

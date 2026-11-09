@@ -67,6 +67,7 @@ beforeEach(function () {
     $this->rateLimiter->shouldReceive('checkDownload')->andReturn(null)->byDefault();
     $this->rateLimiter->shouldReceive('checkSimpleList')->andReturn(null)->byDefault();
     $this->rateLimiter->shouldReceive('checkPaginatedList')->andReturn(null)->byDefault();
+    $this->rateLimiter->shouldReceive('ensureAvailable')->andReturn(null)->byDefault();
 
     app()->instance(AnafAuthenticatorInterface::class, $this->authenticator);
     app()->instance(RateLimiter::class, $this->rateLimiter);

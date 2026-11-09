@@ -238,8 +238,14 @@ for ($i = 0; $i < $maxAttempts; $i++) {
         break;
     }
 
-    if ($status->isFailed()) {                 // $status->stare === UploadStatusValue::Failed
+    if ($status->isFailed() && $status->idDescarcare !== null) { // $status->stare === UploadStatusValue::Failed
         // Invoice rejected — check $status->errors; $status->idDescarcare is the error report
+        break;
+    }
+
+    if ($status->isFailed()) {
+        // nok WITHOUT a download id: an XML <header> with only <Errors/> (unknown upload id,
+        // "Nu aveti dreptul"). No verdict on the document — park it for a human, like hasAnafError()
         break;
     }
 
@@ -1052,11 +1058,29 @@ class RateLimitExceededException extends EFacturaException
         public readonly int $remaining = 0,              // Remaining quota (always 0)
         public readonly int $retryAfterSeconds = 60,     // Seconds until quota resets
         ?\\Throwable $previous = null,
-        array $context = []
+        array $context = [],
+        public readonly ?RateLimitScope $scope = null,   // Which limit was hit (since 4.0)
     ) {}
     // HTTP code: 429
 }
 \`\`\`
+
+\`$scope\` (\`BeeCoded\\EFacturaSdk\\Enums\\RateLimitScope\`) names the limit that tripped. The SDK's
+\`RateLimiter\` always sets it; it is \`null\` only when other code throws the exception without one, and
+the new parameter is last, so existing positional constructor calls keep working.
+
+| \`$scope\` | Limit | Blocks |
+|---|---|---|
+| \`RateLimitScope::Global\` | \`global_per_minute\` | every e-Factura call, uploads included |
+| \`RateLimitScope::CompanyLookup\` | \`company_lookup_per_second\` | every company lookup |
+| \`RateLimitScope::RaspUpload\` | \`rasp_upload_per_day_cui\` | RASP uploads for that CUI |
+| \`RateLimitScope::Status\` | \`status_per_day_message\` (or \`_provider\`) | status reads for that upload index only |
+| \`RateLimitScope::SimpleList\` | \`simple_list_per_day_cui\` | simple lists for that CUI |
+| \`RateLimitScope::PaginatedList\` | \`paginated_list_per_day_cui\` | paginated lists for that CUI |
+| \`RateLimitScope::Download\` | \`download_per_day_message\` | downloads of that id only |
+
+A status-polling batch can therefore skip one upload on \`RateLimitScope::Status\` and keep polling the
+others, while \`RateLimitScope::Global\` (or a \`null\` scope) should stop the batch.
 
 **When thrown:**
 - Global rate limit (500/min by default) exceeded
@@ -1450,6 +1474,27 @@ where v2 exhausted its attempts and raised \`ApiException\`. With \`global_per_m
 
 Catch \`RateLimitExceededException\` **before** \`ApiException\` — the two are siblings under
 \`EFacturaException\`, not parent/child.
+
+## Which limit was hit (since 4.0)
+
+\`RateLimitExceededException::$scope\` is a \`?RateLimitScope\` naming the limit that tripped; its
+values match \`getRemainingQuota()\`'s type names. Per-message and per-CUI scopes only block calls for
+that message or CUI:
+
+\`\`\`php
+use BeeCoded\\EFacturaSdk\\Enums\\RateLimitScope;
+
+foreach ($pendingUploads as $upload) {
+    try {
+        $status = $client->getStatusMessage($upload->index);
+    } catch (RateLimitExceededException $e) {
+        if ($e->scope === RateLimitScope::Status) {
+            continue;   // this upload's daily status quota is spent; poll the others
+        }
+        throw $e;       // Global (or unknown): stop the batch
+    }
+}
+\`\`\`
 
 ## How RateLimiter Works
 

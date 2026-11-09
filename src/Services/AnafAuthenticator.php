@@ -8,6 +8,7 @@ use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Log;
@@ -279,6 +280,11 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
     {
         $data = $response->json();
 
+        // A bare scalar body is as unusable as a non-JSON one.
+        if (! is_array($data)) {
+            $data = null;
+        }
+
         // Check for HTTP errors first (takes precedence over JSON parsing issues)
         if ($response->failed()) {
             $errorMessage = $this->extractErrorMessage($data, $response->status());
@@ -311,7 +317,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         }
 
         // Validate required token fields
-        if (empty($data['access_token'])) {
+        if (! is_string($data['access_token'] ?? null) || $data['access_token'] === '') {
             Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
                 $errorPrefix.': Missing access token in response'
             );
@@ -321,7 +327,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             );
         }
 
-        if (empty($data['refresh_token'])) {
+        if (! is_string($data['refresh_token'] ?? null) || $data['refresh_token'] === '') {
             Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
                 $errorPrefix.': Missing refresh token in response'
             );
@@ -346,25 +352,16 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         }
 
         // OAuth 2.0 standard error response
-        if (isset($data['error'])) {
-            $message = $data['error'];
+        $error = AnafValue::text($data['error'] ?? null);
+        if ($error !== null) {
+            $description = AnafValue::text($data['error_description'] ?? null);
 
-            if (isset($data['error_description'])) {
-                $message .= ': '.$data['error_description'];
-            }
-
-            return $message;
+            return $description !== null ? "{$error}: {$description}" : $error;
         }
 
         // ANAF-specific error formats
-        if (isset($data['eroare'])) {
-            return $data['eroare'];
-        }
-
-        if (isset($data['mesaj'])) {
-            return $data['mesaj'];
-        }
-
-        return "HTTP {$statusCode} error";
+        return AnafValue::text($data['eroare'] ?? null)
+            ?? AnafValue::text($data['mesaj'] ?? null)
+            ?? "HTTP {$statusCode} error";
     }
 }

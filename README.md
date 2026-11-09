@@ -464,13 +464,30 @@ if ($status->isReady()) {
     // Document is ready for download
 } elseif ($status->isInProgress()) {
     // Still processing, check again later
-} elseif ($status->isFailed()) {
-    // Processing failed
+} elseif ($status->isFailed() && $status->idDescarcare !== null) {
+    // ANAF rejected the document; $status->idDescarcare is the error report
     $errors = $status->errors;
+} elseif ($status->isFailed() || $status->hasAnafError()) {
+    // No verdict on the document (see $status->errors): park it for a human, do not re-upload
 } elseif ($status->isNotProcessed()) {
     // Final: ANAF did not take the file in ("XML cu erori nepreluat de sistem"); no download id
 }
 ```
+
+- `nok` does not always carry a download id. An XML `<header>` with only `<Errors/>` (an unknown
+  upload id, "Nu aveti dreptul") maps to `nok` with `errors` and no `idDescarcare`. ANAF said
+  nothing about the document, so it is not a validation failure.
+- `hasAnafError()` is true when ANAF answered with an error instead of a status: no recognisable
+  `stare`, but `errors` is set (HTTP 200 with `{"eroare": "..."}`; the `eroare` text becomes
+  `errors` when `Errors` holds nothing usable). This is not a verdict on the document either.
+
+ANAF's scalar types are not stable, so every response DTO normalises what it receives instead of
+taking it verbatim (since 4.0): numeric ids (`indexIncarcare`, `idDescarcare`, `cui`, `serial`,
+message ids) become strings, and big integers keep every digit. A `stare` that is not a string,
+text that is not a scalar, and an id that is a float, bool or array all become `null`. `Errors`
+can be a string, an `{errorMessage}` object or a list of either, and always comes back as a list of
+non-empty strings or `null`. A 2xx body that is not a JSON object (for example a bare number)
+throws `ApiException`, the same as an unparseable one.
 
 #### Download Document
 
@@ -498,7 +515,10 @@ $messages = $client->getMessages(new ListMessagesParamsData(
     filter: MessageFilter::InvoiceSent,  // Optional: T, P, E, R
 ));
 
-foreach ($messages->mesaje as $message) {
+foreach ($messages->mesaje ?? [] as $message) {
+    if ($message->id === null) {
+        continue; // ANAF sent no id: it cannot be downloaded, and must not be keyed on
+    }
     echo $message->id;
     echo $message->dataCreare;
     echo $message->tip;
@@ -636,12 +656,20 @@ try {
     // Rate limit exceeded
     $remaining = $e->remaining;              // 0 (no calls remaining)
     $retryAfter = $e->retryAfterSeconds;     // Seconds until reset
+    $scope = $e->scope;                      // ?RateLimitScope: which limit was hit
     $message = $e->getMessage();             // Human-readable message
 
     // Wait and retry, or queue for later
     Log::warning("Rate limit hit: {$message}. Retry in {$retryAfter}s");
 }
 ```
+
+`$e->scope` (since 4.0) is a `BeeCoded\EFacturaSdk\Enums\RateLimitScope`, whose values match
+`getRemainingQuota()`'s types. `RateLimitScope::Status`, `RateLimitScope::Download` and the per-CUI
+scopes block only that upload index, download id or CUI, so a polling batch can skip one item and
+carry on. `RateLimitScope::Global` and `RateLimitScope::CompanyLookup` block every call of their
+kind. The SDK's `RateLimiter` always sets the scope; it is `null` only when other code throws the
+exception without one.
 
 #### Checking Remaining Quota
 
@@ -1255,6 +1283,7 @@ try {
 } catch (RateLimitExceededException $e) {
     // Rate limit exceeded
     $retryAfter = $e->retryAfterSeconds;  // Seconds until limit resets
+    $scope = $e->scope;                   // ?RateLimitScope, e.g. RateLimitScope::Global
     // Queue for later or wait
 } catch (ValidationException $e) {
     // Input validation failed (empty XML, invalid parameters)

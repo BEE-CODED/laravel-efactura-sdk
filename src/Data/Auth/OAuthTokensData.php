@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Auth;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Spatie\LaravelData\Data;
@@ -88,6 +89,11 @@ class OAuthTokensData extends Data
      * this DTO's own is camelCase. The presence of 'access_token' picks the wire branch,
      * which keeps ANAF's expires_in -> expiresAt derivation exactly as it was.
      *
+     * Wire values are normalised, never taken verbatim: expires_in accepts an int or
+     * a digit string (anything else leaves both expiry fields null), a non-scalar
+     * token_type falls back to 'Bearer', and a missing or non-scalar token becomes
+     * ''. AnafAuthenticator rejects a response without both tokens before this.
+     *
      * Guarded by tests/Unit/Data/Auth/AuthDataTest.php.
      *
      * @param  array<string, mixed>  $response
@@ -98,17 +104,14 @@ class OAuthTokensData extends Data
             return self::fromOwnShape($response);
         }
 
-        $expiresAt = null;
-        if (isset($response['expires_in'])) {
-            $expiresAt = Carbon::now()->addSeconds((int) $response['expires_in']);
-        }
+        $expiresIn = AnafValue::int($response['expires_in'] ?? null);
 
         return new self(
-            accessToken: $response['access_token'],
-            refreshToken: $response['refresh_token'],
-            expiresAt: $expiresAt,
-            expiresIn: isset($response['expires_in']) ? (int) $response['expires_in'] : null,
-            tokenType: $response['token_type'] ?? 'Bearer',
+            accessToken: AnafValue::text($response['access_token'] ?? null) ?? '',
+            refreshToken: AnafValue::text($response['refresh_token'] ?? null) ?? '',
+            expiresAt: $expiresIn !== null ? Carbon::now()->addSeconds($expiresIn) : null,
+            expiresIn: $expiresIn,
+            tokenType: AnafValue::text($response['token_type'] ?? null) ?? 'Bearer',
         );
     }
 

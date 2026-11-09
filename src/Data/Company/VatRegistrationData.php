@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Carbon\Carbon;
 use Spatie\LaravelData\Data;
 
@@ -36,16 +37,18 @@ class VatRegistrationData extends Data
             endDate: self::parseDate($data['dataSfarsitTvaInc'] ?? null),
             updateDate: self::parseDate($data['dataActualizareTvaInc'] ?? null),
             publishDate: self::parseDate($data['dataPublicareTvaInc'] ?? null),
-            actType: $data['tipActTvaInc'] ?? null,
+            actType: AnafValue::text($data['tipActTvaInc'] ?? null),
         );
     }
 
     /**
      * Parse a date string from ANAF response.
      */
-    private static function parseDate(?string $date): ?Carbon
+    private static function parseDate(mixed $date): ?Carbon
     {
-        if ($date === null || $date === '' || trim($date) === '') {
+        $date = AnafValue::text($date);
+
+        if ($date === null || trim($date) === '') {
             return null;
         }
 

@@ -17,12 +17,14 @@ use BeeCoded\EFacturaSdk\Data\Response\StatusResponseData;
 use BeeCoded\EFacturaSdk\Data\Response\UploadResponseData;
 use BeeCoded\EFacturaSdk\Data\Response\ValidationResultData;
 use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Enums\StandardType;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
@@ -135,7 +137,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private readonly RateLimiter $rateLimiter;
 
     /**
-     * The endpoint-specific bucket the in-flight logical call consumes, if any.
+     * The metering of the in-flight logical call: its global unit and its
+     * endpoint-specific bucket, if any.
      *
      * Armed by meterCall() and replayed by onRetryAttempt() so that each extra HTTP
      * request a retry makes is metered against the same buckets as the first.
@@ -304,36 +307,53 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     protected function onRetryAttempt(): void
     {
-        $this->rateLimiter->checkGlobal();
+        if ($this->retryQuotaConsumer === null) {
+            $this->rateLimiter->checkGlobal();
 
-        if ($this->retryQuotaConsumer !== null) {
-            ($this->retryQuotaConsumer)();
+            return;
         }
+
+        ($this->retryQuotaConsumer)();
     }
 
     /**
      * Consume one quota unit for a logical call, and arm the retry hook to consume
      * the same buckets again for every extra HTTP request a retry makes.
      *
+     * A refused call or retry spends nothing: the endpoint bucket is peeked first,
+     * and the global check refuses before the endpoint bucket is counted.
+     *
      * Always call this instead of hitting $rateLimiter directly: passing no
      * endpoint check disarms the hook, which is what keeps a previous call's
      * bucket from being charged during a later, unrelated call's retries.
      *
-     * @param  (Closure(): void)|null  $perEndpoint  The endpoint-specific bucket this
+     * @param  (Closure(): void)|null  $perEndpoint  Counts the endpoint-specific bucket this
      *                                               call draws on, if any. Endpoints
      *                                               metered only globally pass null.
+     * @param  (Closure(): void)|null  $peek  Refuses, counting nothing, when that bucket
+     *                                        has no room (RateLimiter::ensureAvailable())
      *
      * @throws RateLimitExceededException When a cap is already exhausted
      */
-    private function meterCall(?Closure $perEndpoint = null): void
+    private function meterCall(?Closure $perEndpoint = null, ?Closure $peek = null): void
     {
-        $this->rateLimiter->checkGlobal();
+        $meter = function () use ($perEndpoint, $peek): void {
+            if ($peek !== null) {
+                $peek();
+            }
 
-        if ($perEndpoint !== null) {
-            $perEndpoint();
-        }
+            $this->rateLimiter->checkGlobal();
 
-        $this->retryQuotaConsumer = $perEndpoint;
+            // shortcut: a concurrent call can take the bucket's last unit between the peek
+            // and here, spending this call's global unit; closing it needs a lock across buckets.
+            if ($perEndpoint !== null) {
+                $perEndpoint();
+            }
+        };
+
+        $meter();
+
+        $this->retryQuotaConsumer = $meter;
     }
 
     /**
@@ -350,9 +370,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         // never retried on a response, but a pre-send transport failure does retry
         // (see PRE_SEND_CURL_ERRORS), and that fires another real request.
         $standard = $options?->getStandard() ?? StandardType::UBL;
-        $this->meterCall($standard === StandardType::RASP
-            ? fn () => $this->rateLimiter->checkRaspUpload($this->vatNumber)
-            : null);
+        if ($standard === StandardType::RASP) {
+            $this->meterCall(
+                fn () => $this->rateLimiter->checkRaspUpload($this->vatNumber),
+                fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::RaspUpload, $this->vatNumber),
+            );
+        } else {
+            $this->meterCall();
+        }
 
         $queryParams = $this->buildUploadQueryParams($options);
         $route = '/upload?'.http_build_query($queryParams);
@@ -377,9 +402,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         // See uploadDocument() for why the RASP bucket is armed for retries.
         $standard = $options?->getStandard() ?? StandardType::UBL;
-        $this->meterCall($standard === StandardType::RASP
-            ? fn () => $this->rateLimiter->checkRaspUpload($this->vatNumber)
-            : null);
+        if ($standard === StandardType::RASP) {
+            $this->meterCall(
+                fn () => $this->rateLimiter->checkRaspUpload($this->vatNumber),
+                fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::RaspUpload, $this->vatNumber),
+            );
+        } else {
+            $this->meterCall();
+        }
 
         $queryParams = $this->buildUploadQueryParams($options);
         $route = '/uploadb2c?'.http_build_query($queryParams);
@@ -405,9 +435,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->validateUploadId($uploadId);
 
         // A default read keeps v3.1.1's exact call shape, so consumers' argument-matching mocks still match.
-        $this->meterCall(fn () => $useProviderLimit
-            ? $this->rateLimiter->checkStatusQuery($uploadId, true)
-            : $this->rateLimiter->checkStatusQuery($uploadId));
+        $this->meterCall(
+            fn () => $useProviderLimit
+                ? $this->rateLimiter->checkStatusQuery($uploadId, true)
+                : $this->rateLimiter->checkStatusQuery($uploadId),
+            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::Status, $uploadId, $useProviderLimit),
+        );
 
         $queryParams = [
             'id_incarcare' => $uploadId,
@@ -430,7 +463,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         // Validate first - fail fast without consuming rate limit quota
         $this->validateDownloadId($downloadId);
 
-        $this->meterCall(fn () => $this->rateLimiter->checkDownload($downloadId));
+        $this->meterCall(
+            fn () => $this->rateLimiter->checkDownload($downloadId),
+            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::Download, $downloadId),
+        );
 
         $queryParams = [
             'id' => $downloadId,
@@ -519,7 +555,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         // Validate first - fail fast without consuming rate limit quota
         $this->validateDays($params->days);
 
-        $this->meterCall(fn () => $this->rateLimiter->checkSimpleList($params->cif));
+        $this->meterCall(
+            fn () => $this->rateLimiter->checkSimpleList($params->cif),
+            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::SimpleList, $params->cif),
+        );
 
         $queryParams = [
             'cif' => $params->cif,
@@ -534,7 +573,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $response = $this->authenticatedRequest($route, 'GET');
 
-        return ListMessagesResponseData::fromAnafResponse($response->json() ?? []);
+        return ListMessagesResponseData::fromAnafResponse(
+            $this->decodeJsonObject($response, 'Unable to parse message list response')
+        );
     }
 
     /**
@@ -548,7 +589,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->validateTimeRange($params->startTime, $params->endTime);
         $this->validatePage($params->page);
 
-        $this->meterCall(fn () => $this->rateLimiter->checkPaginatedList($params->cif));
+        $this->meterCall(
+            fn () => $this->rateLimiter->checkPaginatedList($params->cif),
+            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::PaginatedList, $params->cif),
+        );
 
         $queryParams = [
             'cif' => $params->cif,
@@ -565,7 +609,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $response = $this->authenticatedRequest($route, 'GET');
 
-        return PaginatedMessagesResponseData::fromAnafResponse($response->json() ?? []);
+        return PaginatedMessagesResponseData::fromAnafResponse(
+            $this->decodeJsonObject($response, 'Unable to parse paginated message list response')
+        );
     }
 
     /**
@@ -642,21 +688,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         // Check if response is actually an error (JSON response instead of PDF)
         $contentType = (string) $response->header('Content-Type');
         if (str_contains($contentType, 'application/json')) {
-            $errorData = $response->json();
-            if ($errorData === null) {
-                throw new ApiException(
-                    'PDF conversion failed with invalid JSON response',
-                    $response->status(),
-                    $response->body()
-                );
-            }
+            $errorData = $this->decodeJsonObject($response, 'PDF conversion failed with invalid JSON response');
             // Same shape as the validare service: the real reason lives in
             // Messages[].message, so prefer it over the generic fallback.
             $messages = self::extractValidationErrors($errorData);
 
             throw new ApiException(
-                $errorData['message']
-                    ?? $errorData['eroare']
+                AnafValue::text($errorData['message'] ?? null)
+                    ?? AnafValue::text($errorData['eroare'] ?? null)
                     ?? ($messages !== null ? implode('; ', $messages) : null)
                     ?? 'PDF conversion failed',
                 $response->status(),
@@ -1174,15 +1213,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         }
 
         // Fall back to JSON parsing
-        $json = $response->json();
-        if ($json !== null) {
-            return UploadResponseData::fromAnafResponse($json);
-        }
-
-        throw new ApiException(
-            'Unable to parse upload response',
-            $response->status(),
-            $body
+        return UploadResponseData::fromAnafResponse(
+            $this->decodeJsonObject($response, 'Unable to parse upload response')
         );
     }
 
@@ -1214,15 +1246,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         }
 
         // Fall back to JSON parsing
-        $json = $response->json();
-        if ($json !== null) {
-            return StatusResponseData::fromAnafResponse($json);
-        }
-
-        throw new ApiException(
-            'Unable to parse status response',
-            $response->status(),
-            $body
+        return StatusResponseData::fromAnafResponse(
+            $this->decodeJsonObject($response, 'Unable to parse status response')
         );
     }
 
@@ -1233,30 +1258,46 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     private function parseValidationResponse(Response $response): ValidationResultData
     {
-        $json = $response->json();
-
-        if ($json === null) {
-            throw new ApiException(
-                'Unable to parse validation response',
-                $response->status(),
-                $response->body()
-            );
-        }
+        $json = $this->decodeJsonObject($response, 'Unable to parse validation response');
 
         // Handle ANAF validation response format
         // Success: {"stare": "ok", "trace_id": ...} or {"valid": true}
         // Error:   {"stare": "nok", "Messages": [{"message": "E: ..."}], "trace_id": ...}
         // Legacy:  {"valid": false, "mesaj": "..."} or {"eroare": "..."}
         // Note: Do NOT use stripos heuristics as it matches "Invalid", "not valid", etc.
-        $isValid = ($json['valid'] ?? false)
-            || ($json['stare'] ?? '') === 'ok';
+        $isValid = AnafValue::flag($json['valid'] ?? null)
+            || ($json['stare'] ?? null) === 'ok';
 
         return new ValidationResultData(
             valid: $isValid,
-            details: $json['mesaj'] ?? $json['detalii'] ?? $json['message'] ?? null,
-            info: $json['info'] ?? self::extractTraceId($json),
+            details: AnafValue::text($json['mesaj'] ?? null)
+                ?? AnafValue::text($json['detalii'] ?? null)
+                ?? AnafValue::text($json['message'] ?? null),
+            info: AnafValue::text($json['info'] ?? null) ?? self::extractTraceId($json),
             errors: self::extractValidationErrors($json),
         );
+    }
+
+    /**
+     * Decode a 2xx ANAF JSON body that must be an object.
+     *
+     * A body that is not JSON, or JSON that is not an object (a bare number or
+     * string), is answered with ApiException carrying ANAF's own status code: the
+     * same failure as any other unparseable 2xx body.
+     *
+     * @return array<mixed>
+     *
+     * @throws ApiException When the body does not decode to an array
+     */
+    private function decodeJsonObject(Response $response, string $message): array
+    {
+        $json = self::decodeJson($response);
+
+        if (! is_array($json)) {
+            throw new ApiException($message, $response->status(), $response->body());
+        }
+
+        return $json;
     }
 
     /**

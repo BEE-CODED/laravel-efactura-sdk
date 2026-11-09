@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
 use BeeCoded\EFacturaSdk\Enums\RegistrationStatus;
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Carbon\Carbon;
 use Spatie\LaravelData\Data;
 
@@ -177,17 +178,21 @@ class CompanyData extends Data
     /**
      * Create CompanyData from ANAF found company response.
      *
+     * Values are normalised, never taken verbatim: a numeric cui, phone or postal
+     * code becomes a string, non-scalar text and dates become null, and a nested
+     * section that is not an object is treated as absent.
+     *
      * @param  array<string, mixed>  $data  Raw ANAF response for a single found company
      */
     public static function fromAnafResponse(array $data): self
     {
-        $generalData = $data['date_generale'] ?? [];
-        $vatScope = $data['inregistrare_scop_Tva'] ?? [];
-        $rtvai = $data['inregistrare_RTVAI'] ?? [];
-        $inactive = $data['stare_inactiv'] ?? [];
-        $splitVat = $data['inregistrare_SplitTVA'] ?? [];
-        $headquarters = $data['adresa_sediu_social'] ?? [];
-        $fiscalDomicile = $data['adresa_domiciliu_fiscal'] ?? [];
+        $generalData = self::section($data, 'date_generale');
+        $vatScope = self::section($data, 'inregistrare_scop_Tva');
+        $rtvai = self::section($data, 'inregistrare_RTVAI');
+        $inactive = self::section($data, 'stare_inactiv');
+        $splitVat = self::section($data, 'inregistrare_SplitTVA');
+        $headquarters = self::section($data, 'adresa_sediu_social');
+        $fiscalDomicile = self::section($data, 'adresa_domiciliu_fiscal');
 
         // Parse RTVAI details
         $rtvaiDetails = ! empty($rtvai) ? VatRegistrationData::fromAnafResponse($rtvai) : null;
@@ -219,7 +224,7 @@ class CompanyData extends Data
 
         // Parse VAT periods (v9 nests dates in perioade_TVA; flat keys are the legacy shape)
         $vatPeriods = [];
-        foreach (($vatScope['perioade_TVA'] ?? []) as $period) {
+        foreach (self::section($vatScope, 'perioade_TVA') as $period) {
             if (is_array($period)) {
                 $vatPeriods[] = VatPeriodData::fromAnafResponse($period);
             }
@@ -227,13 +232,13 @@ class CompanyData extends Data
         $latestVatPeriod = self::latestVatPeriod($vatPeriods);
 
         return new self(
-            cui: (string) ($generalData['cui'] ?? ''),
-            name: $generalData['denumire'] ?? '',
-            address: $generalData['adresa'] ?? null,
-            registrationNumber: $generalData['nrRegCom'] ?? null,
-            phone: $generalData['telefon'] ?? null,
-            fax: $generalData['fax'] ?? null,
-            postalCode: $generalData['codPostal'] ?? null,
+            cui: AnafValue::id($generalData['cui'] ?? null) ?? '',
+            name: AnafValue::text($generalData['denumire'] ?? null) ?? '',
+            address: AnafValue::text($generalData['adresa'] ?? null),
+            registrationNumber: AnafValue::text($generalData['nrRegCom'] ?? null),
+            phone: AnafValue::text($generalData['telefon'] ?? null),
+            fax: AnafValue::text($generalData['fax'] ?? null),
+            postalCode: AnafValue::text($generalData['codPostal'] ?? null),
             isVatPayer: (bool) ($vatScope['scpTVA'] ?? false),
             vatRegistrationDate: self::parseDate($vatScope['data_inceput_ScpTVA'] ?? null) ?? $latestVatPeriod?->startDate,
             vatDeregistrationDate: self::parseDate($vatScope['data_sfarsit_ScpTVA'] ?? null) ?? $latestVatPeriod?->endDate,
@@ -294,11 +299,24 @@ class CompanyData extends Data
     }
 
     /**
+     * A nested ANAF object, or [] when it is missing or not an object.
+     *
+     * @param  array<mixed>  $data
+     * @return array<mixed>
+     */
+    private static function section(array $data, string $key): array
+    {
+        return is_array($data[$key] ?? null) ? $data[$key] : [];
+    }
+
+    /**
      * Parse a date string from ANAF response.
      */
-    private static function parseDate(?string $date): ?Carbon
+    private static function parseDate(mixed $date): ?Carbon
     {
-        if ($date === null || $date === '' || trim($date) === '') {
+        $date = AnafValue::text($date);
+
+        if ($date === null || trim($date) === '') {
             return null;
         }
 

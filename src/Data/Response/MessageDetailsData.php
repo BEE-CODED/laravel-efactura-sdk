@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Response;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Attributes\MapInputName;
 use Spatie\LaravelData\Data;
 
@@ -14,8 +15,12 @@ use Spatie\LaravelData\Data;
 class MessageDetailsData extends Data
 {
     public function __construct(
-        /** Download ID */
-        public string $id,
+        /**
+         * Download ID. Null when ANAF sent none (missing, empty or not an
+         * id-shaped value): such a message cannot be downloaded or told apart
+         * from another, so skip it rather than key anything on it.
+         */
+        public ?string $id,
 
         /** CIF number */
         public string $cif,
@@ -38,17 +43,21 @@ class MessageDetailsData extends Data
     /**
      * Create from ANAF API response item.
      *
+     * Values are normalised, never cast blindly: a numeric id becomes a string, a
+     * missing or empty id is null, and other fields that ANAF omits or sends as a
+     * non-scalar are ''.
+     *
      * @param  array<string, mixed>  $data
      */
     public static function fromAnafResponse(array $data): self
     {
         return new self(
-            id: (string) ($data['id'] ?? ''),
-            cif: (string) ($data['cif'] ?? ''),
-            dataCreare: (string) ($data['data_creare'] ?? ''),
-            tip: (string) ($data['tip'] ?? ''),
-            detalii: (string) ($data['detalii'] ?? ''),
-            idSolicitare: (string) ($data['id_solicitare'] ?? ''),
+            id: AnafValue::id($data['id'] ?? null),
+            cif: AnafValue::id($data['cif'] ?? null) ?? '',
+            dataCreare: AnafValue::text($data['data_creare'] ?? null) ?? '',
+            tip: AnafValue::text($data['tip'] ?? null) ?? '',
+            detalii: AnafValue::text($data['detalii'] ?? null) ?? '',
+            idSolicitare: AnafValue::id($data['id_solicitare'] ?? null) ?? '',
         );
     }
 }

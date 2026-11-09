@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\EFacturaException;
@@ -95,5 +96,20 @@ describe('RateLimitExceededException', function () {
         $exception = new RateLimitExceededException('Rate limit exceeded');
 
         expect($exception->retryAfterSeconds)->toBe(60);
+    });
+
+    it('has no scope unless one is given, keeping positional callers working', function () {
+        $previous = new RuntimeException('cause');
+        $exception = new RateLimitExceededException('Rate limit exceeded', 0, 120, $previous, ['k' => 'v']);
+
+        expect($exception->scope)->toBeNull()
+            ->and($exception->getPrevious())->toBe($previous)
+            ->and($exception->context)->toBe(['k' => 'v']);
+    });
+
+    it('stores the scope that was hit', function () {
+        $exception = new RateLimitExceededException('Rate limit exceeded', scope: RateLimitScope::Status);
+
+        expect($exception->scope)->toBe(RateLimitScope::Status);
     });
 });

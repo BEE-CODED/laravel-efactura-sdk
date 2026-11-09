@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Response;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
 use Spatie\LaravelData\Attributes\MapInputName;
 use Spatie\LaravelData\Data;
@@ -56,6 +57,10 @@ class PaginatedMessagesResponseData extends Data
     /**
      * Create from ANAF API response.
      *
+     * Values are normalised, never taken verbatim: a numeric cui or serial becomes
+     * a string, text fields that are not scalars become null, counts accept ints
+     * and digit strings, and messages without an id keep a null id.
+     *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
@@ -74,15 +79,15 @@ class PaginatedMessagesResponseData extends Data
 
         return new self(
             mesaje: $mesaje,
-            recordsInPage: isset($response['numar_inregistrari_in_pagina']) ? (int) $response['numar_inregistrari_in_pagina'] : null,
-            recordsPerPage: isset($response['numar_total_inregistrari_per_pagina']) ? (int) $response['numar_total_inregistrari_per_pagina'] : null,
-            totalRecords: isset($response['numar_total_inregistrari']) ? (int) $response['numar_total_inregistrari'] : null,
-            totalPages: isset($response['numar_total_pagini']) ? (int) $response['numar_total_pagini'] : null,
-            currentPage: isset($response['index_pagina_curenta']) ? (int) $response['index_pagina_curenta'] : null,
-            serial: $response['serial'] ?? null,
-            cui: $response['cui'] ?? null,
-            titlu: $response['titlu'] ?? null,
-            error: $response['eroare'] ?? null,
+            recordsInPage: AnafValue::int($response['numar_inregistrari_in_pagina'] ?? null),
+            recordsPerPage: AnafValue::int($response['numar_total_inregistrari_per_pagina'] ?? null),
+            totalRecords: AnafValue::int($response['numar_total_inregistrari'] ?? null),
+            totalPages: AnafValue::int($response['numar_total_pagini'] ?? null),
+            currentPage: AnafValue::int($response['index_pagina_curenta'] ?? null),
+            serial: AnafValue::id($response['serial'] ?? null),
+            cui: AnafValue::id($response['cui'] ?? null),
+            titlu: AnafValue::text($response['titlu'] ?? null),
+            error: AnafValue::text($response['eroare'] ?? null),
         );
     }
 

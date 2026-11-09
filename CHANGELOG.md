@@ -26,6 +26,76 @@ and the git history.
   `indexIncarcare` is set, poll its status. Code that reads `$executionStatus->value` or passes it
   to a non-nullable `ExecutionStatus` parameter must handle `null`.
 
+### Fixed: a validation answer of `"valid": "false"` read as valid
+
+- `validateXml()` and `ValidationResultData::fromAnafResponse()` treat only an explicit yes
+  (`true`, `1`, `"1"`, `"true"`) as valid. Before, a plain `(bool)` cast read the string `"false"`
+  as valid. `"stare": "ok"` still means valid.
+
+### Breaking (4.0): ANAF values are normalised before they reach a DTO
+
+- Every DTO built from ANAF data normalises the values it receives instead of taking them
+  verbatim: `UploadResponseData`, `StatusResponseData`, `ListMessagesResponseData`,
+  `PaginatedMessagesResponseData`, `MessageDetailsData`, `ValidationResultData`, `CompanyData`
+  and its nested company DTOs, and `OAuthTokensData::fromAnafResponse()`.
+  - Ids (`index_incarcare`, `dateResponse`, `id_descarcare`, `cui`, `serial`, message ids) sent
+    as numbers become strings. Strings are trimmed, and an empty string becomes `null`. A float,
+    bool or array becomes `null`, because a float id has already lost digits.
+  - Text fields become strings when ANAF sends a scalar and `null` otherwise.
+  - Counts (paginated list) and `expires_in` accept an int, a whole float or a digit string.
+    Anything else is `null` (it used to be cast to `0`).
+  - `Errors` (and the status `eroare`) may be a string, a single `{errorMessage}` object or a list
+    of strings and objects. It always comes back as a list of non-empty strings, or `null`.
+  - `StatusResponseData`: a `stare` that is not a string, for example a number, is `null`
+    (unknown) instead of a `TypeError`. `eroare` becomes `errors` whenever `Errors` holds nothing
+    usable, including an empty list.
+- `MessageDetailsData::$id` is now `?string`. It is `null` when ANAF sent no usable id (missing,
+  empty, or not an id), where it used to be `''`. The other fields still fall back to `''`, but
+  an array no longer raises "Array to string conversion".
+- The SDK decodes ANAF JSON with `JSON_BIGINT_AS_STRING`, so an upload index or download id too
+  big for a PHP int keeps every digit.
+- A 2xx body that is not a JSON object, for example a bare number, now throws `ApiException`
+  carrying ANAF's status code: `Unable to parse upload response`, `Unable to parse status response`,
+  `Unable to parse validation response`, `PDF conversion failed with invalid JSON response`, and
+  the new `Unable to parse message list response` and
+  `Unable to parse paginated message list response`. `getMessages()` and `getMessagesPaginated()`
+  used to return an empty response for an unparseable body. `AnafDetailsClient` reports such a body
+  as a failed lookup, `AnafAuthenticator` as a non-JSON response, and a found-company entry that
+  is not an object is skipped.
+- Error messages taken from a response (`message`, `eroare`, `error`, OAuth `error` and
+  `error_description`) are used only when they are scalar. A nested value falls through to the
+  next key instead of raising a `TypeError`.
+- Why: ANAF does not keep its scalar types stable. Under `strict_types`, a number where a string
+  was declared was a `TypeError` that lost an upload index or crashed a sync. A missing message id
+  became `''`, so distinct messages could be merged under one key.
+- Upgrade: skip a message whose `$id` is `null`, and handle `ApiException` from the message list
+  calls. Code that relied on a count cast to `0`, or on `''` for a missing message id, must handle
+  `null`.
+
+### Added: `RateLimitExceededException::$scope`
+
+- `RateLimitExceededException` has a new `public readonly ?RateLimitScope $scope`, the last
+  constructor parameter (default `null`), so existing positional and named calls keep working.
+  The new `BeeCoded\EFacturaSdk\Enums\RateLimitScope` has the cases `Global`, `CompanyLookup`,
+  `RaspUpload`, `Status`, `SimpleList`, `PaginatedList` and `Download`. Their values match
+  `RateLimiter::getRemainingQuota()`'s types.
+- `RateLimiter` always sets the scope. A batch can tell a per-message status limit
+  (`RateLimitScope::Status`: skip that upload, keep polling others) from the global limit
+  (`RateLimitScope::Global`: stop the batch). `null` means the exception was thrown outside the
+  SDK's limiter.
+
+### Fixed: a refused call spends no quota
+
+- A call with a per-CUI or per-message limit (status, download, message lists, RASP upload) used to
+  count its global unit before checking that limit, so a call the per-message limit refused still
+  spent a global unit. `EFacturaClient` now checks that limit first without counting, through the
+  new `RateLimiter::ensureAvailable(RateLimitScope $scope, string $identifier, bool
+  $useProviderLimit = false)`, then counts the global unit and the per-message unit. A refused call
+  or retry counts nothing; the global limit still refuses before the per-message unit is counted;
+  an allowed call counts one unit of each, as before.
+- Upgrade: a test double of `RateLimiter` must allow `ensureAvailable()` (with Mockery,
+  `shouldReceive('ensureAvailable')`, or `shouldIgnoreMissing()`).
+
 ### Changed: money is exact decimal
 
 - Amounts are computed with exact decimals (brick/math) instead of floats. `quantity`,

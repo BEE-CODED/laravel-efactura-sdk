@@ -329,6 +329,44 @@ match ($status) {
 \`\`\`
 `,
 
+  RateLimitScope: `# RateLimitScope
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\RateLimitScope\`
+
+Which SDK rate limit a \`RateLimitExceededException\` hit, read from its \`$scope\` property (since 4.0). Values match \`RateLimiter::getRemainingQuota()\`'s type names.
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`Global\` | \`'global'\` | Global per-minute limit, shared by every e-Factura call (uploads included) |
+| \`CompanyLookup\` | \`'company_lookup'\` | Company lookup per-second limit (single bucket) |
+| \`RaspUpload\` | \`'rasp_upload'\` | RASP upload limit for one CUI |
+| \`Status\` | \`'status'\` | Status query limit for one upload index; other indexes can still be polled |
+| \`SimpleList\` | \`'simple_list'\` | Simple message list limit for one CUI |
+| \`PaginatedList\` | \`'paginated_list'\` | Paginated message list limit for one CUI |
+| \`Download\` | \`'download'\` | Download limit for one download ID |
+
+\`$scope\` is \`null\` only when code outside the SDK's \`RateLimiter\` throws the exception without one; treat that like \`Global\`.
+
+## Usage example
+
+\`\`\`php
+use BeeCoded\\EFacturaSdk\\Enums\\RateLimitScope;
+use BeeCoded\\EFacturaSdk\\Exceptions\\RateLimitExceededException;
+
+try {
+    $status = $client->getStatusMessage($uploadId);
+} catch (RateLimitExceededException $e) {
+    if ($e->scope === RateLimitScope::Status) {
+        // only this upload's status quota is spent: skip it, keep polling others
+    } else {
+        // global or unknown: stop the batch until $e->retryAfterSeconds
+    }
+}
+\`\`\`
+`,
+
   RegistrationStatus: `# RegistrationStatus
 
 Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\RegistrationStatus\`

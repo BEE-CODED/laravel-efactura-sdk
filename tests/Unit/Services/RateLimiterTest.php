@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Illuminate\Support\Facades\RateLimiter as LaravelRateLimiter;
@@ -328,4 +329,28 @@ describe('checkCompanyLookup', function () {
 
         expect(true)->toBeTrue(); // no exception thrown
     });
+});
+
+describe('exception scope', function () {
+    it('names the limit each check trips', function (string $configKey, Closure $check, RateLimitScope $scope) {
+        config()->set("efactura-sdk.rate_limits.{$configKey}", 1);
+        $limiter = new RateLimiter;
+        $check($limiter);
+
+        try {
+            $check($limiter);
+            $this->fail('Expected the limit to trip.');
+        } catch (RateLimitExceededException $e) {
+            expect($e->scope)->toBe($scope);
+        }
+    })->with([
+        'global' => ['global_per_minute', fn (RateLimiter $l) => $l->checkGlobal(), RateLimitScope::Global],
+        'company lookup' => ['company_lookup_per_second', fn (RateLimiter $l) => $l->checkCompanyLookup(), RateLimitScope::CompanyLookup],
+        'rasp upload' => ['rasp_upload_per_day_cui', fn (RateLimiter $l) => $l->checkRaspUpload('12345678'), RateLimitScope::RaspUpload],
+        'status' => ['status_per_day_message', fn (RateLimiter $l) => $l->checkStatusQuery('MSG123'), RateLimitScope::Status],
+        'status at the provider limit' => ['status_per_day_message_provider', fn (RateLimiter $l) => $l->checkStatusQuery('MSG123', true), RateLimitScope::Status],
+        'simple list' => ['simple_list_per_day_cui', fn (RateLimiter $l) => $l->checkSimpleList('12345678'), RateLimitScope::SimpleList],
+        'paginated list' => ['paginated_list_per_day_cui', fn (RateLimiter $l) => $l->checkPaginatedList('12345678'), RateLimitScope::PaginatedList],
+        'download' => ['download_per_day_message', fn (RateLimiter $l) => $l->checkDownload('MSG123'), RateLimitScope::Download],
+    ]);
 });

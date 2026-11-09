@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Response;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
 use Spatie\LaravelData\Attributes\MapInputName;
 use Spatie\LaravelData\Data;
@@ -43,6 +44,10 @@ class ListMessagesResponseData extends Data
     /**
      * Create from ANAF API response.
      *
+     * Values are normalised, never taken verbatim: a numeric cui or serial becomes
+     * a string, text fields that are not scalars become null, counts accept ints
+     * and digit strings, and messages without an id keep a null id.
+     *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
@@ -61,12 +66,12 @@ class ListMessagesResponseData extends Data
 
         return new self(
             mesaje: $mesaje,
-            serial: $response['serial'] ?? null,
-            cui: $response['cui'] ?? null,
-            titlu: $response['titlu'] ?? null,
-            info: $response['info'] ?? null,
-            error: $response['eroare'] ?? null,
-            downloadError: $response['eroare_descarcare'] ?? null,
+            serial: AnafValue::id($response['serial'] ?? null),
+            cui: AnafValue::id($response['cui'] ?? null),
+            titlu: AnafValue::text($response['titlu'] ?? null),
+            info: AnafValue::text($response['info'] ?? null),
+            error: AnafValue::text($response['eroare'] ?? null),
+            downloadError: AnafValue::text($response['eroare_descarcare'] ?? null),
         );
     }
 

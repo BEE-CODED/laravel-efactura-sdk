@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Carbon\Carbon;
 use Spatie\LaravelData\Data;
 
@@ -55,8 +56,10 @@ class VatPeriodData extends Data
     /**
      * Parse a date string from ANAF response.
      */
-    private static function parseDate(?string $date): ?Carbon
+    private static function parseDate(mixed $date): ?Carbon
     {
+        $date = AnafValue::text($date);
+
         if ($date === null || trim($date) === '') {
             return null;
         }

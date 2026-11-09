@@ -17,6 +17,7 @@ export const VALID_ENUMS = [
   "TaxCategoryId",
   "UploadStatusValue",
   "RegistrationStatus",
+  "RateLimitScope",
 ] as const;
 
 export const VALID_DTOS = [

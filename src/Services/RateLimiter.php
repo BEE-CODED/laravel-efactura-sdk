@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Services;
 
+use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\RateLimitStore;
 use Illuminate\Support\Facades\Log;
@@ -174,7 +175,8 @@ class RateLimiter
             throw new RateLimitExceededException(
                 "Global rate limit exceeded ({$this->globalPerMinute}/minute). Please wait before retrying.",
                 remaining: 0,
-                retryAfterSeconds: $this->minuteStore->availableIn($key)
+                retryAfterSeconds: $this->minuteStore->availableIn($key),
+                scope: RateLimitScope::Global,
             );
         }
     }
@@ -203,6 +205,7 @@ class RateLimiter
                 // A freshly-tripped 1s window can report availableIn=0; clamp to 1
                 // so retryAfterSeconds is never the misleading 0.
                 retryAfterSeconds: max($this->secondStore->availableIn($key), 1),
+                scope: RateLimitScope::CompanyLookup,
             );
         }
     }
@@ -214,21 +217,7 @@ class RateLimiter
      */
     public function checkRaspUpload(string $cui): void
     {
-        if (! $this->isEnabled()) {
-            return;
-        }
-
-        $this->validateIdentifier($cui, 'CUI');
-
-        $key = "rasp_upload:{$cui}";
-
-        if (! $this->dailyStore->attemptOrFail($key, $this->raspUploadPerDayCui)) {
-            throw new RateLimitExceededException(
-                "RASP upload limit exceeded for CUI {$cui} ({$this->raspUploadPerDayCui}/day).",
-                remaining: 0,
-                retryAfterSeconds: $this->dailyStore->availableIn($key)
-            );
-        }
+        $this->attemptEndpoint(RateLimitScope::RaspUpload, $cui);
     }
 
     /**
@@ -242,22 +231,7 @@ class RateLimiter
      */
     public function checkStatusQuery(string $messageId, bool $useProviderLimit = false): void
     {
-        if (! $this->isEnabled()) {
-            return;
-        }
-
-        $this->validateIdentifier($messageId, 'message ID');
-
-        $key = "status:{$messageId}";
-        $limit = $useProviderLimit ? $this->statusPerDayMessageProvider : $this->statusPerDayMessage;
-
-        if (! $this->dailyStore->attemptOrFail($key, $limit)) {
-            throw new RateLimitExceededException(
-                "Status query limit exceeded for message {$messageId} ({$limit}/day).",
-                remaining: 0,
-                retryAfterSeconds: $this->dailyStore->availableIn($key)
-            );
-        }
+        $this->attemptEndpoint(RateLimitScope::Status, $messageId, $useProviderLimit);
     }
 
     /**
@@ -267,21 +241,7 @@ class RateLimiter
      */
     public function checkSimpleList(string $cui): void
     {
-        if (! $this->isEnabled()) {
-            return;
-        }
-
-        $this->validateIdentifier($cui, 'CUI');
-
-        $key = "list_simple:{$cui}";
-
-        if (! $this->dailyStore->attemptOrFail($key, $this->simpleListPerDayCui)) {
-            throw new RateLimitExceededException(
-                "Simple list query limit exceeded for CUI {$cui} ({$this->simpleListPerDayCui}/day).",
-                remaining: 0,
-                retryAfterSeconds: $this->dailyStore->availableIn($key)
-            );
-        }
+        $this->attemptEndpoint(RateLimitScope::SimpleList, $cui);
     }
 
     /**
@@ -291,21 +251,7 @@ class RateLimiter
      */
     public function checkPaginatedList(string $cui): void
     {
-        if (! $this->isEnabled()) {
-            return;
-        }
-
-        $this->validateIdentifier($cui, 'CUI');
-
-        $key = "list_paginated:{$cui}";
-
-        if (! $this->dailyStore->attemptOrFail($key, $this->paginatedListPerDayCui)) {
-            throw new RateLimitExceededException(
-                "Paginated list query limit exceeded for CUI {$cui} ({$this->paginatedListPerDayCui}/day).",
-                remaining: 0,
-                retryAfterSeconds: $this->dailyStore->availableIn($key)
-            );
-        }
+        $this->attemptEndpoint(RateLimitScope::PaginatedList, $cui);
     }
 
     /**
@@ -315,21 +261,96 @@ class RateLimiter
      */
     public function checkDownload(string $messageId): void
     {
+        $this->attemptEndpoint(RateLimitScope::Download, $messageId);
+    }
+
+    /**
+     * Refuse, counting nothing, when a per-CUI or per-message limit has no room left.
+     *
+     * EFacturaClient calls this before it counts the global unit, so a call refused by
+     * its own per-CUI or per-message limit spends no global quota either.
+     *
+     * @param  RateLimitScope  $scope  RaspUpload, Status, SimpleList, PaginatedList or Download
+     * @param  bool  $useProviderLimit  For Status only, as in checkStatusQuery()
+     *
+     * @throws RateLimitExceededException When the limit is reached
+     * @throws \InvalidArgumentException When the identifier is empty or the scope is a single bucket
+     */
+    public function ensureAvailable(RateLimitScope $scope, string $identifier, bool $useProviderLimit = false): void
+    {
         if (! $this->isEnabled()) {
             return;
         }
 
-        $this->validateIdentifier($messageId, 'message ID');
+        [$key, $limit, $message] = $this->endpointBucket($scope, $identifier, $useProviderLimit);
 
-        $key = "download:{$messageId}";
-
-        if (! $this->dailyStore->attemptOrFail($key, $this->downloadPerDayMessage)) {
-            throw new RateLimitExceededException(
-                "Download limit exceeded for message {$messageId} ({$this->downloadPerDayMessage}/day).",
-                remaining: 0,
-                retryAfterSeconds: $this->dailyStore->availableIn($key)
-            );
+        if ($this->dailyStore->getRemaining($key, $limit) <= 0) {
+            $this->refuseEndpoint($scope, $key, $message);
         }
+    }
+
+    /**
+     * Count one unit of a per-CUI or per-message limit, or refuse without counting.
+     *
+     * @throws RateLimitExceededException
+     */
+    private function attemptEndpoint(RateLimitScope $scope, string $identifier, bool $useProviderLimit = false): void
+    {
+        if (! $this->isEnabled()) {
+            return;
+        }
+
+        [$key, $limit, $message] = $this->endpointBucket($scope, $identifier, $useProviderLimit);
+
+        // Atomic check-and-increment to prevent race conditions
+        if (! $this->dailyStore->attemptOrFail($key, $limit)) {
+            $this->refuseEndpoint($scope, $key, $message);
+        }
+    }
+
+    /**
+     * The daily counter key, limit and refusal message of a per-CUI or per-message limit.
+     *
+     * @return array{0: string, 1: int, 2: string}
+     *
+     * @throws \InvalidArgumentException When the identifier is empty or the scope is a single bucket
+     */
+    private function endpointBucket(RateLimitScope $scope, string $identifier, bool $useProviderLimit): array
+    {
+        $statusLimit = $useProviderLimit ? $this->statusPerDayMessageProvider : $this->statusPerDayMessage;
+
+        [$label, $key, $limit, $message] = match ($scope) {
+            RateLimitScope::RaspUpload => ['CUI', "rasp_upload:{$identifier}", $this->raspUploadPerDayCui,
+                "RASP upload limit exceeded for CUI {$identifier} ({$this->raspUploadPerDayCui}/day)."],
+            RateLimitScope::Status => ['message ID', "status:{$identifier}", $statusLimit,
+                "Status query limit exceeded for message {$identifier} ({$statusLimit}/day)."],
+            RateLimitScope::SimpleList => ['CUI', "list_simple:{$identifier}", $this->simpleListPerDayCui,
+                "Simple list query limit exceeded for CUI {$identifier} ({$this->simpleListPerDayCui}/day)."],
+            RateLimitScope::PaginatedList => ['CUI', "list_paginated:{$identifier}", $this->paginatedListPerDayCui,
+                "Paginated list query limit exceeded for CUI {$identifier} ({$this->paginatedListPerDayCui}/day)."],
+            RateLimitScope::Download => ['message ID', "download:{$identifier}", $this->downloadPerDayMessage,
+                "Download limit exceeded for message {$identifier} ({$this->downloadPerDayMessage}/day)."],
+            RateLimitScope::Global, RateLimitScope::CompanyLookup => throw new \InvalidArgumentException(
+                "Rate limit '{$scope->value}' is a single bucket, not a per-CUI or per-message limit."
+            ),
+        };
+
+        $this->validateIdentifier($identifier, $label);
+
+        return [$key, $limit, $message];
+    }
+
+    /**
+     * @throws RateLimitExceededException Always
+     */
+    private function refuseEndpoint(RateLimitScope $scope, string $key, string $message): never
+    {
+        throw new RateLimitExceededException(
+            $message,
+            remaining: 0,
+            retryAfterSeconds: $this->dailyStore->availableIn($key),
+            scope: $scope,
+        );
     }
 
     /**

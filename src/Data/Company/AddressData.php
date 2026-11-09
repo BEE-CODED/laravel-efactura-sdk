@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
+use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Data;
 
 /**
@@ -57,16 +58,16 @@ class AddressData extends Data
     public static function fromHeadquartersResponse(array $data): self
     {
         return new self(
-            street: $data['sdenumire_Strada'] ?? null,
-            streetNumber: $data['snumar_Strada'] ?? null,
-            city: $data['sdenumire_Localitate'] ?? null,
-            cityCode: $data['scod_Localitate'] ?? null,
-            county: $data['sdenumire_Judet'] ?? null,
-            countyCode: $data['scod_Judet'] ?? null,
-            countyAutoCode: $data['scod_JudetAuto'] ?? null,
-            country: $data['stara'] ?? null,
-            postalCode: $data['scod_Postal'] ?? null,
-            details: $data['sdetalii_Adresa'] ?? null,
+            street: AnafValue::text($data['sdenumire_Strada'] ?? null),
+            streetNumber: AnafValue::text($data['snumar_Strada'] ?? null),
+            city: AnafValue::text($data['sdenumire_Localitate'] ?? null),
+            cityCode: AnafValue::text($data['scod_Localitate'] ?? null),
+            county: AnafValue::text($data['sdenumire_Judet'] ?? null),
+            countyCode: AnafValue::text($data['scod_Judet'] ?? null),
+            countyAutoCode: AnafValue::text($data['scod_JudetAuto'] ?? null),
+            country: AnafValue::text($data['stara'] ?? null),
+            postalCode: AnafValue::text($data['scod_Postal'] ?? null),
+            details: AnafValue::text($data['sdetalii_Adresa'] ?? null),
         );
     }
 
@@ -78,16 +79,16 @@ class AddressData extends Data
     public static function fromFiscalDomicileResponse(array $data): self
     {
         return new self(
-            street: $data['ddenumire_Strada'] ?? null,
-            streetNumber: $data['dnumar_Strada'] ?? null,
-            city: $data['ddenumire_Localitate'] ?? null,
-            cityCode: $data['dcod_Localitate'] ?? null,
-            county: $data['ddenumire_Judet'] ?? null,
-            countyCode: $data['dcod_Judet'] ?? null,
-            countyAutoCode: $data['dcod_JudetAuto'] ?? null,
-            country: $data['dtara'] ?? null,
-            postalCode: $data['dcod_Postal'] ?? null,
-            details: $data['ddetalii_Adresa'] ?? null,
+            street: AnafValue::text($data['ddenumire_Strada'] ?? null),
+            streetNumber: AnafValue::text($data['dnumar_Strada'] ?? null),
+            city: AnafValue::text($data['ddenumire_Localitate'] ?? null),
+            cityCode: AnafValue::text($data['dcod_Localitate'] ?? null),
+            county: AnafValue::text($data['ddenumire_Judet'] ?? null),
+            countyCode: AnafValue::text($data['dcod_Judet'] ?? null),
+            countyAutoCode: AnafValue::text($data['dcod_JudetAuto'] ?? null),
+            country: AnafValue::text($data['dtara'] ?? null),
+            postalCode: AnafValue::text($data['dcod_Postal'] ?? null),
+            details: AnafValue::text($data['ddetalii_Adresa'] ?? null),
         );
     }
 }

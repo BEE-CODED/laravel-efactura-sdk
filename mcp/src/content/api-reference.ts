@@ -127,6 +127,10 @@ retry calls \`checkGlobal()\` again). With a tight \`global_per_minute\`, a retr
 \`RateLimitExceededException\` part-way through where v2 raised \`ApiException\` after exhausting its
 attempts. Catch \`RateLimitExceededException\` **before** \`ApiException\` — it does not extend it.
 
+**Which limit was hit (since 4.0).** \`RateLimitExceededException::$scope\` is a \`?RateLimitScope\`:
+\`RateLimitScope::Status\` means only that upload index's daily status quota is spent (keep polling the
+others), \`RateLimitScope::Global\` means every call is blocked for now.
+
 **Status reads at ANAF's own limit.** \`getStatusMessage($uploadId, useProviderLimit: true)\` checks
 the same per-message status counter against \`rate_limits.status_per_day_message_provider\` (default
 100, ANAF's ceiling) instead of \`status_per_day_message\` (default 50), on its first attempt and on
@@ -185,8 +189,8 @@ if ($client->wasTokenRefreshed()) {
 |-----------|-------------|
 | \`ValidationException\` | An **argument** is unusable or an endpoint is unconfigured — empty XML; an empty/non-numeric upload or download ID; \`days\` outside 1–60; a non-positive/out-of-order timestamp or a range exceeding 60 days; \`page\` < 1; or a missing \`endpoints.services.*\` config value. **Not** thrown when a document fails ANAF validation. |
 | \`AuthenticationException\` | Token refresh fails or credentials are invalid |
-| \`ApiException\` | ANAF API returns an error response |
-| \`RateLimitExceededException\` | Rate limit is exceeded |
+| \`ApiException\` | ANAF API returns an error response, or a 2xx body that is not a usable JSON object (e.g. a bare number). Its \`statusCode\` is ANAF's own, so \`200\` for the latter. Since 4.0 this includes \`getMessages()\`/\`getMessagesPaginated()\`, which used to return an empty response |
+| \`RateLimitExceededException\` | Rate limit is exceeded; \`->scope\` (\`?RateLimitScope\`) names which limit, e.g. \`RateLimitScope::Status\` (one upload index) vs \`RateLimitScope::Global\` |
 
 > **\`validateXml()\` / \`verifySignature()\` never throw on an invalid document.** A document
 > that ANAF rejects comes back as a normal \`ValidationResultData\` with \`valid === false\`.

@@ -552,6 +552,8 @@ instance). The **\`$expiresAt\` property stays \`?Carbon\`**, so reading it alwa
 ### \`fromAnafResponse(array $response): self\`
 Creates an instance from the raw ANAF token response array. Computes \`$expiresAt\` as \`Carbon::now()->addSeconds($response['expires_in'])\` when \`expires_in\` is present.
 
+Values are normalised, never taken verbatim (since 4.0): \`expires_in\` is accepted as an int or a digit string (anything else leaves \`$expiresIn\` and \`$expiresAt\` null), a non-scalar \`token_type\` falls back to \`'Bearer'\`, and a missing or non-scalar token becomes \`''\`. \`AnafAuthenticator\` rejects a response whose \`access_token\` or \`refresh_token\` is not a non-empty string before it gets here.
+
 Expected keys: \`access_token\`, \`refresh_token\`, \`expires_in\` (optional), \`token_type\` (optional).
 
 ## Public Methods
@@ -712,6 +714,8 @@ Parses the raw ANAF response array. Only an exact \`0\`/\`1\` (int, or the strin
 
 Expected keys: \`ExecutionStatus\`, \`dateResponse\`, \`index_incarcare\`, \`Errors\`.
 
+Values are normalised, never taken verbatim (since 4.0): an int \`index_incarcare\` or \`dateResponse\` becomes a string (a float, bool or array becomes \`null\`; the client decodes ANAF's JSON with \`JSON_BIGINT_AS_STRING\`, so a big index keeps every digit). \`Errors\` may be a string, a single \`{errorMessage}\` object or a list of strings/objects; empty messages are dropped and an empty list is \`null\`.
+
 ## Public Methods
 
 ### \`isSuccessful(): bool\`
@@ -747,15 +751,17 @@ Response from a status check operation for a previously uploaded document. Exten
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | \`$stare\` | \`?UploadStatusValue\` | no | \`null\` | Processing status (ok, nok, in prelucrare, XML cu erori nepreluat de sistem) |
-| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID — present for both \`ok\` and \`nok\` responses (absent for \`XML cu erori nepreluat de sistem\`); use to download the result ZIP |
-| \`$errors\` | \`string[]\|null\` | no | \`null\` | Error messages |
+| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID — normally present for \`ok\` and \`nok\`; absent for \`XML cu erori nepreluat de sistem\`, and for the \`nok\` an XML \`<header>\` with only \`<Errors/>\` maps to (see below). Use it to download the result ZIP |
+| \`$errors\` | \`string[]\|null\` | no | \`null\` | Error messages, from \`Errors\` or, when that holds nothing usable, from \`eroare\` |
 
 ## Static Factory Methods
 
 ### \`fromAnafResponse(array $response): self\`
-Parses the raw ANAF response. Uses \`UploadStatusValue::tryFrom()\` for safe enum parsing.
+Parses the raw ANAF response. Uses \`UploadStatusValue::tryFrom()\` for safe enum parsing; a \`stare\` that is not a string (e.g. a number) or not a known value gives \`$stare = null\`.
 
-Expected keys: \`stare\`, \`id_descarcare\`, \`Errors\`.
+Expected keys: \`stare\`, \`id_descarcare\`, \`Errors\`, \`eroare\`. An \`eroare\` string (ANAF's HTTP 200 \`{"eroare": "..."}\` answer for an upload id it does not recognise) is lifted into \`$errors\` only when \`Errors\` holds nothing usable.
+
+Values are normalised, never taken verbatim (since 4.0): an int \`id_descarcare\` becomes a string (big ids keep every digit), and \`Errors\`/\`eroare\` may be a string, a single \`{errorMessage}\` object or a list of strings/objects; empty messages are dropped and an empty list is \`null\`.
 
 ## Public Methods
 
@@ -771,10 +777,14 @@ Returns \`true\` when \`$stare === UploadStatusValue::NotProcessed\` (\`XML cu e
 ### \`isInProgress(): bool\`
 Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being processed by ANAF).
 
+### \`hasAnafError(): bool\`
+Returns \`true\` when there is no recognisable \`$stare\` but \`$errors\` is non-empty: the HTTP 200 \`{"eroare": "..."}\` shape. This is **not** a verdict on the document (the upload may have been filed); park it for a human instead of completing it, failing it or polling forever. \`isReady()\`, \`isFailed()\` and \`isInProgress()\` are all \`false\` here.
+
 ## Usage Notes
 
 - When \`isInProgress()\` is true, wait and retry the status check (ANAF typically processes within minutes).
-- \`$idDescarcare\` is available for both \`ok\` and \`nok\` results — for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
+- \`$idDescarcare\` is normally available for both \`ok\` and \`nok\` results — for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
+- **\`nok\` without a download id is not a rejection.** The XML parser maps a \`<header>\` carrying only \`<Errors/>\` (an unknown upload id, \`Nu aveti dreptul\` …) to \`nok\` with \`$errors\` and **no** \`$idDescarcare\`. ANAF said nothing about the document itself, so treat \`isFailed() && $idDescarcare === null\` like \`hasAnafError()\`: undetermined, not a validation failure.
 
 ## Example
 
@@ -783,8 +793,10 @@ $status = StatusResponseData::fromAnafResponse($apiResponse);
 
 if ($status->isReady()) {
     $downloadId = $status->idDescarcare;
-} elseif ($status->isFailed()) {
-    // download error report using $status->idDescarcare
+} elseif ($status->isFailed() && $status->idDescarcare !== null) {
+    // rejected: download error report using $status->idDescarcare
+} elseif ($status->isFailed() || $status->hasAnafError()) {
+    // no verdict on the document (see $status->errors): park for a human, do not re-upload
 } elseif ($status->isNotProcessed()) {
     // final: ANAF did not take the file in — no download id; correct and resubmit
 } elseif ($status->isInProgress()) {
@@ -852,7 +864,7 @@ Response from an XML validation operation. Extends \`Spatie\\LaravelData\\Data\`
 ## Static Factory Methods
 
 ### \`fromAnafResponse(array $response): self\`
-Creates from a raw ANAF response array. Expected keys: \`valid\`, \`details\`, \`info\`, \`Errors\`.
+Creates from a raw ANAF response array. Expected keys: \`valid\`, \`details\`, \`info\`, \`Errors\`. A non-scalar \`details\`/\`info\` becomes \`null\`; \`Errors\` is normalised like \`UploadResponseData::$errors\` (since 4.0).
 
 ### \`success(?string $details = null): self\`
 Creates a result with \`valid = true\`.
@@ -895,6 +907,8 @@ Response from the list messages operation (non-paginated). Extends \`Spatie\\Lar
 
 ### \`fromAnafResponse(array $response): self\`
 Parses the raw ANAF response. Filters \`mesaje\` to only include valid array items before mapping each to \`MessageDetailsData::fromAnafResponse()\`.
+
+Values are normalised, never taken verbatim (since 4.0): a numeric \`cui\` or \`serial\` becomes a string, and \`titlu\`, \`info\`, \`eroare\` and \`eroare_descarcare\` become a string when scalar and \`null\` otherwise. \`EFacturaClient::getMessages()\` throws \`ApiException('Unable to parse message list response')\` when the body is not a JSON object (before 4.0 it returned an empty response).
 
 ## Public Methods
 
@@ -947,6 +961,8 @@ Response from the paginated list messages operation. Extends \`Spatie\\LaravelDa
 
 ### \`fromAnafResponse(array $response): self\`
 Parses the raw ANAF response array, mapping Romanian field names to typed properties.
+
+Values are normalised, never taken verbatim (since 4.0): the counts accept an int, a whole float or a digit string (anything else is \`null\`, where it used to be cast to \`0\`), a numeric \`cui\`/\`serial\` becomes a string, and a non-scalar \`titlu\`/\`eroare\` is \`null\`. \`EFacturaClient::getMessagesPaginated()\` throws \`ApiException('Unable to parse paginated message list response')\` when the body is not a JSON object.
 
 ## Public Methods
 
@@ -1007,7 +1023,7 @@ Single message details within a message list response. Extends \`Spatie\\Laravel
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| \`$id\` | \`string\` | yes | — | Download ID for this message |
+| \`$id\` | \`?string\` | yes | — | Download ID for this message. \`null\` when ANAF sent none (missing, empty or not an id) — since 4.0 |
 | \`$cif\` | \`string\` | yes | — | CIF number associated with the message |
 | \`$dataCreare\` | \`string\` | yes | — | Creation date string (mapped from \`data_creare\` via \`#[MapInputName('data_creare')]\`) |
 | \`$tip\` | \`string\` | yes | — | Message type (e.g. \`'FACTURA TRIMISA'\`, \`'FACTURA PRIMITA'\`) |
@@ -1017,13 +1033,14 @@ Single message details within a message list response. Extends \`Spatie\\Laravel
 ## Static Factory Methods
 
 ### \`fromAnafResponse(array $data): self\`
-Creates an instance from a raw ANAF message item array. All fields are cast to \`string\` with empty-string fallback.
+Creates an instance from a raw ANAF message item array. A numeric value becomes a string; a missing, empty or non-id \`id\` is \`null\`; the other fields fall back to \`''\` when missing or not scalar (since 4.0: no more \`(string)\` casts, which raised an error on an array and turned a missing id into \`''\`).
 
 Expected keys: \`id\`, \`cif\`, \`data_creare\`, \`tip\`, \`detalii\`, \`id_solicitare\`.
 
 ## Usage Notes
 
 - \`$id\` is the **download ID** used to download the message ZIP via the download endpoint.
+- **Skip a message whose \`$id\` is \`null\`.** It cannot be downloaded, and keying on a shared empty id would merge distinct messages.
 - \`$idSolicitare\` corresponds to the original upload \`indexIncarcare\` (upload ID).
 
 ## Example
@@ -1082,6 +1099,8 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 
 ### \`fromAnafResponse(array $data): self\`
 Parses the full ANAF found company response structure. Processes nested keys: \`date_generale\`, \`inregistrare_scop_Tva\`, \`inregistrare_RTVAI\`, \`stare_inactiv\`, \`inregistrare_SplitTVA\`, \`adresa_sediu_social\`, \`adresa_domiciliu_fiscal\`.
+
+Values are normalised, never taken verbatim (since 4.0): a numeric \`cui\`, phone or postal code becomes a string, non-scalar text and dates become \`null\` (\`name\`/\`cui\` fall back to \`''\`), and a nested section that is not an object is treated as absent.
 
 **Deregistration derivation:** \`isDeregistered\` is \`true\` when \`stare_inactiv.dataRadiere\` parses to a valid date **OR** \`stare_inregistrare\` parses to \`RegistrationStatus::Deregistered\` (a "RADIERE ..." string). \`deregistrationDate\` prefers the \`stare_inactiv.dataRadiere\` value and falls back to the date parsed from the \`stare_inregistrare\` string. \`isActive()\` returns \`false\` for any deregistered company.
 
@@ -1206,6 +1225,8 @@ Creates from ANAF \`adresa_sediu_social\` data structure. Maps keys prefixed wit
 
 ### \`fromFiscalDomicileResponse(array $data): self\`
 Creates from ANAF \`adresa_domiciliu_fiscal\` data structure. Maps keys prefixed with \`d\` (e.g. \`ddenumire_Strada\`, \`dnumar_Strada\`).
+
+Both factories turn a scalar value (e.g. a numeric \`scod_Localitate\`) into a string and anything else into \`null\` (since 4.0).
 
 ## Public Methods
 
