@@ -67,30 +67,65 @@ XML;
         expect($result['indexIncarcare'])->toBe('67890');
     });
 
-    it('treats non-numeric ExecutionStatus as error', function () {
-        // Malformed response with non-numeric ExecutionStatus should default to Error (1)
-        // to avoid masking API failures
-        $xml = <<<'XML'
+    it('leaves an unrecognised ExecutionStatus null and keeps the index', function (string $status) {
+        $xml = <<<XML
 <?xml version="1.0" encoding="UTF-8"?>
-<header ExecutionStatus="success" index_incarcare="12345"/>
+<header ExecutionStatus="{$status}" index_incarcare="12345"/>
 XML;
 
         $result = XmlParser::parseUploadResponse($xml);
 
-        expect($result['executionStatus'])->toBe(ExecutionStatus::Error->value);
+        expect($result['executionStatus'])->toBeNull();
         expect($result['indexIncarcare'])->toBe('12345');
-    });
+    })->with(['non-numeric' => 'success', 'empty' => '', 'out of range' => '9', 'abc' => 'abc', 'fraction' => '0.5', 'padded' => ' 1']);
 
-    it('treats empty ExecutionStatus as error', function () {
+    it('keeps the index with a null status when ExecutionStatus is missing', function () {
         $xml = <<<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
-<header ExecutionStatus="" index_incarcare="12345"/>
+<header index_incarcare="12345" dateResponse="202406151200"/>
 XML;
 
         $result = XmlParser::parseUploadResponse($xml);
 
-        expect($result['executionStatus'])->toBe(ExecutionStatus::Error->value);
+        expect($result['executionStatus'])->toBeNull();
+        expect($result['indexIncarcare'])->toBe('12345');
+        expect($result['dateResponse'])->toBe('202406151200');
     });
+
+    it('keeps an empty index with a null status when ExecutionStatus is missing', function () {
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header index_incarcare=""/>
+XML;
+
+        $result = XmlParser::parseUploadResponse($xml);
+
+        expect($result['executionStatus'])->toBeNull();
+        expect($result['indexIncarcare'])->toBe('');
+    });
+
+    it('still extracts errors when the status is not recognised', function () {
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header ExecutionStatus="9" index_incarcare="12345">
+    <Errors errorMessage="Something odd"/>
+</header>
+XML;
+
+        $result = XmlParser::parseUploadResponse($xml);
+
+        expect($result['executionStatus'])->toBeNull();
+        expect($result['errors'])->toBe(['Something odd']);
+    });
+
+    it('throws for a header with neither ExecutionStatus nor index_incarcare', function () {
+        $xml = <<<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<header dateResponse="202406151200"/>
+XML;
+
+        XmlParser::parseUploadResponse($xml);
+    })->throws(XmlParsingException::class, 'Unknown or unexpected XML response structure');
 });
 
 describe('parseStatusResponse', function () {

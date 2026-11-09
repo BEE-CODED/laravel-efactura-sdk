@@ -5,6 +5,27 @@ and the git history.
 
 ## Unreleased
 
+### Breaking (4.0): an unrecognised upload status is `null`
+
+- `UploadResponseData::$executionStatus` is now `?ExecutionStatus`. It is `null` when ANAF's
+  `ExecutionStatus` is missing or not exactly `0`/`1` (int, or the strings `"0"`/`"1"`): the
+  status was not recognised, so the outcome of the upload is unknown. Before, these became
+  `ExecutionStatus::Error`, and on the JSON path a non-numeric string such as `"abc"` was cast to
+  `0` and reported as `Success`.
+- `isSuccessful()` is true only for an explicit `0` and `isFailed()` only for an explicit `1`.
+  Both are false when the status is `null`, so `! isSuccessful()` no longer means "failed".
+- An XML `<header>` with `index_incarcare` (even empty) but no `ExecutionStatus` now returns a
+  DTO with that index and a `null` status, instead of throwing
+  `ApiException('Unable to parse upload response')`. A header with neither still throws.
+  `XmlParser::parseUploadResponse()` returns `executionStatus` as `int|null`, and keeps extracting
+  `Errors` whenever ANAF did not report success.
+- Why: ANAF assigns an `index_incarcare` only to an upload it accepted, and an unreadable status
+  does not prove a rejection. Treating these answers as errors let callers re-upload an invoice
+  ANAF may already have filed.
+- Upgrade: handle the third case. If `executionStatus` is `null`, do not re-upload blindly; when
+  `indexIncarcare` is set, poll its status. Code that reads `$executionStatus->value` or passes it
+  to a non-nullable `ExecutionStatus` parameter must handle `null`.
+
 ### Changed: money is exact decimal
 
 - Amounts are computed with exact decimals (brick/math) instead of floats. `quantity`,

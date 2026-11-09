@@ -700,25 +700,25 @@ Response from a document upload operation. Extends \`Spatie\\LaravelData\\Data\`
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| \`$executionStatus\` | \`ExecutionStatus\` | yes | — | Execution status (0 = Success, 1 = Error) |
+| \`$executionStatus\` | \`?ExecutionStatus\` | yes | — | Execution status (0 = Success, 1 = Error). \`null\` when ANAF's ExecutionStatus was missing or not exactly 0/1: not recognised, so the outcome is unknown (since 4.0) |
 | \`$dateResponse\` | \`?string\` | no | \`null\` | ANAF response timestamp |
-| \`$indexIncarcare\` | \`?string\` | no | \`null\` | Upload/load index ID — only present on success; use this as the upload ID for status polling |
-| \`$errors\` | \`string[]\|null\` | no | \`null\` | Error messages — only present on error |
+| \`$indexIncarcare\` | \`?string\` | no | \`null\` | Upload/load index ID — present whenever ANAF took the document in, whatever the status says; use this as the upload ID for status polling |
+| \`$errors\` | \`string[]\|null\` | no | \`null\` | Error messages — when the status is not success (error or unrecognised) |
 
 ## Static Factory Methods
 
 ### \`fromAnafResponse(array $response): self\`
-Parses the raw ANAF response array. Uses \`ExecutionStatus::tryFrom()\` with safe fallback to \`ExecutionStatus::Error\` if the field is missing or invalid.
+Parses the raw ANAF response array. Only an exact \`0\`/\`1\` (int, or the strings \`"0"\`/\`"1"\`) is recognised; a missing, empty, non-numeric, out-of-range or boolean value gives \`$executionStatus = null\`. Before 4.0 these became \`ExecutionStatus::Error\`, and a non-numeric string even became \`Success\`.
 
 Expected keys: \`ExecutionStatus\`, \`dateResponse\`, \`index_incarcare\`, \`Errors\`.
 
 ## Public Methods
 
 ### \`isSuccessful(): bool\`
-Returns \`true\` when \`$executionStatus === ExecutionStatus::Success\`.
+Returns \`true\` only when ANAF explicitly answered 0 (\`$executionStatus === ExecutionStatus::Success\`).
 
 ### \`isFailed(): bool\`
-Returns \`true\` when \`$executionStatus === ExecutionStatus::Error\`.
+Returns \`true\` only when ANAF explicitly answered 1 (\`$executionStatus === ExecutionStatus::Error\`). Both methods return \`false\` when the status is \`null\`, so \`! isSuccessful()\` does not mean failed.
 
 ## Example
 
@@ -727,8 +727,11 @@ $response = UploadResponseData::fromAnafResponse($apiResponse);
 
 if ($response->isSuccessful()) {
     $uploadId = $response->indexIncarcare; // poll status with this
-} else {
+} elseif ($response->isFailed()) {
     $errors = $response->errors;
+} else {
+    // Status not recognised: the outcome is unknown and the upload may have been filed.
+    // Do not re-upload blindly; if indexIncarcare is set, poll its status.
 }
 \`\`\`
 `,

@@ -108,17 +108,21 @@ Execution status for upload operations. Represents the \`executionStatus\` field
 
 Note: This enum is backed by **int** (not string).
 
+\`UploadResponseData::$executionStatus\` is \`?ExecutionStatus\`: \`null\` when ANAF's ExecutionStatus was missing or not exactly 0/1, meaning the outcome is unknown (since 4.0).
+
 ## Usage example
 
 \`\`\`php
 use BeeCoded\\EFacturaSdk\\Enums\\ExecutionStatus;
 
-$status = ExecutionStatus::from($response['executionStatus']);
+$result = $client->uploadDocument($xml);
 
-if ($status === ExecutionStatus::Success) {
-    // upload accepted
+if ($result->executionStatus === ExecutionStatus::Success) {
+    // upload accepted; poll $result->indexIncarcare
+} elseif ($result->executionStatus === ExecutionStatus::Error) {
+    // ANAF rejected the upload; see $result->errors
 } else {
-    // handle upload error
+    // null: not recognised, outcome unknown; do not re-upload blindly
 }
 \`\`\`
 `,

@@ -17,16 +17,19 @@ use Spatie\LaravelData\Mappers\SnakeCaseMapper;
 class UploadResponseData extends Data
 {
     public function __construct(
-        /** Execution status (0 = success, 1 = error) */
-        public ExecutionStatus $executionStatus,
+        /**
+         * Execution status (0 = success, 1 = error). Null when ANAF's status was
+         * missing or not exactly 0/1: the status was not recognised, so the outcome is unknown.
+         */
+        public ?ExecutionStatus $executionStatus,
 
         /** ANAF response timestamp */
         public ?string $dateResponse = null,
 
-        /** Upload ID (only present on success) */
+        /** Upload index: present whenever ANAF took the document in, whatever the status says */
         public ?string $indexIncarcare = null,
 
-        /** Error messages (only present on error) */
+        /** Error messages, when the status is not success (error or unrecognised) */
         /** @var string[]|null */
         public ?array $errors = null,
     ) {}
@@ -38,15 +41,12 @@ class UploadResponseData extends Data
      */
     public static function fromAnafResponse(array $response): self
     {
-        // Validate ExecutionStatus exists and use tryFrom for safe enum parsing
-        $statusValue = $response['ExecutionStatus'] ?? null;
-        if ($statusValue === null) {
-            // Default to error if ExecutionStatus is missing
-            $executionStatus = ExecutionStatus::Error;
-        } else {
-            // Use tryFrom to safely parse enum, default to Error on invalid value
-            $executionStatus = ExecutionStatus::tryFrom((int) $statusValue) ?? ExecutionStatus::Error;
-        }
+        // Only an exact 0/1 (int or numeric string) is a recognised status; anything else is unknown.
+        $executionStatus = match ($response['ExecutionStatus'] ?? null) {
+            0, '0' => ExecutionStatus::Success,
+            1, '1' => ExecutionStatus::Error,
+            default => null,
+        };
 
         return new self(
             executionStatus: $executionStatus,
@@ -57,7 +57,9 @@ class UploadResponseData extends Data
     }
 
     /**
-     * Check if the upload was successful.
+     * Check if the upload was successful (ANAF explicitly answered 0).
+     *
+     * False does not mean failed: see isFailed(); both are false when the status is unknown.
      */
     public function isSuccessful(): bool
     {
@@ -65,7 +67,9 @@ class UploadResponseData extends Data
     }
 
     /**
-     * Check if the upload failed.
+     * Check if the upload failed (ANAF explicitly answered 1).
+     *
+     * False does not mean successful: both are false when the status is unknown.
      */
     public function isFailed(): bool
     {

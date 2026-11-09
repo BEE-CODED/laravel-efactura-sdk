@@ -762,6 +762,32 @@ describe('EFacturaClient', function () {
         });
     });
 
+    describe('upload answer with an unrecognised ExecutionStatus', function () {
+        it('returns the index with a null status', function (mixed $body) {
+            Http::fake(['*' => Http::response($body, 200)]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $result = $client->uploadDocument('<Invoice/>');
+
+            expect($result->executionStatus)->toBeNull();
+            expect($result->isSuccessful())->toBeFalse();
+            expect($result->isFailed())->toBeFalse();
+            expect($result->indexIncarcare)->toBe('12345');
+        })->with([
+            'XML header without ExecutionStatus' => '<?xml version="1.0"?><header index_incarcare="12345"/>',
+            'XML header with ExecutionStatus 9' => '<?xml version="1.0"?><header ExecutionStatus="9" index_incarcare="12345"/>',
+            'JSON without ExecutionStatus' => [['index_incarcare' => '12345']],
+            // Was read as Success through an (int) cast.
+            'JSON with non-numeric ExecutionStatus' => [['ExecutionStatus' => 'abc', 'index_incarcare' => '12345']],
+        ]);
+    });
+
     describe('authentication error context preservation', function () {
         it('preserves API exception context when converting to AuthenticationException', function () {
             // Create a mock that throws ApiException with context on 401

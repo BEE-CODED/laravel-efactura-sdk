@@ -21,7 +21,7 @@ final class XmlParser
      * Parse an upload response XML from ANAF.
      *
      * @param  string  $xml  The raw XML response
-     * @return array{executionStatus: int, indexIncarcare: string|null, dateResponse: string|null, errors: string[]|null}
+     * @return array{executionStatus: int|null, indexIncarcare: string|null, dateResponse: string|null, errors: string[]|null}
      *
      * @throws XmlParsingException If the XML cannot be parsed or has unexpected structure
      */
@@ -282,7 +282,7 @@ final class XmlParser
      * Try to parse upload response structure.
      *
      * @param  array<string, mixed>  $doc  Parsed document
-     * @return array{executionStatus: int, indexIncarcare: string|null, dateResponse: string|null, errors: string[]|null}|null
+     * @return array{executionStatus: int|null, indexIncarcare: string|null, dateResponse: string|null, errors: string[]|null}|null
      */
     private static function tryParseUploadStructure(array $doc): ?array
     {
@@ -301,15 +301,18 @@ final class XmlParser
         /** @var array<string, mixed> $attributes */
         $attributes = isset($content['@']) && is_array($content['@']) ? $content['@'] : $content;
 
-        // Check for ExecutionStatus
-        if (! isset($attributes['ExecutionStatus'])) {
+        // A header with neither a status nor an upload index is not an upload answer.
+        if (! isset($attributes['ExecutionStatus']) && ! isset($attributes['index_incarcare'])) {
             return null;
         }
 
-        $executionStatusRaw = $attributes['ExecutionStatus'];
-        // Default non-numeric values to Error (1) instead of Success (0)
-        // to avoid masking API failures with malformed responses
-        $statusValue = is_numeric($executionStatusRaw) ? (int) $executionStatusRaw : ExecutionStatus::Error->value;
+        // Only an exact "0"/"1" is a recognised status. Missing, empty, non-numeric or
+        // out-of-range values are null (unknown outcome), never a guessed Success or Error.
+        $statusValue = match ($attributes['ExecutionStatus'] ?? null) {
+            '0', 0 => ExecutionStatus::Success->value,
+            '1', 1 => ExecutionStatus::Error->value,
+            default => null,
+        };
 
         $indexIncarcareRaw = $attributes['index_incarcare'] ?? null;
         $dateResponseRaw = $attributes['dateResponse'] ?? null;
@@ -321,8 +324,8 @@ final class XmlParser
             'errors' => null,
         ];
 
-        // Extract errors if status indicates error
-        if ($statusValue === ExecutionStatus::Error->value) {
+        // Extract errors unless ANAF explicitly reported success
+        if ($statusValue !== ExecutionStatus::Success->value) {
             $errors = $content['Errors'] ?? $content['errors'] ?? null;
             if ($errors !== null) {
                 // A single <Errors> element parses to one associative node

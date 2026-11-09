@@ -21452,17 +21452,21 @@ Execution status for upload operations. Represents the \`executionStatus\` field
 
 Note: This enum is backed by **int** (not string).
 
+\`UploadResponseData::$executionStatus\` is \`?ExecutionStatus\`: \`null\` when ANAF's ExecutionStatus was missing or not exactly 0/1, meaning the outcome is unknown (since 4.0).
+
 ## Usage example
 
 \`\`\`php
 use BeeCoded\\EFacturaSdk\\Enums\\ExecutionStatus;
 
-$status = ExecutionStatus::from($response['executionStatus']);
+$result = $client->uploadDocument($xml);
 
-if ($status === ExecutionStatus::Success) {
-    // upload accepted
+if ($result->executionStatus === ExecutionStatus::Success) {
+    // upload accepted; poll $result->indexIncarcare
+} elseif ($result->executionStatus === ExecutionStatus::Error) {
+    // ANAF rejected the upload; see $result->errors
 } else {
-    // handle upload error
+    // null: not recognised, outcome unknown; do not re-upload blindly
 }
 \`\`\`
 `,
@@ -22396,25 +22400,25 @@ Response from a document upload operation. Extends \`Spatie\\LaravelData\\Data\`
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
-| \`$executionStatus\` | \`ExecutionStatus\` | yes | \u2014 | Execution status (0 = Success, 1 = Error) |
+| \`$executionStatus\` | \`?ExecutionStatus\` | yes | \u2014 | Execution status (0 = Success, 1 = Error). \`null\` when ANAF's ExecutionStatus was missing or not exactly 0/1: not recognised, so the outcome is unknown (since 4.0) |
 | \`$dateResponse\` | \`?string\` | no | \`null\` | ANAF response timestamp |
-| \`$indexIncarcare\` | \`?string\` | no | \`null\` | Upload/load index ID \u2014 only present on success; use this as the upload ID for status polling |
-| \`$errors\` | \`string[]|null\` | no | \`null\` | Error messages \u2014 only present on error |
+| \`$indexIncarcare\` | \`?string\` | no | \`null\` | Upload/load index ID \u2014 present whenever ANAF took the document in, whatever the status says; use this as the upload ID for status polling |
+| \`$errors\` | \`string[]|null\` | no | \`null\` | Error messages \u2014 when the status is not success (error or unrecognised) |
 
 ## Static Factory Methods
 
 ### \`fromAnafResponse(array $response): self\`
-Parses the raw ANAF response array. Uses \`ExecutionStatus::tryFrom()\` with safe fallback to \`ExecutionStatus::Error\` if the field is missing or invalid.
+Parses the raw ANAF response array. Only an exact \`0\`/\`1\` (int, or the strings \`"0"\`/\`"1"\`) is recognised; a missing, empty, non-numeric, out-of-range or boolean value gives \`$executionStatus = null\`. Before 4.0 these became \`ExecutionStatus::Error\`, and a non-numeric string even became \`Success\`.
 
 Expected keys: \`ExecutionStatus\`, \`dateResponse\`, \`index_incarcare\`, \`Errors\`.
 
 ## Public Methods
 
 ### \`isSuccessful(): bool\`
-Returns \`true\` when \`$executionStatus === ExecutionStatus::Success\`.
+Returns \`true\` only when ANAF explicitly answered 0 (\`$executionStatus === ExecutionStatus::Success\`).
 
 ### \`isFailed(): bool\`
-Returns \`true\` when \`$executionStatus === ExecutionStatus::Error\`.
+Returns \`true\` only when ANAF explicitly answered 1 (\`$executionStatus === ExecutionStatus::Error\`). Both methods return \`false\` when the status is \`null\`, so \`! isSuccessful()\` does not mean failed.
 
 ## Example
 
@@ -22423,8 +22427,11 @@ $response = UploadResponseData::fromAnafResponse($apiResponse);
 
 if ($response->isSuccessful()) {
     $uploadId = $response->indexIncarcare; // poll status with this
-} else {
+} elseif ($response->isFailed()) {
     $errors = $response->errors;
+} else {
+    // Status not recognised: the outcome is unknown and the upload may have been filed.
+    // Do not re-upload blindly; if indexIncarcare is set, poll its status.
 }
 \`\`\`
 `,

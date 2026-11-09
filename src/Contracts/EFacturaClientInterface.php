@@ -39,7 +39,7 @@ interface EFacturaClientInterface
      *
      * @param  string  $xml  The UBL 2.1 XML invoice content
      * @param  UploadOptionsData|null  $options  Optional upload options (standard, extern, selfBilled, executare)
-     * @return UploadResponseData Contains upload ID on success
+     * @return UploadResponseData Contains the upload index whenever ANAF took the document in
      *
      * @throws ValidationException When XML content is empty or invalid
      * @throws AuthenticationException When authentication fails
@@ -54,7 +54,7 @@ interface EFacturaClientInterface
      *
      * @param  string  $xml  The UBL 2.1 XML invoice content
      * @param  UploadOptionsData|null  $options  Optional upload options
-     * @return UploadResponseData Contains upload ID on success
+     * @return UploadResponseData Contains the upload index whenever ANAF took the document in
      *
      * @throws ValidationException When XML content is empty or invalid
      * @throws AuthenticationException When authentication fails

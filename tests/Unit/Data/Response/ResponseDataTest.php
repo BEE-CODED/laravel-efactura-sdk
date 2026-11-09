@@ -36,18 +36,6 @@ describe('UploadResponseData', function () {
         expect($response->errors)->toBe(['Invalid XML format']);
     });
 
-    it('defaults to Error when ExecutionStatus is missing', function () {
-        $response = UploadResponseData::fromAnafResponse([]);
-
-        expect($response->executionStatus)->toBe(ExecutionStatus::Error);
-    });
-
-    it('defaults to Error for invalid ExecutionStatus', function () {
-        $response = UploadResponseData::fromAnafResponse(['ExecutionStatus' => 99]);
-
-        expect($response->executionStatus)->toBe(ExecutionStatus::Error);
-    });
-
     it('isSuccessful returns true for success', function () {
         $response = UploadResponseData::fromAnafResponse(['ExecutionStatus' => 0]);
 
@@ -60,6 +48,47 @@ describe('UploadResponseData', function () {
 
         expect($response->isFailed())->toBeTrue();
         expect($response->isSuccessful())->toBeFalse();
+    });
+
+    it('recognises an exact 0 or 1 as int or numeric string', function (mixed $raw, ExecutionStatus $expected, bool $successful) {
+        $response = UploadResponseData::fromAnafResponse(['ExecutionStatus' => $raw, 'index_incarcare' => '12345']);
+
+        expect($response->executionStatus)->toBe($expected);
+        expect($response->isSuccessful())->toBe($successful);
+        expect($response->isFailed())->toBe(! $successful);
+        expect($response->indexIncarcare)->toBe('12345');
+    })->with([
+        'int 0' => [0, ExecutionStatus::Success, true],
+        'string 0' => ['0', ExecutionStatus::Success, true],
+        'int 1' => [1, ExecutionStatus::Error, false],
+        'string 1' => ['1', ExecutionStatus::Error, false],
+    ]);
+
+    it('leaves an unrecognised ExecutionStatus null: neither successful nor failed', function (array $response) {
+        $data = UploadResponseData::fromAnafResponse($response + ['index_incarcare' => '12345']);
+
+        expect($data->executionStatus)->toBeNull();
+        expect($data->isSuccessful())->toBeFalse();
+        expect($data->isFailed())->toBeFalse();
+        expect($data->indexIncarcare)->toBe('12345');
+    })->with([
+        'missing' => [[]],
+        'null' => [['ExecutionStatus' => null]],
+        'empty string' => [['ExecutionStatus' => '']],
+        'string 9' => [['ExecutionStatus' => '9']],
+        'int 99' => [['ExecutionStatus' => 99]],
+        'non-numeric' => [['ExecutionStatus' => 'abc']],
+        'fraction' => [['ExecutionStatus' => '0.5']],
+        'padded' => [['ExecutionStatus' => ' 1']],
+        'bool false' => [['ExecutionStatus' => false]],
+        'bool true' => [['ExecutionStatus' => true]],
+    ]);
+
+    it('keeps errors when the status is not recognised', function () {
+        $response = UploadResponseData::fromAnafResponse(['Errors' => ['Something odd']]);
+
+        expect($response->executionStatus)->toBeNull();
+        expect($response->errors)->toBe(['Something odd']);
     });
 });
 

@@ -441,8 +441,18 @@ $result = $client->uploadB2CDocument($xmlContent);
 if ($result->isSuccessful()) {
     $uploadId = $result->indexIncarcare;
     // Store uploadId for status checking
+} elseif ($result->isFailed()) {
+    // ANAF answered ExecutionStatus 1
+    $errors = $result->errors;
+} else {
+    // $result->executionStatus is null: ANAF's ExecutionStatus was missing or not exactly 0/1,
+    // so the outcome is unknown. The upload may have been filed: do not re-upload blindly.
+    // If $result->indexIncarcare is set, ANAF took the file in: poll its status.
 }
 ```
+
+`isSuccessful()` and `isFailed()` are true only for an explicit ExecutionStatus of `0` and `1`;
+both are false when the status was not recognised (since 4.0).
 
 #### Check Processing Status
 
