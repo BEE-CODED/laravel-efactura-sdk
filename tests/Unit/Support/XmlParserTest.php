@@ -205,7 +205,7 @@ XML;
 
         $result = XmlParser::parseStatusResponse($xml);
 
-        expect($result['stare'])->toBe('nok');
+        expect($result['stare'])->toBeNull();
         expect($result['errors'])->toContain('Document not found');
     });
 
@@ -219,7 +219,7 @@ XML;
 
         $result = XmlParser::parseStatusResponse($xml);
 
-        expect($result['stare'])->toBe('nok');
+        expect($result['stare'])->toBeNull();
         expect($result['idDescarcare'])->toBeNull();
         // Must be a flat list of message strings - NOT the raw {"@":..., "_":...} node.
         expect($result['errors'])->toBe(['Nu exista factura cu id_incarcare= 9999999999']);
@@ -233,9 +233,23 @@ XML;
 
         $result = XmlParser::parseStatusResponse($xml);
 
-        expect($result['stare'])->toBe('nok');
+        expect($result['stare'])->toBeNull();
         expect($result['errors'])->toBe(['First problem', 'Second problem']);
     });
+
+    // An error with no text is still an error: dropping it would leave a status
+    // answer with neither a verdict nor an error.
+    it('falls back to a default message for an empty error', function (string $xml) {
+        $result = XmlParser::parseStatusResponse($xml);
+
+        expect($result['stare'])->toBeNull()
+            ->and($result['errors'])->toBe(['Operation failed']);
+    })->with([
+        'empty header errorMessage' => ['<?xml version="1.0"?><header><Errors errorMessage=""/></header>'],
+        'whitespace header errorMessage' => ['<?xml version="1.0"?><header><Errors errorMessage="  "/></header>'],
+        'empty Raspuns Error' => ['<?xml version="1.0"?><Raspuns><Error></Error></Raspuns>'],
+        'empty Raspuns mesaj' => ['<?xml version="1.0"?><Raspuns><Error><mesaj></mesaj></Error></Raspuns>'],
+    ]);
 });
 
 describe('getLastParseException', function () {

@@ -5,6 +5,10 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use Illuminate\Cache\RateLimiter as CacheRateLimiter;
+use Illuminate\Cache\Repository;
+use Illuminate\Contracts\Cache\Store;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter as LaravelRateLimiter;
 
 beforeEach(function () {
@@ -58,6 +62,74 @@ describe('checkGlobal', function () {
         config(['efactura-sdk.rate_limits.enabled' => true]);
 
         expect(true)->toBeTrue(); // If we reach here, test passes
+    });
+});
+
+describe('refused calls', function () {
+    it('keeps the window ending on time after a refused call', function () {
+        // Regression: taking a refused unit back went through increment(-1), which
+        // re-put the key with a fresh TTL, so steady traffic was refused forever.
+        config(['efactura-sdk.rate_limits.company_lookup_per_second' => 1]);
+        $limiter = new RateLimiter;
+        $this->freezeTime();
+
+        $limiter->checkCompanyLookup();
+
+        $this->travel(900)->milliseconds();
+        expect(fn () => $limiter->checkCompanyLookup())->toThrow(RateLimitExceededException::class);
+
+        $this->travel(600)->milliseconds();
+        $limiter->checkCompanyLookup();
+
+        expect(LaravelRateLimiter::attempts('efactura-sdk:second:company_lookup'))->toBe(1);
+    });
+
+    it('lets the next window allow exactly the limit after refused calls', function () {
+        config(['efactura-sdk.rate_limits.global_per_minute' => 2]);
+        $limiter = new RateLimiter;
+        $this->freezeTime();
+        $limiter->checkGlobal();
+        $limiter->checkGlobal();
+        expect(fn () => $limiter->checkGlobal())->toThrow(RateLimitExceededException::class);
+
+        $this->travel(61)->seconds();
+        $limiter->checkGlobal();
+        $limiter->checkGlobal();
+
+        expect(fn () => $limiter->checkGlobal())->toThrow(RateLimitExceededException::class);
+    });
+
+    it('refuses the last unit when another worker takes it first', function () {
+        // A check-then-hit (RateLimiter::attempt) reads limit-1, lets the other worker
+        // count, then counts too: both get the last unit. Increment-first sees limit+1.
+        config(['efactura-sdk.rate_limits.global_per_minute' => 3]);
+        $key = 'efactura-sdk:minute:global';
+        LaravelRateLimiter::increment($key, 60, 2);
+
+        // The other worker's increment lands just before this call's own.
+        $racing = new class(Cache::store()->getStore(), $key) extends Repository
+        {
+            private bool $raced = false;
+
+            public function __construct(Store $store, private readonly string $counterKey)
+            {
+                parent::__construct($store);
+            }
+
+            public function increment($key, $value = 1)
+            {
+                if (! $this->raced && $key === $this->counterKey) {
+                    $this->raced = true;
+                    parent::increment($key);
+                }
+
+                return parent::increment($key, $value);
+            }
+        };
+        LaravelRateLimiter::swap(new CacheRateLimiter($racing));
+
+        expect(fn () => (new RateLimiter)->checkGlobal())->toThrow(RateLimitExceededException::class)
+            ->and(LaravelRateLimiter::attempts($key))->toBe(4);
     });
 });
 

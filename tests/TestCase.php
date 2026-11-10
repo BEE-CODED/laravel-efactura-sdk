@@ -6,11 +6,21 @@ namespace BeeCoded\EFacturaSdk\Tests;
 
 use BeeCoded\EFacturaSdk\EFacturaServiceProvider;
 use BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth;
+use Illuminate\Support\Facades\Http;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use Spatie\LaravelData\LaravelDataServiceProvider;
 
 abstract class TestCase extends BaseTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // No test may reach a real ANAF host, even when an input guard it relies on
+        // regresses. Testbench rebuilds the app per test, so this is set every time.
+        Http::preventStrayRequests();
+    }
+
     protected function getPackageProviders($app): array
     {
         return [

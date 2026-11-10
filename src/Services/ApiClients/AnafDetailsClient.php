@@ -54,7 +54,10 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
      */
     public static function getTimeoutDuration(): float|int
     {
-        return config('efactura-sdk.http.timeout', 30);
+        // env() yields a string; an empty or zero value would be Guzzle's "no timeout".
+        $timeout = (float) config('efactura-sdk.http.timeout', 30);
+
+        return $timeout > 0 ? $timeout : 30;
     }
 
     /**
@@ -202,7 +205,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             }
 
             $response = $this->callRaw('', 'post', $jsonBody, 'application/json');
-            $data = self::decodeJson($response);
+            $data = static::decodeJson($response);
 
             // Distinguish between:
             // - not an array: JSON parsing failed, or a bare scalar (invalid response)
@@ -228,7 +231,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             // queried CUIs exist. That is a documented "not found" response, not an
             // error — parse the preserved body and surface the notFound CUIs.
             if ($e->statusCode === 404 && $e->details !== null) {
-                $decoded = json_decode($e->details, true, 512, JSON_BIGINT_AS_STRING);
+                $decoded = AnafValue::json($e->details);
                 if (is_array($decoded)
                     && (isset($decoded['found']) || isset($decoded['notFound']) || isset($decoded['notfound']))) {
                     $this->logger->info('ANAF API 404 with not-found body for batch request');

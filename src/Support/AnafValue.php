@@ -115,4 +115,21 @@ final class AnafValue
 
         return $messages === [] ? null : $messages;
     }
+
+    /**
+     * An ANAF body without a leading UTF-8 BOM, which neither JSON nor the XML
+     * dispatch checks accept as whitespace.
+     */
+    public static function withoutBom(string $body): string
+    {
+        return str_starts_with($body, "\u{FEFF}") ? substr($body, 3) : $body;
+    }
+
+    /**
+     * Decode an ANAF JSON body (BOM-tolerant), keeping integers too big for PHP as strings.
+     */
+    public static function json(string $body): mixed
+    {
+        return json_decode(self::withoutBom($body), true, 512, JSON_BIGINT_AS_STRING);
+    }
 }

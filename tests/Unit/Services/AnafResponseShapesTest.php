@@ -121,11 +121,38 @@ describe('status', function () {
         expect($response->errors)->toBe(['Id incarcare inexistent'])->and($response->hasAnafError())->toBeTrue();
     });
 
+    it('reports an XML header carrying only Errors as an ANAF error, not a rejection', function () {
+        // Same answer as JSON {"eroare": ...}: ANAF said nothing about the document.
+        Http::fake(['*' => Http::response('<?xml version="1.0"?><header><Errors errorMessage="Nu exista factura cu id_incarcare= 5001234567"/></header>')]);
+
+        $response = ($this->client)()->getStatusMessage('5001234567');
+
+        expect($response->hasAnafError())->toBeTrue()
+            ->and($response->isFailed())->toBeFalse()
+            ->and($response->stare)->toBeNull()
+            ->and($response->errors)->toBe(['Nu exista factura cu id_incarcare= 5001234567']);
+    });
+
+    it('reports an XML Errors element with an empty message as an ANAF error', function () {
+        Http::fake(['*' => Http::response('<?xml version="1.0"?><header><Errors errorMessage=""/></header>')]);
+
+        $response = ($this->client)()->getStatusMessage('5001234567');
+
+        expect($response->hasAnafError())->toBeTrue()
+            ->and($response->errors)->toBe(['Operation failed']);
+    });
+
     it('rejects a bare-number JSON body as unparseable', function () {
         Http::fake(['*' => ($this->json)('5')]);
 
         ($this->client)()->getStatusMessage('5001234567');
     })->throws(ApiException::class, 'Unable to parse status response');
+
+    it('reports the errorMessage of an XML error body', function () {
+        Http::fake(['*' => Http::response('<?xml version="1.0"?><header><Errors errorMessage="Id incarcare invalid"/></header>', 400, ['Content-Type' => 'application/xml'])]);
+
+        ($this->client)()->getStatusMessage('5001234567');
+    })->throws(ApiException::class, 'Id incarcare invalid');
 
     it('reports a scalar eroare when the error body message is not a string', function () {
         Http::fake(['*' => Http::response(['message' => ['nested'], 'eroare' => 'Cerere invalida'], 400)]);

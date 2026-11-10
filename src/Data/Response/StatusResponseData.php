@@ -19,10 +19,10 @@ class StatusResponseData extends Data
         public ?UploadStatusValue $stare = null,
 
         /**
-         * Download ID. Normally present for ok and nok, but not guaranteed: an XML
-         * <header> carrying only <Errors/> (unknown upload id, "Nu aveti dreptul")
-         * maps to nok with errors and NO download id -- that nok is not a verdict
-         * on the document, so callers should not treat it as a validation failure.
+         * Download ID. Normally present for ok and nok, but not guaranteed: a nok
+         * without one is not a verdict on the document, so callers should not treat
+         * it as a validation failure. An XML <header> carrying only <Errors/>
+         * (unknown upload id, "Nu aveti dreptul") has no stare at all: see hasAnafError().
          */
         public ?string $idDescarcare = null,
 
@@ -51,11 +51,25 @@ class StatusResponseData extends Data
      * Errors / eroare may be a string, an {errorMessage} object or a list of
      * either -- empty messages are dropped and an empty list is null.
      *
+     * laravel-data treats any static from*() taking an array as a magic creation
+     * method, so ::from() hands this method EVERY array, including this DTO's own
+     * toArray() output. An idDescarcare key without ANAF's
+     * id_descarcare picks that shape, read with the same normalisation.
+     *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
     {
         $stare = $response['stare'] ?? null;
+        $stare = $stare instanceof UploadStatusValue ? $stare->value : $stare;
+
+        if (array_key_exists('idDescarcare', $response) && ! array_key_exists('id_descarcare', $response)) {
+            return new self(
+                stare: is_string($stare) ? UploadStatusValue::tryFrom($stare) : null,
+                idDescarcare: AnafValue::id($response['idDescarcare']),
+                errors: AnafValue::errors($response['errors'] ?? null),
+            );
+        }
 
         return new self(
             // A non-string stare (e.g. a number) is not a status ANAF defines: unknown, so null.
@@ -106,7 +120,7 @@ class StatusResponseData extends Data
      * Whether ANAF answered with an error instead of a status.
      *
      * True exactly when there is no recognisable stare but ANAF did say something --
-     * the 200 + {"eroare"} shape. This is NOT a verdict on the document: it means the
+     * the 200 + {"eroare"} shape, or an XML <header> carrying only <Errors/>. This is NOT a verdict on the document: it means the
      * upload's state could not be determined, so a caller should park it for a human
      * rather than complete it, fail it, or keep polling. isReady(), isFailed() and
      * isInProgress() are all false here by design.

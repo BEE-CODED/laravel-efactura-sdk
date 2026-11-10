@@ -12,6 +12,7 @@ use BeeCoded\EFacturaSdk\Enums\StandardType;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
 use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Carbon\Carbon;
@@ -20,8 +21,11 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Request;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Psr\Log\LoggerInterface;
 
 /**
  * Test helper: EFacturaClient with short lock wait time for faster tests.
@@ -74,6 +78,45 @@ beforeEach(function () {
 });
 
 describe('EFacturaClient', function () {
+    describe('timeout config', function () {
+        // env() hands EFACTURA_TIMEOUT over as a string: under strict_types the float|int
+        // return type rejected it, and an empty value must not become Guzzle's 0 (no timeout).
+        it('reads a string timeout as a number and falls back to 30 when it is empty', function (mixed $timeout, int|float $expected) {
+            config()->set('efactura-sdk.http.timeout', $timeout);
+
+            expect(EFacturaClient::getTimeoutDuration())->toBe($expected)
+                ->and(AnafDetailsClient::getTimeoutDuration())->toBe($expected);
+        })->with([
+            'numeric string' => ['60', 60.0],
+            'sub-second float' => [0.5, 0.5],
+            'fractional string' => ['2.5', 2.5],
+            'empty string' => ['', 30],
+            'zero string' => ['0', 30],
+            'null' => [null, 30],
+        ]);
+    });
+
+    describe('debug request logging', function () {
+        it('redacts the bearer token from the logged request headers', function () {
+            config()->set('efactura-sdk.logging.debug', true);
+            $logger = Mockery::spy(LoggerInterface::class);
+            Log::shouldReceive('channel')->andReturn($logger);
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="1"/>', 200)]);
+
+            (new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'secret-access-token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            ))->getStatusMessage('12345');
+
+            $logger->shouldHaveReceived('debug')->withArgs(
+                fn (string $message, array $context) => ($context['requestHeaders']['Authorization'] ?? null) === '[redacted]'
+                    && ! str_contains(json_encode($context) ?: '', 'secret-access-token')
+            )->once();
+        });
+    });
+
     describe('uploadDocument validation', function () {
         it('throws ValidationException for empty XML', function () {
             Http::fake([
@@ -203,6 +246,30 @@ describe('EFacturaClient', function () {
 
             $client->getMessages($params);
         })->throws(ValidationException::class, 'Days must be between 1 and 60');
+    });
+
+    describe('message list CIF validation', function () {
+        it('throws ValidationException for a blank CIF before any request', function (Closure $call) {
+            Http::fake(['*' => Http::response(['mesaje' => []])]);
+            $this->rateLimiter->shouldNotReceive('checkSimpleList', 'checkPaginatedList', 'ensureAvailable');
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $call($client))->toThrow(ValidationException::class, 'CIF cannot be empty');
+            Http::assertNothingSent();
+        })->with([
+            'simple list' => fn (EFacturaClient $client) => $client->getMessages(new ListMessagesParamsData(cif: '', days: 10)),
+            'paginated list' => fn (EFacturaClient $client) => $client->getMessagesPaginated(new PaginatedMessagesParamsData(
+                cif: '   ',
+                startTime: Carbon::now()->subDay()->getTimestampMs(),
+                endTime: Carbon::now()->getTimestampMs(),
+            )),
+        ]);
     });
 
     describe('getMessagesPaginated validation', function () {
@@ -763,6 +830,48 @@ describe('EFacturaClient', function () {
         });
     });
 
+    describe('BOM-prefixed XML answers', function () {
+        it('reads the index from a BOM-prefixed XML upload answer', function () {
+            Http::fake(['*' => Http::response("\u{FEFF}<?xml version=\"1.0\"?><header ExecutionStatus=\"0\" index_incarcare=\"12345\"/>", 200)]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->uploadDocument('<Invoice/>')->indexIncarcare)->toBe('12345');
+        });
+
+        it('reads a BOM-prefixed XML status answer', function () {
+            Http::fake(['*' => Http::response("\u{FEFF}<?xml version=\"1.0\"?><header stare=\"ok\" id_descarcare=\"12345\"/>", 200)]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect($client->getStatusMessage('12345')->idDescarcare)->toBe('12345');
+        });
+
+        it('parses a JSON status answer through a subclass\'s decodeJson override', function () {
+            Http::fake(['*' => Http::response('not json', 200)]);
+
+            $client = new class(vatNumber: '12345678', accessToken: 'token', refreshToken: 'refresh', expiresAt: Carbon::now()->addHour()) extends EFacturaClient
+            {
+                protected static function decodeJson(Response $response): mixed
+                {
+                    return ['stare' => 'ok', 'id_descarcare' => '9'];
+                }
+            };
+
+            expect($client->getStatusMessage('12345')->idDescarcare)->toBe('9');
+        });
+    });
+
     describe('upload answer with an unrecognised ExecutionStatus', function () {
         it('returns the index with a null status', function (mixed $body) {
             Http::fake(['*' => Http::response($body, 200)]);
@@ -927,6 +1036,26 @@ describe('EFacturaClient', function () {
             $client->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1);
         })->throws(ApiException::class, 'PDF conversion failed with invalid JSON response');
 
+        it('refuses a 2xx body that is not a PDF', function (string $body, string $contentType, string $message) {
+            config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transform');
+            Http::fake(['*' => Http::response($body, 200, ['Content-Type' => $contentType])]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            expect(fn () => $client->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1))
+                ->toThrow(fn (ApiException $e) => expect($e->getMessage())->toContain($message)
+                    ->and($e->statusCode)->toBe(200));
+        })->with([
+            'HTML maintenance page' => ['<html><body>Mentenanta</body></html>', 'text/html', 'ANAF did not return a PDF'],
+            'JSON error without a JSON content type' => ['{"eroare":"XML invalid"}', 'text/plain', 'XML invalid'],
+            'BOM-prefixed JSON error without a JSON content type' => ["\u{FEFF}\n{\"eroare\":\"XML invalid\"}", 'text/plain', 'XML invalid'],
+        ]);
+
         it('returns PDF binary when response is successful', function () {
             // Configure the transform endpoint
             config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transform');
@@ -978,6 +1107,60 @@ describe('EFacturaClient', function () {
 
             $client->downloadDocument('12345');
         })->throws(ApiException::class, 'Nu existe niciun mesaj cu id-ul=12345');
+
+        it('reads ANAF\'s message from a BOM-prefixed JSON error body', function () {
+            Http::fake(['*' => Http::response("\u{FEFF}{\"eroare\":\"Id_descarcare cu BOM\"}", 200, ['Content-Type' => 'application/json'])]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->downloadDocument('12345');
+        })->throws(ApiException::class, 'Id_descarcare cu BOM');
+
+        it('detects a BOM-prefixed JSON error body sent as text/plain', function () {
+            Http::fake(['*' => Http::response("\u{FEFF}{\"eroare\":\"Id_descarcare text cu BOM\"}", 200, ['Content-Type' => 'text/plain'])]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->downloadDocument('12345');
+        })->throws(ApiException::class, 'Id_descarcare text cu BOM');
+
+        it('checks a download body through a subclass\'s decodeJson override', function () {
+            Http::fake(['*' => Http::response('not json', 200, ['Content-Type' => 'application/json'])]);
+
+            $client = new class(vatNumber: '12345678', accessToken: 'token', refreshToken: 'refresh', expiresAt: Carbon::now()->addHour()) extends EFacturaClient
+            {
+                protected static function decodeJson(Response $response): mixed
+                {
+                    return ['eroare' => 'decoded by subclass'];
+                }
+            };
+
+            // Without the override the guard sees no JSON and reports "did not return a ZIP archive".
+            $client->downloadDocument('12345');
+        })->throws(ApiException::class, 'decoded by subclass');
+
+        it('falls back to the default message for a blank JSON error on a 2xx download', function () {
+            Http::fake(['*' => Http::response('{"eroare":""}', 200, ['Content-Type' => 'application/json'])]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+
+            $client->downloadDocument('12345');
+        })->throws(ApiException::class, 'No error message in API response');
 
         it('detects a JSON error body even without a JSON content-type', function () {
             Http::fake([
@@ -1698,6 +1881,104 @@ describe('EFacturaClient', function () {
             // Ours is expired and the store's is valid and later: adopt it, do not
             // spend our own now-dead refresh token.
             expect($client->getTokens()->accessToken)->toBe('other-worker-access');
+        });
+    });
+
+    describe('token refresh lock and persister', function () {
+        it('holds the refresh lock for the HTTP timeout plus a margin', function () {
+            // A lock that expires while the refresh request is still in flight lets a
+            // second worker spend the same rotating refresh token.
+            config()->set('efactura-sdk.http.timeout', '60');
+            $lock = app('cache')->store()->lock('efactura:token_refresh:12345678', 90);
+            Cache::shouldReceive('lock')->once()->with('efactura:token_refresh:12345678', 90)->andReturn($lock);
+
+            $this->authenticator->shouldReceive('refreshAccessToken')->once()->andReturn(new OAuthTokensData(
+                accessToken: 'new-access',
+                refreshToken: 'new-refresh',
+                expiresAt: Carbon::now()->addHour(),
+            ));
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200)]);
+
+            (new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+            ))->getStatusMessage('12345');
+        });
+
+        it('persists the rotated tokens while it still holds the refresh lock', function () {
+            $this->authenticator->shouldReceive('refreshAccessToken')->once()->andReturn(new OAuthTokensData(
+                accessToken: 'new-access',
+                refreshToken: 'new-refresh',
+                expiresAt: Carbon::now()->addHour(),
+            ));
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200)]);
+
+            $persisted = null;
+            $lockHeld = null;
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenPersister: function (OAuthTokensData $tokens) use (&$persisted, &$lockHeld) {
+                    $persisted = $tokens;
+                    $lockHeld = ! Cache::lock('efactura:token_refresh:12345678', 5)->get();
+                },
+            );
+
+            $client->getStatusMessage('12345');
+
+            expect($persisted?->refreshToken)->toBe('new-refresh')
+                ->and($lockHeld)->toBeTrue()
+                ->and($client->wasTokenRefreshed())->toBeTrue()
+                // Released afterwards.
+                ->and(Cache::lock('efactura:token_refresh:12345678', 5)->get())->toBeTrue();
+        });
+
+        it('lets a persister failure reach the caller', function () {
+            $this->authenticator->shouldReceive('refreshAccessToken')->once()->andReturn(new OAuthTokensData(
+                accessToken: 'new-access',
+                refreshToken: 'new-refresh',
+                expiresAt: Carbon::now()->addHour(),
+            ));
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200)]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenPersister: fn () => throw new RuntimeException('store down'),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345'))->toThrow(RuntimeException::class, 'store down')
+                ->and($client->wasTokenRefreshed())->toBeTrue()
+                ->and($client->getTokens()->refreshToken)->toBe('new-refresh');
+            Http::assertNothingSent();
+        });
+
+        it('lets a persister lock timeout reach the caller as itself, not as a refresh lock timeout', function () {
+            // The refresh succeeded; "another process may be refreshing, retry" would send
+            // the caller off to spend the now-dead refresh token still in its store.
+            $this->authenticator->shouldReceive('refreshAccessToken')->once()->andReturn(new OAuthTokensData(
+                accessToken: 'new-access',
+                refreshToken: 'new-refresh',
+                expiresAt: Carbon::now()->addHour(),
+            ));
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200)]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+                tokenPersister: fn () => throw new LockTimeoutException('persister lock busy'),
+            );
+
+            expect(fn () => $client->getStatusMessage('12345'))->toThrow(LockTimeoutException::class, 'persister lock busy')
+                ->and($client->wasTokenRefreshed())->toBeTrue();
         });
     });
 

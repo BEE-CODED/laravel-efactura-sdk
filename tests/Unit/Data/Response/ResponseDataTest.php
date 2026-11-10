@@ -430,3 +430,65 @@ describe('ValidationResultData', function () {
         expect($result->errors)->toHaveCount(2);
     });
 });
+
+describe('round trip through toArray()', function () {
+    // laravel-data routes every array given to ::from() through fromAnafResponse(), a magic
+    // creation method, so a DTO's own toArray() output must be read back as itself, not as ANAF data.
+    $message = fn (string $id) => new MessageDetailsData(
+        id: $id,
+        cif: '12345678',
+        dataCreare: '202611101200',
+        tip: 'FACTURA PRIMITA',
+        detalii: 'Factura cu id_incarcare=5001',
+        idSolicitare: '5001',
+    );
+
+    it('rebuilds an equal DTO from its own array', function (Closure $build) {
+        $original = $build();
+        $array = $original->toArray();
+        $rebuilt = $original::from($array);
+
+        // Compared through toArray(): toEqual() would also compare laravel-data's internal context.
+        expect($rebuilt)->toBeInstanceOf($original::class)
+            ->and($rebuilt->toArray())->toBe($array);
+    })->with([
+        'upload, success' => fn () => new UploadResponseData(ExecutionStatus::Success, '202611101200', '5001'),
+        'upload, unknown status' => fn () => new UploadResponseData(null, null, '5001', ['Eroare']),
+        'upload, error' => fn () => new UploadResponseData(ExecutionStatus::Error, errors: ['E1', 'E2']),
+        'status, ok' => fn () => new StatusResponseData(UploadStatusValue::Ok, '3001'),
+        'status, ANAF error' => fn () => new StatusResponseData(null, null, ['Nu aveti dreptul']),
+        'message' => fn () => $message('3001'),
+        'message list' => fn () => new ListMessagesResponseData(
+            mesaje: [$message('3001'), $message('3002')],
+            serial: 's1',
+            cui: '12345678',
+            titlu: 'Lista Mesaje',
+            info: 'info',
+            error: 'eroare',
+            downloadError: 'eroare descarcare',
+        ),
+        'paginated message list' => fn () => new PaginatedMessagesResponseData(
+            mesaje: [$message('3001')],
+            recordsInPage: 1,
+            recordsPerPage: 500,
+            totalRecords: 1,
+            totalPages: 1,
+            currentPage: 1,
+            serial: 's1',
+            cui: '12345678',
+            titlu: 'Lista Mesaje',
+            error: 'eroare',
+        ),
+        'validation' => fn () => new ValidationResultData(false, 'detalii', 'trace', ['E1', 'E2']),
+    ]);
+});
+
+describe('message lists with entries that are not objects', function () {
+    it('keeps the remaining messages as a list', function (string $class) {
+        $response = $class::fromAnafResponse(['mesaje' => ['not a message', ['id' => '3001', 'cif' => '12345678']]]);
+
+        expect($response->mesaje)->toHaveCount(1)
+            ->and(array_is_list($response->mesaje))->toBeTrue()
+            ->and($response->mesaje[0]->id)->toBe('3001');
+    })->with([ListMessagesResponseData::class, PaginatedMessagesResponseData::class]);
+});

@@ -74,12 +74,12 @@ HTTP client settings for communicating with the ANAF API.
 
 | | |
 |---|---|
-| **Type** | integer (seconds) |
+| **Type** | number (seconds) |
 | **Environment variable** | \`EFACTURA_TIMEOUT\` |
 | **Default** | \`30\` |
 | **Required** | No |
 
-Maximum number of seconds to wait for an API response before timing out.
+Maximum number of seconds to wait for an API response before timing out. A fraction such as \`0.5\` is allowed (the OAuth token request rounds it up to whole seconds); an empty, zero or negative value falls back to \`30\`.
 
 ### \`http.retry_times\`
 
@@ -155,7 +155,7 @@ The Laravel logging channel to use for SDK log messages. Add a matching channel 
 | **Default** | \`false\` |
 | **Required** | No |
 
-When \`true\`, enables verbose debug logging of all HTTP requests and responses.
+When \`true\`, enables verbose debug logging of all HTTP requests and responses. The \`Authorization\` request header is logged as \`[redacted]\` (since 4.0).
 
 ---
 

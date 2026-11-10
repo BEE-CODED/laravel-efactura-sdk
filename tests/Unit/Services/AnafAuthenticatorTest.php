@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Http;
 function createAuthenticator(?HttpFactory $http = null): AnafAuthenticator
 {
     return new AnafAuthenticator(
-        http: $http ?? new HttpFactory,
+        http: $http ?? Http::getFacadeRoot(),
         config: [
             'oauth' => [
                 'client_id' => 'test-client-id',
@@ -35,7 +35,7 @@ describe('AnafAuthenticator', function () {
     describe('constructor', function () {
         it('validates required OAuth config', function () {
             new AnafAuthenticator(
-                http: new HttpFactory,
+                http: Http::getFacadeRoot(),
                 config: [
                     'oauth' => [
                         'client_id' => '',
@@ -54,7 +54,7 @@ describe('AnafAuthenticator', function () {
 
         it('validates authorize endpoint', function () {
             new AnafAuthenticator(
-                http: new HttpFactory,
+                http: Http::getFacadeRoot(),
                 config: [
                     'oauth' => [
                         'client_id' => 'id',
@@ -73,7 +73,7 @@ describe('AnafAuthenticator', function () {
 
         it('validates token endpoint', function () {
             new AnafAuthenticator(
-                http: new HttpFactory,
+                http: Http::getFacadeRoot(),
                 config: [
                     'oauth' => [
                         'client_id' => 'id',
@@ -89,6 +89,34 @@ describe('AnafAuthenticator', function () {
                 ]
             );
         })->throws(AuthenticationException::class, 'Missing required OAuth token endpoint');
+    });
+
+    describe('timeout config', function () {
+        // env() hands EFACTURA_TIMEOUT over as a string; under strict_types an int property
+        // rejected it with a TypeError, and an empty value must not become Guzzle's 0 (no timeout).
+        it('accepts a string timeout and falls back to 30 when it is empty', function (mixed $timeout, int $expected) {
+            Http::fake(['*' => Http::response(['access_token' => 'a', 'refresh_token' => 'r', 'expires_in' => 3600])]);
+
+            $auth = new AnafAuthenticator(
+                http: Http::getFacadeRoot(),
+                config: [
+                    'oauth' => ['client_id' => 'id', 'client_secret' => 'secret', 'redirect_uri' => 'https://example.com/callback'],
+                    'endpoints' => ['oauth' => ['authorize' => 'https://example.com/auth', 'token' => 'https://example.com/token']],
+                    'http' => ['timeout' => $timeout],
+                ]
+            );
+
+            $auth->refreshAccessToken('refresh-token');
+
+            expect((fn () => $this->timeout)->call($auth))->toBe($expected);
+        })->with([
+            'numeric string' => ['60', 60],
+            'sub-second float rounds up' => [0.5, 1],
+            'fractional string rounds up' => ['2.5', 3],
+            'empty string' => ['', 30],
+            'zero string' => ['0', 30],
+            'null' => [null, 30],
+        ]);
     });
 
     describe('getAuthorizationUrl', function () {
@@ -208,6 +236,19 @@ describe('AnafAuthenticator', function () {
 
             expect($tokens->accessToken)->toBe('refreshed-access-token');
             expect($tokens->refreshToken)->toBe('new-refresh-token');
+        });
+
+        it('reads a BOM-prefixed token answer', function () {
+            Http::fake(['*' => Http::response("\u{FEFF}".json_encode([
+                'access_token' => 'bom-access-token',
+                'refresh_token' => 'bom-refresh-token',
+                'expires_in' => 3600,
+            ]), 200)]);
+
+            $tokens = createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('old-refresh-token');
+
+            expect($tokens->accessToken)->toBe('bom-access-token')
+                ->and($tokens->refreshToken)->toBe('bom-refresh-token');
         });
 
         it('throws exception on refresh error', function () {
@@ -376,5 +417,23 @@ describe('AnafAuthenticator', function () {
             $auth = createAuthenticator(Http::getFacadeRoot());
             $auth->refreshAccessToken('refresh-token');
         })->throws(AuthenticationException::class, 'OAuth server returned non-JSON response');
+
+        it('carries the real HTTP status, not 401, for an unreadable 2xx token answer', function (mixed $body) {
+            Http::fake(['*' => Http::response($body, 200)]);
+
+            $auth = createAuthenticator(Http::getFacadeRoot());
+
+            try {
+                $auth->refreshAccessToken('refresh-token');
+                $this->fail('Expected AuthenticationException');
+            } catch (AuthenticationException $e) {
+                // 401 would read as ANAF refusing the grant.
+                expect($e->getCode())->toBe(200);
+            }
+        })->with([
+            'html' => ['<html><body>Maintenance</body></html>'],
+            'no access token' => [['refresh_token' => 'r']],
+            'no refresh token' => [['access_token' => 'a']],
+        ]);
     });
 });

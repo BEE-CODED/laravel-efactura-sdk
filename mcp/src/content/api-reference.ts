@@ -15,6 +15,7 @@ public function __construct(
     ?CarbonInterface $expiresAt = null,
     ?AnafAuthenticatorInterface $authenticator = null,
     ?Closure $tokenReloader = null,          // added in v3.0.0
+    ?Closure $tokenPersister = null,         // added in v4.0.0
 )
 \`\`\`
 
@@ -30,6 +31,7 @@ public static function fromTokens(
     OAuthTokensData $tokens,
     ?AnafAuthenticatorInterface $authenticator = null,
     ?Closure $tokenReloader = null,          // added in v3.0.0
+    ?Closure $tokenPersister = null,         // added in v4.0.0
 ): self
 \`\`\`
 
@@ -64,6 +66,28 @@ Contract:
 - It does **not** mark \`wasTokenRefreshed()\` — the tokens came out of your store, so there is
   nothing new to write back.
 
+## \`$tokenPersister\` — store rotated tokens under the lock (new in v4.0.0, optional)
+
+\`(Closure(OAuthTokensData): mixed)|null\`. Called with the tokens a refresh just minted, **inside
+the refresh lock**, right after the refresh succeeds and before the lock is released. The next
+worker to take the lock reloads what you stored, so nobody can spend the rotated refresh token
+first. The lock is held for the HTTP timeout (\`http.timeout\`) plus 30 seconds.
+
+\`\`\`php
+$client = EFacturaClient::fromTokens(
+    vatNumber: $vatNumber,
+    tokens: $tokens,
+    // Your own storage: load and save the company's token pair.
+    tokenReloader: fn () => $this->loadTokens($company),
+    tokenPersister: fn (OAuthTokensData $new) => $this->persistTokens($company, $new),
+);
+\`\`\`
+
+Contract:
+- An exception it throws **reaches your code**: persistence failed and you must know. The client
+  keeps the new tokens and \`wasTokenRefreshed()\` is still \`true\`.
+- \`wasTokenRefreshed()\` keeps its meaning, so the after-the-call persistence pattern still works.
+
 ## Public Methods
 
 \`\`\`php
@@ -81,6 +105,13 @@ public function getTokens(): OAuthTokensData
 public function getVatNumber(): string
 public function getRateLimiter(): RateLimiter // concrete class only, not on interface
 \`\`\`
+
+\`getMessages()\` and \`getMessagesPaginated()\` throw \`ValidationException('CIF cannot be empty')\` for an
+empty or blank \`cif\`, before any quota is spent (since 4.0).
+
+\`convertXmlToPdf()\` throws \`ApiException\` with ANAF's status code when ANAF answers with a JSON
+error (with or without a JSON content type), or with any body that does not start with \`%PDF\`, such
+as a maintenance page (since 4.0).
 
 ## Token Refresh Behavior
 

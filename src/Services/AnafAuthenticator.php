@@ -52,7 +52,9 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         $this->redirectUri = $config['oauth']['redirect_uri'];
         $this->authorizeUrl = $config['endpoints']['oauth']['authorize'];
         $this->tokenUrl = $config['endpoints']['oauth']['token'];
-        $this->timeout = $config['http']['timeout'] ?? 30;
+        // env() yields a string; an empty or zero value would be Guzzle's "no timeout".
+        $timeout = (float) ($config['http']['timeout'] ?? 30);
+        $this->timeout = $timeout > 0 ? max(1, (int) ceil($timeout)) : 30;
     }
 
     /**
@@ -278,7 +280,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
      */
     private function parseTokenResponse(Response $response, string $errorPrefix): OAuthTokensData
     {
-        $data = $response->json();
+        $data = AnafValue::json($response->body());
 
         // A bare scalar body is as unusable as a non-JSON one.
         if (! is_array($data)) {
@@ -312,7 +314,8 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             );
 
             throw new AuthenticationException(
-                "{$errorPrefix}: OAuth server returned non-JSON response"
+                "{$errorPrefix}: OAuth server returned non-JSON response",
+                $response->status()
             );
         }
 
@@ -323,7 +326,8 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             );
 
             throw new AuthenticationException(
-                "{$errorPrefix}: Response did not contain an access token"
+                "{$errorPrefix}: Response did not contain an access token",
+                $response->status()
             );
         }
 
@@ -333,7 +337,8 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             );
 
             throw new AuthenticationException(
-                "{$errorPrefix}: Response did not contain a refresh token"
+                "{$errorPrefix}: Response did not contain a refresh token",
+                $response->status()
             );
         }
 

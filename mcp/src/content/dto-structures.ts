@@ -751,7 +751,7 @@ Response from a status check operation for a previously uploaded document. Exten
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | \`$stare\` | \`?UploadStatusValue\` | no | \`null\` | Processing status (ok, nok, in prelucrare, XML cu erori nepreluat de sistem) |
-| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID — normally present for \`ok\` and \`nok\`; absent for \`XML cu erori nepreluat de sistem\`, and for the \`nok\` an XML \`<header>\` with only \`<Errors/>\` maps to (see below). Use it to download the result ZIP |
+| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID — normally present for \`ok\` and \`nok\`; absent for \`XML cu erori nepreluat de sistem\`, and not guaranteed for \`nok\` (see below). Use it to download the result ZIP |
 | \`$errors\` | \`string[]\|null\` | no | \`null\` | Error messages, from \`Errors\` or, when that holds nothing usable, from \`eroare\` |
 
 ## Static Factory Methods
@@ -778,13 +778,14 @@ Returns \`true\` when \`$stare === UploadStatusValue::NotProcessed\` (\`XML cu e
 Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being processed by ANAF).
 
 ### \`hasAnafError(): bool\`
-Returns \`true\` when there is no recognisable \`$stare\` but \`$errors\` is non-empty: the HTTP 200 \`{"eroare": "..."}\` shape. This is **not** a verdict on the document (the upload may have been filed); park it for a human instead of completing it, failing it or polling forever. \`isReady()\`, \`isFailed()\` and \`isInProgress()\` are all \`false\` here.
+Returns \`true\` when there is no recognisable \`$stare\` but \`$errors\` is non-empty: the HTTP 200 \`{"eroare": "..."}\` shape, or an XML \`<header>\` with only \`<Errors/>\`. This is **not** a verdict on the document (the upload may have been filed); park it for a human instead of completing it, failing it or polling forever. \`isReady()\`, \`isFailed()\` and \`isInProgress()\` are all \`false\` here.
 
 ## Usage Notes
 
 - When \`isInProgress()\` is true, wait and retry the status check (ANAF typically processes within minutes).
 - \`$idDescarcare\` is normally available for both \`ok\` and \`nok\` results — for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
-- **\`nok\` without a download id is not a rejection.** The XML parser maps a \`<header>\` carrying only \`<Errors/>\` (an unknown upload id, \`Nu aveti dreptul\` …) to \`nok\` with \`$errors\` and **no** \`$idDescarcare\`. ANAF said nothing about the document itself, so treat \`isFailed() && $idDescarcare === null\` like \`hasAnafError()\`: undetermined, not a validation failure.
+- **\`nok\` without a download id is not a rejection.** Treat \`isFailed() && $idDescarcare === null\` like \`hasAnafError()\`: undetermined, not a validation failure.
+- An XML \`<header>\` carrying only \`<Errors/>\` (an unknown upload id, \`Nu aveti dreptul\` …) has no \`stare\` (since 4.0; it used to map to \`nok\`): \`$stare\` is \`null\`, \`$errors\` holds ANAF's messages and \`hasAnafError()\` is \`true\`, the same as the JSON \`{"eroare": "..."}\` answer.
 
 ## Example
 
@@ -864,7 +865,13 @@ Response from an XML validation operation. Extends \`Spatie\\LaravelData\\Data\`
 ## Static Factory Methods
 
 ### \`fromAnafResponse(array $response): self\`
-Creates from a raw ANAF response array. Expected keys: \`valid\`, \`details\`, \`info\`, \`Errors\`. A non-scalar \`details\`/\`info\` becomes \`null\`; \`Errors\` is normalised like \`UploadResponseData::$errors\` (since 4.0).
+The one parser for ANAF's validare/verificare answers; \`validateXml()\`, \`verifySignature()\` and \`convertXmlToPdf()\` use it (since 4.0):
+- \`$valid\`: an explicit yes in \`valid\` (\`true\`, \`1\`, \`"1"\`, \`"true"\`) or \`stare\` = \`"ok"\`;
+- \`$details\`: \`mesaj\`, then \`detalii\`, \`details\`, \`message\`;
+- \`$info\`: \`info\`, then \`trace_id\`;
+- \`$errors\`: \`Messages[].message\`, then \`Errors\`, then \`eroare\` (and the DTO's own \`errors\`), as one list of non-empty strings, or \`null\` when empty.
+
+A non-scalar text value becomes \`null\`. \`ValidationResultData::from($result->toArray())\` rebuilds an equal DTO (with laravel-data's default camelCase output naming).
 
 ### \`success(?string $details = null): self\`
 Creates a result with \`valid = true\`.

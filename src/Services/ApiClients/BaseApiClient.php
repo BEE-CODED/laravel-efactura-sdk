@@ -6,6 +6,7 @@ namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Support\AnafValue;
+use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Closure;
 use Exception;
 use Illuminate\Http\Client\ConnectionException;
@@ -163,7 +164,14 @@ abstract class BaseApiClient implements HasLogger
         );
 
         if (config('efactura-sdk.logging.debug')) {
-            $logContext['requestHeaders'] = $this->getDefaultHeaders() + $headers;
+            // Never write the bearer token to the logs.
+            $requestHeaders = $this->getDefaultHeaders() + $headers;
+            foreach (array_keys($requestHeaders) as $name) {
+                if (strcasecmp($name, 'Authorization') === 0) {
+                    $requestHeaders[$name] = '[redacted]';
+                }
+            }
+            $logContext['requestHeaders'] = $requestHeaders;
             $logContext['responseHeaders'] = $response->headers();
             $logContext['responseBody'] = $response->body();
 
@@ -467,24 +475,36 @@ abstract class BaseApiClient implements HasLogger
      * - 'message': Standard HTTP error message
      * - 'eroare': Romanian error message (used by e-Factura API)
      * - 'error': Standard error key
+     * - an XML body's errorMessage (or mesaj), e.g. <Errors errorMessage="..."/>
      */
     protected function extractErrorMessage(Response $response): string
     {
-        return AnafValue::text($response->json('message'))
-            ?? AnafValue::text($response->json('eroare'))
-            ?? AnafValue::text($response->json('error'))
+        $data = static::decodeJson($response);
+        $data = is_array($data) ? $data : [];
+        // Each candidate counts only when it is non-blank text (same rule as XmlParser), so a
+        // blank, boolean or non-scalar value falls through to the next one; a literal "0" counts.
+        $message = static fn (mixed $value): ?string => is_bool($value) || trim((string) AnafValue::text($value)) === ''
+            ? null
+            : AnafValue::text($value);
+
+        return $message($data['message'] ?? null)
+            ?? $message($data['eroare'] ?? null)
+            ?? $message($data['error'] ?? null)
+            ?? $message(XmlParser::extractErrorMessage(AnafValue::withoutBom($response->body())))
             ?? 'No error message in API response';
     }
 
     /**
      * Decode an ANAF JSON body, keeping integers too big for PHP as strings.
      *
-     * Response::json() takes no decode flags, and without JSON_BIGINT_AS_STRING a
-     * big index or id becomes a float that has already lost digits. Callers must
-     * check the result is an array: ANAF can answer 2xx with a bare scalar.
+     * Decodes the body directly rather than through Response::json(), which would
+     * apply a host-wide default flag set and does not strip a UTF-8 BOM. Without
+     * JSON_BIGINT_AS_STRING a big index or id becomes a float that has already lost
+     * digits. Callers must check the result is an array: ANAF can answer 2xx with a
+     * bare scalar.
      */
     protected static function decodeJson(Response $response): mixed
     {
-        return json_decode($response->body(), true, 512, JSON_BIGINT_AS_STRING);
+        return AnafValue::json($response->body());
     }
 }

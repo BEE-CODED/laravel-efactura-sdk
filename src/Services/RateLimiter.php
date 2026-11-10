@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Log;
 /**
  * Rate limiter for ANAF e-Factura API.
  *
- * Uses Laravel's native RateLimiter with atomic operations to enforce limits at multiple levels:
+ * Uses Laravel's native RateLimiter counters to enforce limits at multiple levels:
  * - Global: 500/minute (ANAF limit: 1000)
  * - Per endpoint/CUI/message combinations
  *
@@ -22,8 +22,10 @@ use Illuminate\Support\Facades\Log;
  * status_per_day_message_provider (default 100) is ANAF's full status limit on purpose:
  * it applies only to status reads that opt in with $useProviderLimit.
  *
- * Note: Uses atomic increment-then-check pattern via RateLimiter::attempt()
- * to prevent race conditions in concurrent environments.
+ * Note: counts with increment-then-check (RateLimitStore::attemptOrFail()), so
+ * concurrent workers cannot both take the last unit on a cache store with an atomic
+ * increment. A refused increment stays counted in its already-full window, which still
+ * ends on time; per-CUI/per-message checks peek first so a refusal there counts nothing.
  */
 class RateLimiter
 {
@@ -302,8 +304,11 @@ class RateLimiter
 
         [$key, $limit, $message] = $this->endpointBucket($scope, $identifier, $useProviderLimit);
 
-        // Atomic check-and-increment to prevent race conditions
-        if (! $this->dailyStore->attemptOrFail($key, $limit)) {
+        // Peek first: the status counter is shared by two limits, so a unit counted while
+        // refused at the lower one would spend the higher one. Only two workers racing
+        // for the lower limit's last unit can still leave the loser's unit counted.
+        if ($this->dailyStore->getRemaining($key, $limit) <= 0
+            || ! $this->dailyStore->attemptOrFail($key, $limit)) {
             $this->refuseEndpoint($scope, $key, $message);
         }
     }

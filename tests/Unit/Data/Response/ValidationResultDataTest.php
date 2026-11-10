@@ -49,6 +49,23 @@ describe('ValidationResultData', function () {
             expect($result->errors)->toBe(['Schema validation failed']);
         });
 
+        it('reads ANAF validare answers the same way the client does', function () {
+            $result = ValidationResultData::fromAnafResponse([
+                'stare' => 'nok',
+                'mesaj' => 'Fisierul nu este valid',
+                'trace_id' => 77,
+                'Messages' => [['message' => 'E: first'], 'E: second'],
+                'Errors' => [['errorMessage' => 'E: third']],
+                'eroare' => 'E: fourth',
+            ]);
+
+            expect($result->valid)->toBeFalse()
+                ->and($result->details)->toBe('Fisierul nu este valid')
+                ->and($result->info)->toBe('77')
+                ->and($result->errors)->toBe(['E: first', 'E: second', 'E: third', 'E: fourth'])
+                ->and(ValidationResultData::fromAnafResponse(['stare' => 'ok'])->valid)->toBeTrue();
+        });
+
         it('defaults valid to false', function () {
             $result = ValidationResultData::fromAnafResponse([]);
 

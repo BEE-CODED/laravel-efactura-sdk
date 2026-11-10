@@ -221,60 +221,49 @@ describe('BaseApiClient', function () {
     });
 
     describe('extractErrorMessage', function () {
-        it('extracts message from "message" key', function () {
-            $response = Mockery::mock(Response::class);
-            $response->shouldReceive('json')->with('message')->andReturn('Error message from message key');
-            $response->shouldReceive('json')->with('eroare')->andReturn(null);
-            $response->shouldReceive('json')->with('error')->andReturn(null);
+        $message = fn (string $body): string => (new TestableBaseApiClient)
+            ->testExtractErrorMessage(new Response(new GuzzleHttp\Psr7\Response(400, [], $body)));
 
-            $client = new TestableBaseApiClient;
+        it('reads the first JSON error key in order: message, eroare, error', function (string $body, string $expected) use ($message) {
+            expect($message($body))->toBe($expected);
+        })->with([
+            'message' => ['{"message":"Error message from message key"}', 'Error message from message key'],
+            'eroare (Romanian)' => ['{"eroare":"Eroare de validare XML"}', 'Eroare de validare XML'],
+            'error' => ['{"error":"Generic error"}', 'Generic error'],
+            'message over eroare' => ['{"eroare":"Secondary","message":"Primary error"}', 'Primary error'],
+            'BOM-prefixed JSON' => ["\u{FEFF}{\"eroare\":\"Eroare cu BOM\"}", 'Eroare cu BOM'],
+            'blank message falls through to eroare' => ['{"message":"","eroare":"Fisierul nu este valid"}', 'Fisierul nu este valid'],
+            'boolean message falls through to error' => ['{"message":false,"error":"Generic error"}', 'Generic error'],
+            'non-scalar eroare falls through to error' => ['{"eroare":{"cod":1},"error":"Generic error"}', 'Generic error'],
+            'literal "0" message is kept' => ['{"message":"0","eroare":"Secondary"}', '0'],
+        ]);
 
-            expect($client->testExtractErrorMessage($response))->toBe('Error message from message key');
+        it('returns the default message when no error is found', function (string $body) use ($message) {
+            expect($message($body))->toBe('No error message in API response');
+        })->with([
+            'empty body' => [''],
+            'JSON without error keys' => ['{"foo":"bar"}'],
+            'blank JSON eroare' => ['{"eroare":""}'],
+            'blank, boolean and non-scalar JSON keys' => ['{"message":"  ","eroare":true,"error":[]}'],
+            'empty XML errorMessage' => ['<?xml version="1.0"?><header><Errors errorMessage=""/></header>'],
+            'blank XML errorMessage' => ['<?xml version="1.0"?><header><Errors errorMessage="  "/></header>'],
+        ]);
+
+        it('decodes through a subclass\'s decodeJson override', function () {
+            $client = new class extends TestableBaseApiClient
+            {
+                protected static function decodeJson(Response $response): mixed
+                {
+                    return ['eroare' => 'decoded by subclass'];
+                }
+            };
+
+            expect($client->testExtractErrorMessage(new Response(new GuzzleHttp\Psr7\Response(400, [], 'not json'))))
+                ->toBe('decoded by subclass');
         });
 
-        it('extracts message from "eroare" key (Romanian)', function () {
-            // Bug fix: Now uses standardized error extraction with Romanian key support
-            $response = Mockery::mock(Response::class);
-            $response->shouldReceive('json')->with('message')->andReturn(null);
-            $response->shouldReceive('json')->with('eroare')->andReturn('Eroare de validare XML');
-            $response->shouldReceive('json')->with('error')->andReturn(null);
-
-            $client = new TestableBaseApiClient;
-
-            expect($client->testExtractErrorMessage($response))->toBe('Eroare de validare XML');
-        });
-
-        it('extracts message from "error" key', function () {
-            $response = Mockery::mock(Response::class);
-            $response->shouldReceive('json')->with('message')->andReturn(null);
-            $response->shouldReceive('json')->with('eroare')->andReturn(null);
-            $response->shouldReceive('json')->with('error')->andReturn('Generic error');
-
-            $client = new TestableBaseApiClient;
-
-            expect($client->testExtractErrorMessage($response))->toBe('Generic error');
-        });
-
-        it('returns default message when no error keys found', function () {
-            $response = Mockery::mock(Response::class);
-            $response->shouldReceive('json')->with('message')->andReturn(null);
-            $response->shouldReceive('json')->with('eroare')->andReturn(null);
-            $response->shouldReceive('json')->with('error')->andReturn(null);
-
-            $client = new TestableBaseApiClient;
-
-            expect($client->testExtractErrorMessage($response))->toBe('No error message in API response');
-        });
-
-        it('prioritizes message over eroare', function () {
-            // Tests that keys are checked in correct order
-            $response = Mockery::mock(Response::class);
-            $response->shouldReceive('json')->with('message')->andReturn('Primary error');
-            // Other keys should not be checked due to null coalescing
-
-            $client = new TestableBaseApiClient;
-
-            expect($client->testExtractErrorMessage($response))->toBe('Primary error');
+        it('keeps a literal "0" XML errorMessage', function () use ($message) {
+            expect($message('<?xml version="1.0"?><header><Errors errorMessage="0"/></header>'))->toBe('0');
         });
     });
 });

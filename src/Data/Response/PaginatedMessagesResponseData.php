@@ -61,14 +61,21 @@ class PaginatedMessagesResponseData extends Data
      * a string, text fields that are not scalars become null, counts accept ints
      * and digit strings, and messages without an id keep a null id.
      *
+     * laravel-data treats any static from*() taking an array as a magic creation
+     * method, so ::from() hands this method EVERY array, including this DTO's own
+     * toArray() output. A currentPage key without ANAF's
+     * index_pagina_curenta picks that shape; each message picks its own.
+     *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
     {
+        $own = array_key_exists('currentPage', $response) && ! array_key_exists('index_pagina_curenta', $response);
+
         $mesaje = null;
         if (isset($response['mesaje']) && is_array($response['mesaje'])) {
-            // Filter to ensure all elements are arrays before mapping
-            $validItems = array_filter($response['mesaje'], 'is_array');
+            // Filter to ensure all elements are arrays before mapping; re-index so the list stays a list
+            $validItems = array_values(array_filter($response['mesaje'], 'is_array'));
             if (! empty($validItems)) {
                 $mesaje = array_map(
                     fn (array $item) => MessageDetailsData::fromAnafResponse($item),
@@ -79,15 +86,15 @@ class PaginatedMessagesResponseData extends Data
 
         return new self(
             mesaje: $mesaje,
-            recordsInPage: AnafValue::int($response['numar_inregistrari_in_pagina'] ?? null),
-            recordsPerPage: AnafValue::int($response['numar_total_inregistrari_per_pagina'] ?? null),
-            totalRecords: AnafValue::int($response['numar_total_inregistrari'] ?? null),
-            totalPages: AnafValue::int($response['numar_total_pagini'] ?? null),
-            currentPage: AnafValue::int($response['index_pagina_curenta'] ?? null),
+            recordsInPage: AnafValue::int($response[$own ? 'recordsInPage' : 'numar_inregistrari_in_pagina'] ?? null),
+            recordsPerPage: AnafValue::int($response[$own ? 'recordsPerPage' : 'numar_total_inregistrari_per_pagina'] ?? null),
+            totalRecords: AnafValue::int($response[$own ? 'totalRecords' : 'numar_total_inregistrari'] ?? null),
+            totalPages: AnafValue::int($response[$own ? 'totalPages' : 'numar_total_pagini'] ?? null),
+            currentPage: AnafValue::int($response[$own ? 'currentPage' : 'index_pagina_curenta'] ?? null),
             serial: AnafValue::id($response['serial'] ?? null),
             cui: AnafValue::id($response['cui'] ?? null),
             titlu: AnafValue::text($response['titlu'] ?? null),
-            error: AnafValue::text($response['eroare'] ?? null),
+            error: AnafValue::text($response[$own ? 'error' : 'eroare'] ?? null),
         );
     }
 

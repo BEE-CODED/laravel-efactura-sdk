@@ -61,6 +61,15 @@ use Psr\Log\LoggerInterface;
  *     $newTokens = $client->getTokens();
  *     // Persist $newTokens to database
  * }
+ *
+ * // Multi-worker deployments: re-read the store under the refresh lock, and write
+ * // a rotated pair before the lock is released, so no other worker can spend it.
+ * $client = EFacturaClient::fromTokens(
+ *     '12345678',
+ *     $tokens,
+ *     tokenReloader: fn () => $store->tokensFor('12345678'),
+ *     tokenPersister: fn (OAuthTokensData $new) => $store->save('12345678', $new),
+ * );
  * ```
  */
 class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
@@ -71,9 +80,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private const int TOKEN_EXPIRY_BUFFER_SECONDS = 120;
 
     /**
-     * Lock timeout in seconds for token refresh.
+     * Seconds the refresh lock outlives the HTTP timeout of the refresh request,
+     * covering the reloader and persister that also run under it.
      */
-    private const int TOKEN_REFRESH_LOCK_TIMEOUT = 10;
+    private const int TOKEN_REFRESH_LOCK_MARGIN_SECONDS = 30;
 
     /**
      * Default maximum time to wait for lock acquisition in seconds.
@@ -132,6 +142,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private ?Closure $tokenReloader = null;
 
     /**
+     * Optional callback that writes freshly refreshed tokens to the caller's store.
+     *
+     * @var (Closure(OAuthTokensData): mixed)|null
+     */
+    private ?Closure $tokenPersister = null;
+
+    /**
      * The rate limiter for API call throttling.
      */
     private readonly RateLimiter $rateLimiter;
@@ -162,6 +179,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *                                                             rotated tokens instead of spending its own
      *                                                             (now dead) refresh token. Strongly recommended
      *                                                             for multi-worker deployments.
+     * @param  (Closure(OAuthTokensData): mixed)|null  $tokenPersister  Optional callback that stores the
+     *                                                                  tokens a refresh just minted. Called
+     *                                                                  inside the refresh lock, right after a
+     *                                                                  successful refresh and before release,
+     *                                                                  so no other worker can spend the rotated
+     *                                                                  refresh token first. An exception it throws
+     *                                                                  reaches the caller; the client keeps the
+     *                                                                  new tokens and wasTokenRefreshed() is true.
      */
     public function __construct(
         private readonly string $vatNumber,
@@ -170,6 +195,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         ?CarbonInterface $expiresAt = null,
         ?AnafAuthenticatorInterface $authenticator = null,
         ?Closure $tokenReloader = null,
+        ?Closure $tokenPersister = null,
     ) {
         parent::__construct();
 
@@ -178,6 +204,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->expiresAt = self::normaliseExpiry($expiresAt);
         $this->authenticator = $authenticator;
         $this->tokenReloader = $tokenReloader;
+        $this->tokenPersister = $tokenPersister;
         $this->rateLimiter = app(RateLimiter::class);
     }
 
@@ -215,12 +242,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * @param  OAuthTokensData  $tokens  The OAuth tokens
      * @param  AnafAuthenticatorInterface|null  $authenticator  Optional authenticator for token refresh
      * @param  (Closure(): ?OAuthTokensData)|null  $tokenReloader  Optional callback re-reading persisted tokens
+     * @param  (Closure(OAuthTokensData): mixed)|null  $tokenPersister  Optional callback storing refreshed tokens under the lock
      */
     public static function fromTokens(
         string $vatNumber,
         OAuthTokensData $tokens,
         ?AnafAuthenticatorInterface $authenticator = null,
         ?Closure $tokenReloader = null,
+        ?Closure $tokenPersister = null,
     ): self {
         return new self(
             vatNumber: $vatNumber,
@@ -229,6 +258,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             expiresAt: $tokens->expiresAt,
             authenticator: $authenticator,
             tokenReloader: $tokenReloader,
+            tokenPersister: $tokenPersister,
         );
     }
 
@@ -247,7 +277,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public static function getTimeoutDuration(): float|int
     {
-        return config('efactura-sdk.http.timeout', 30);
+        // env() yields a string; an empty or zero value would be Guzzle's "no timeout".
+        $timeout = (float) config('efactura-sdk.http.timeout', 30);
+
+        return $timeout > 0 ? $timeout : 30;
     }
 
     /**
@@ -514,12 +547,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private function guardDownloadBody(Response $response): void
     {
         $body = $response->body();
-        $trimmed = ltrim($body);
+        $trimmed = ltrim(AnafValue::withoutBom($body));
         $contentType = (string) $response->header('Content-Type');
 
         // Prefer the JSON path: it carries ANAF's actual error message.
         if (str_contains($contentType, 'application/json') || str_starts_with($trimmed, '{')) {
-            $json = $response->json();
+            $json = static::decodeJson($response);
 
             if (is_array($json)) {
                 throw new ApiException(
@@ -553,6 +586,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData
     {
         // Validate first - fail fast without consuming rate limit quota
+        $this->validateCif($params->cif);
         $this->validateDays($params->days);
 
         $this->meterCall(
@@ -586,6 +620,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData
     {
         // Validate first - fail fast without consuming rate limit quota
+        $this->validateCif($params->cif);
         $this->validateTimeRange($params->startTime, $params->endTime);
         $this->validatePage($params->page);
 
@@ -685,13 +720,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $response = $this->authenticatedXmlRequestToUrl($url, 'POST', $xml, expectBinary: true);
 
-        // Check if response is actually an error (JSON response instead of PDF)
+        // ANAF can answer 2xx with a JSON error instead of a PDF, sometimes without a JSON content type.
         $contentType = (string) $response->header('Content-Type');
-        if (str_contains($contentType, 'application/json')) {
+        $body = $response->body();
+        if (str_contains($contentType, 'json') || str_starts_with(ltrim(AnafValue::withoutBom($body)), '{')) {
             $errorData = $this->decodeJsonObject($response, 'PDF conversion failed with invalid JSON response');
             // Same shape as the validare service: the real reason lives in
             // Messages[].message, so prefer it over the generic fallback.
-            $messages = self::extractValidationErrors($errorData);
+            $messages = ValidationResultData::fromAnafResponse($errorData)->errors;
 
             throw new ApiException(
                 AnafValue::text($errorData['message'] ?? null)
@@ -703,7 +739,19 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             );
         }
 
-        return $response->body();
+        // Anything else that is not a PDF (an HTML maintenance page, plain text) is not a document.
+        if (! str_starts_with($body, '%PDF')) {
+            throw new ApiException(
+                sprintf(
+                    'ANAF did not return a PDF (content-type: %s).',
+                    $contentType === '' ? 'unknown' : $contentType
+                ),
+                $response->status(),
+                substr($body, 0, 500)
+            );
+        }
+
+        return $body;
     }
 
     /**
@@ -749,9 +797,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * concurrent requests detect an expired token simultaneously.
      * ANAF uses rotating refresh tokens - once used, old tokens are invalidated.
      *
-     * The lock ensures only one process refreshes the token at a time. Other processes
-     * waiting on the lock will still use their existing tokens after lock timeout,
-     * but the lock serializes refresh attempts to prevent multiple concurrent refreshes.
+     * The lock ensures only one process refreshes the token at a time. A process that
+     * cannot get the lock within the wait time throws AuthenticationException (code 0)
+     * instead of using its old token.
      *
      * @throws AuthenticationException When token refresh fails
      */
@@ -772,11 +820,27 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         // Use distributed lock to prevent concurrent token refresh attempts
         // This is critical because ANAF invalidates refresh tokens after use
         $lockKey = "efactura:token_refresh:{$this->vatNumber}";
-        $lock = Cache::lock($lockKey, self::TOKEN_REFRESH_LOCK_TIMEOUT);
+        // The lock must outlive the refresh request: one that expires mid-request
+        // lets another worker spend the same rotating refresh token.
+        $lock = Cache::lock($lockKey, (int) ceil(static::getTimeoutDuration()) + self::TOKEN_REFRESH_LOCK_MARGIN_SECONDS);
 
         try {
-            // Wait for lock with timeout - block() throws LockTimeoutException on timeout
-            $lock->block($this->getLockWaitSeconds());
+            try {
+                $lock->block($this->getLockWaitSeconds());
+            } catch (LockTimeoutException $e) {
+                // Only our own lock wait: a persister's LockTimeoutException must reach
+                // the caller as itself. Another process is likely refreshing - fail fast
+                // rather than use a stale token (ANAF rotates refresh tokens).
+                $this->logger->error('Could not acquire token refresh lock, token may be stale', [
+                    'vatNumber' => $this->vatNumber,
+                ]);
+
+                throw new AuthenticationException(
+                    'Token refresh lock timeout. Another process may be refreshing the token. Please retry.',
+                    0,
+                    $e
+                );
+            }
 
             // Re-read the persisted tokens now that we hold the lock. Whoever held it
             // before us may have refreshed and rotated them, which would leave our
@@ -788,22 +852,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 return $this->accessToken;
             }
 
-            $this->refreshTokens();
+            $newTokens = $this->refreshTokens();
+
+            // Still under the lock: the next worker to take it reloads what we stored.
+            if ($this->tokenPersister !== null) {
+                ($this->tokenPersister)($newTokens);
+            }
 
             return $this->accessToken;
-        } catch (LockTimeoutException $e) {
-            // Could not acquire lock within timeout
-            // Another process is likely refreshing the token - fail fast rather than use stale token
-            // ANAF uses rotating refresh tokens, so the old token is invalidated after refresh
-            $this->logger->error('Could not acquire token refresh lock, token may be stale', [
-                'vatNumber' => $this->vatNumber,
-            ]);
-
-            throw new AuthenticationException(
-                'Token refresh lock timeout. Another process may be refreshing the token. Please retry.',
-                0,
-                $e
-            );
         } finally {
             // Safe to call - Laravel's lock tracks ownership and won't release others' locks
             $lock->release();
@@ -907,9 +963,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     /**
      * Refresh the access token using the refresh token.
      *
+     * @return OAuthTokensData The tokens ANAF just issued
+     *
      * @throws AuthenticationException When refresh fails
      */
-    private function refreshTokens(): void
+    private function refreshTokens(): OAuthTokensData
     {
         $this->logger->info('Refreshing ANAF access token', [
             'vatNumber' => $this->vatNumber,
@@ -928,6 +986,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 'vatNumber' => $this->vatNumber,
                 'newExpiresAt' => $this->expiresAt?->toIso8601String(),
             ]);
+
+            return $newTokens;
         } catch (AuthenticationException $e) {
             // Mark refresh as failed to prevent cascading failures on subsequent calls
             // The client must be recreated with fresh credentials to recover
@@ -1192,11 +1252,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private function parseUploadResponse(Response $response): UploadResponseData
     {
         $body = $response->body();
+        $xml = trim(AnafValue::withoutBom($body));
 
         // Try to parse as XML first (ANAF returns XML for upload responses)
-        if (str_starts_with(trim($body), '<?xml') || str_starts_with(trim($body), '<')) {
+        if (str_starts_with($xml, '<')) {
             try {
-                $parsed = XmlParser::parseUploadResponse($body);
+                $parsed = XmlParser::parseUploadResponse($xml);
 
                 return UploadResponseData::fromAnafResponse([
                     'ExecutionStatus' => $parsed['executionStatus'],
@@ -1226,11 +1287,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private function parseStatusResponse(Response $response): StatusResponseData
     {
         $body = $response->body();
+        $xml = trim(AnafValue::withoutBom($body));
 
         // Try to parse as XML first
-        if (str_starts_with(trim($body), '<?xml') || str_starts_with(trim($body), '<')) {
+        if (str_starts_with($xml, '<')) {
             try {
-                $parsed = XmlParser::parseStatusResponse($body);
+                $parsed = XmlParser::parseStatusResponse($xml);
 
                 return StatusResponseData::fromAnafResponse([
                     'stare' => $parsed['stare'],
@@ -1258,23 +1320,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     private function parseValidationResponse(Response $response): ValidationResultData
     {
-        $json = $this->decodeJsonObject($response, 'Unable to parse validation response');
-
-        // Handle ANAF validation response format
-        // Success: {"stare": "ok", "trace_id": ...} or {"valid": true}
-        // Error:   {"stare": "nok", "Messages": [{"message": "E: ..."}], "trace_id": ...}
-        // Legacy:  {"valid": false, "mesaj": "..."} or {"eroare": "..."}
-        // Note: Do NOT use stripos heuristics as it matches "Invalid", "not valid", etc.
-        $isValid = AnafValue::flag($json['valid'] ?? null)
-            || ($json['stare'] ?? null) === 'ok';
-
-        return new ValidationResultData(
-            valid: $isValid,
-            details: AnafValue::text($json['mesaj'] ?? null)
-                ?? AnafValue::text($json['detalii'] ?? null)
-                ?? AnafValue::text($json['message'] ?? null),
-            info: AnafValue::text($json['info'] ?? null) ?? self::extractTraceId($json),
-            errors: self::extractValidationErrors($json),
+        return ValidationResultData::fromAnafResponse(
+            $this->decodeJsonObject($response, 'Unable to parse validation response')
         );
     }
 
@@ -1291,67 +1338,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     private function decodeJsonObject(Response $response, string $message): array
     {
-        $json = self::decodeJson($response);
+        $json = static::decodeJson($response);
 
         if (! is_array($json)) {
             throw new ApiException($message, $response->status(), $response->body());
         }
 
         return $json;
-    }
-
-    /**
-     * Collect the human-readable reasons a validation failed.
-     *
-     * ANAF's validare/verificare services report these in Messages[].message.
-     * Without them the caller learns the document is invalid but never why, which
-     * makes a rejected filing undiagnosable. Legacy Errors/eroare keys are still
-     * honoured, and plain-string Messages entries are accepted defensively.
-     *
-     * @param  array<string, mixed>  $json
-     * @return string[]|null Null when the response carries no error detail at all
-     */
-    private static function extractValidationErrors(array $json): ?array
-    {
-        $errors = [];
-
-        if (isset($json['Messages']) && is_array($json['Messages'])) {
-            foreach ($json['Messages'] as $entry) {
-                if (is_array($entry) && isset($entry['message']) && is_scalar($entry['message'])) {
-                    $errors[] = (string) $entry['message'];
-                } elseif (is_string($entry)) {
-                    $errors[] = $entry;
-                }
-            }
-        }
-
-        if (isset($json['Errors']) && is_array($json['Errors'])) {
-            foreach ($json['Errors'] as $entry) {
-                if (is_array($entry) && isset($entry['errorMessage']) && is_scalar($entry['errorMessage'])) {
-                    $errors[] = (string) $entry['errorMessage'];
-                } elseif (is_scalar($entry)) {
-                    $errors[] = (string) $entry;
-                }
-            }
-        }
-
-        if (isset($json['eroare']) && is_scalar($json['eroare'])) {
-            $errors[] = (string) $json['eroare'];
-        }
-
-        return $errors === [] ? null : $errors;
-    }
-
-    /**
-     * ANAF returns trace_id both quoted and bare; normalise to the DTO's string.
-     *
-     * @param  array<string, mixed>  $json
-     */
-    private static function extractTraceId(array $json): ?string
-    {
-        return isset($json['trace_id']) && is_scalar($json['trace_id'])
-            ? (string) $json['trace_id']
-            : null;
     }
 
     /**
@@ -1395,6 +1388,18 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         if (! ctype_digit($downloadId)) {
             throw new ValidationException('Download ID must be a numeric string');
+        }
+    }
+
+    /**
+     * Validate the CIF of a message list request.
+     *
+     * @throws ValidationException When the CIF is empty or blank
+     */
+    private function validateCif(string $cif): void
+    {
+        if (trim($cif) === '') {
+            throw new ValidationException('CIF cannot be empty');
         }
     }
 

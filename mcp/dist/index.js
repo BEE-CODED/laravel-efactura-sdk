@@ -21062,12 +21062,12 @@ HTTP client settings for communicating with the ANAF API.
 
 | | |
 |---|---|
-| **Type** | integer (seconds) |
+| **Type** | number (seconds) |
 | **Environment variable** | \`EFACTURA_TIMEOUT\` |
 | **Default** | \`30\` |
 | **Required** | No |
 
-Maximum number of seconds to wait for an API response before timing out.
+Maximum number of seconds to wait for an API response before timing out. A fraction such as \`0.5\` is allowed (the OAuth token request rounds it up to whole seconds); an empty, zero or negative value falls back to \`30\`.
 
 ### \`http.retry_times\`
 
@@ -21143,7 +21143,7 @@ The Laravel logging channel to use for SDK log messages. Add a matching channel 
 | **Default** | \`false\` |
 | **Required** | No |
 
-When \`true\`, enables verbose debug logging of all HTTP requests and responses.
+When \`true\`, enables verbose debug logging of all HTTP requests and responses. The \`Authorization\` request header is logged as \`[redacted]\` (since 4.0).
 
 ---
 
@@ -22487,7 +22487,7 @@ Response from a status check operation for a previously uploaded document. Exten
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | \`$stare\` | \`?UploadStatusValue\` | no | \`null\` | Processing status (ok, nok, in prelucrare, XML cu erori nepreluat de sistem) |
-| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID \u2014 normally present for \`ok\` and \`nok\`; absent for \`XML cu erori nepreluat de sistem\`, and for the \`nok\` an XML \`<header>\` with only \`<Errors/>\` maps to (see below). Use it to download the result ZIP |
+| \`$idDescarcare\` | \`?string\` | no | \`null\` | Download ID \u2014 normally present for \`ok\` and \`nok\`; absent for \`XML cu erori nepreluat de sistem\`, and not guaranteed for \`nok\` (see below). Use it to download the result ZIP |
 | \`$errors\` | \`string[]|null\` | no | \`null\` | Error messages, from \`Errors\` or, when that holds nothing usable, from \`eroare\` |
 
 ## Static Factory Methods
@@ -22514,13 +22514,14 @@ Returns \`true\` when \`$stare === UploadStatusValue::NotProcessed\` (\`XML cu e
 Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being processed by ANAF).
 
 ### \`hasAnafError(): bool\`
-Returns \`true\` when there is no recognisable \`$stare\` but \`$errors\` is non-empty: the HTTP 200 \`{"eroare": "..."}\` shape. This is **not** a verdict on the document (the upload may have been filed); park it for a human instead of completing it, failing it or polling forever. \`isReady()\`, \`isFailed()\` and \`isInProgress()\` are all \`false\` here.
+Returns \`true\` when there is no recognisable \`$stare\` but \`$errors\` is non-empty: the HTTP 200 \`{"eroare": "..."}\` shape, or an XML \`<header>\` with only \`<Errors/>\`. This is **not** a verdict on the document (the upload may have been filed); park it for a human instead of completing it, failing it or polling forever. \`isReady()\`, \`isFailed()\` and \`isInProgress()\` are all \`false\` here.
 
 ## Usage Notes
 
 - When \`isInProgress()\` is true, wait and retry the status check (ANAF typically processes within minutes).
 - \`$idDescarcare\` is normally available for both \`ok\` and \`nok\` results \u2014 for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
-- **\`nok\` without a download id is not a rejection.** The XML parser maps a \`<header>\` carrying only \`<Errors/>\` (an unknown upload id, \`Nu aveti dreptul\` \u2026) to \`nok\` with \`$errors\` and **no** \`$idDescarcare\`. ANAF said nothing about the document itself, so treat \`isFailed() && $idDescarcare === null\` like \`hasAnafError()\`: undetermined, not a validation failure.
+- **\`nok\` without a download id is not a rejection.** Treat \`isFailed() && $idDescarcare === null\` like \`hasAnafError()\`: undetermined, not a validation failure.
+- An XML \`<header>\` carrying only \`<Errors/>\` (an unknown upload id, \`Nu aveti dreptul\` \u2026) has no \`stare\` (since 4.0; it used to map to \`nok\`): \`$stare\` is \`null\`, \`$errors\` holds ANAF's messages and \`hasAnafError()\` is \`true\`, the same as the JSON \`{"eroare": "..."}\` answer.
 
 ## Example
 
@@ -22598,7 +22599,13 @@ Response from an XML validation operation. Extends \`Spatie\\LaravelData\\Data\`
 ## Static Factory Methods
 
 ### \`fromAnafResponse(array $response): self\`
-Creates from a raw ANAF response array. Expected keys: \`valid\`, \`details\`, \`info\`, \`Errors\`. A non-scalar \`details\`/\`info\` becomes \`null\`; \`Errors\` is normalised like \`UploadResponseData::$errors\` (since 4.0).
+The one parser for ANAF's validare/verificare answers; \`validateXml()\`, \`verifySignature()\` and \`convertXmlToPdf()\` use it (since 4.0):
+- \`$valid\`: an explicit yes in \`valid\` (\`true\`, \`1\`, \`"1"\`, \`"true"\`) or \`stare\` = \`"ok"\`;
+- \`$details\`: \`mesaj\`, then \`detalii\`, \`details\`, \`message\`;
+- \`$info\`: \`info\`, then \`trace_id\`;
+- \`$errors\`: \`Messages[].message\`, then \`Errors\`, then \`eroare\` (and the DTO's own \`errors\`), as one list of non-empty strings, or \`null\` when empty.
+
+A non-scalar text value becomes \`null\`. \`ValidationResultData::from($result->toArray())\` rebuilds an equal DTO (with laravel-data's default camelCase output naming).
 
 ### \`success(?string $details = null): self\`
 Creates a result with \`valid = true\`.
@@ -23365,8 +23372,8 @@ for ($i = 0; $i < $maxAttempts; $i++) {
     }
 
     if ($status->isFailed()) {
-        // nok WITHOUT a download id: an XML <header> with only <Errors/> (unknown upload id,
-        // "Nu aveti dreptul"). No verdict on the document \u2014 park it for a human, like hasAnafError()
+        // nok WITHOUT a download id: no verdict on the document \u2014 park it for a human,
+        // like hasAnafError()
         break;
     }
 
@@ -23374,7 +23381,7 @@ for ($i = 0; $i < $maxAttempts; $i++) {
         // Final: ANAF did not take the file in \u2014 no download id; correct and resubmit
         break;
     }
-    if ($status->hasAnafError()) {            // null stare with $status->errors: ANAF told us nothing about this upload
+    if ($status->hasAnafError()) {            // null stare with $status->errors (JSON eroare, or an XML <header> with only <Errors/>)
         // Park it for a human: do not complete it, fail it or keep polling
         break;
     }
@@ -24107,6 +24114,8 @@ class AuthenticationException extends EFacturaException
 - Token refresh lock timeout (concurrent refresh attempt)
 - API returns HTTP 401
 
+**Code:** for a token-endpoint answer, its HTTP status (400/401 when ANAF refuses the grant; 200 for an unreadable 2xx answer or one without tokens); 0 for a transport failure or a lock timeout; otherwise the default 401.
+
 ## ValidationException
 
 **Namespace:** \`BeeCoded\\EFacturaSdk\\Exceptions\\ValidationException\`
@@ -24342,7 +24351,7 @@ use BeeCoded\\EFacturaSdk\\Exceptions\\AuthenticationException;
 try {
     $tokens = EFacturaSdkAuth::exchangeCodeForToken($code);
 } catch (AuthenticationException $e) {
-    // $e->getCode() is 401
+    // $e->getCode() is ANAF's HTTP status (400/401 = grant refused), 0 for a transport failure
     Log::error('Token exchange failed', ['message' => $e->getMessage()]);
 }
 
@@ -24613,7 +24622,7 @@ foreach ($pendingUploads as $upload) {
 
 ## How RateLimiter Works
 
-The \`RateLimiter\` service (\`BeeCoded\\EFacturaSdk\\Services\\RateLimiter\`) uses Laravel's cache for atomic counter increments via \`RateLimitStore\`.
+The \`RateLimiter\` service (\`BeeCoded\\EFacturaSdk\\Services\\RateLimiter\`) uses Laravel's cache for counter increments via \`RateLimitStore\`. The count is atomic only on a cache store with an atomic increment (redis, memcached, database).
 
 - **Minute-window store:** Resets every 60 seconds. Used for global limit.
 - **Daily store:** Resets every 86400 seconds (24 hours). Used for per-endpoint/CUI/message limits.
@@ -25432,6 +25441,7 @@ public function __construct(
     ?CarbonInterface $expiresAt = null,
     ?AnafAuthenticatorInterface $authenticator = null,
     ?Closure $tokenReloader = null,          // added in v3.0.0
+    ?Closure $tokenPersister = null,         // added in v4.0.0
 )
 \`\`\`
 
@@ -25447,6 +25457,7 @@ public static function fromTokens(
     OAuthTokensData $tokens,
     ?AnafAuthenticatorInterface $authenticator = null,
     ?Closure $tokenReloader = null,          // added in v3.0.0
+    ?Closure $tokenPersister = null,         // added in v4.0.0
 ): self
 \`\`\`
 
@@ -25481,6 +25492,28 @@ Contract:
 - It does **not** mark \`wasTokenRefreshed()\` \u2014 the tokens came out of your store, so there is
   nothing new to write back.
 
+## \`$tokenPersister\` \u2014 store rotated tokens under the lock (new in v4.0.0, optional)
+
+\`(Closure(OAuthTokensData): mixed)|null\`. Called with the tokens a refresh just minted, **inside
+the refresh lock**, right after the refresh succeeds and before the lock is released. The next
+worker to take the lock reloads what you stored, so nobody can spend the rotated refresh token
+first. The lock is held for the HTTP timeout (\`http.timeout\`) plus 30 seconds.
+
+\`\`\`php
+$client = EFacturaClient::fromTokens(
+    vatNumber: $vatNumber,
+    tokens: $tokens,
+    // Your own storage: load and save the company's token pair.
+    tokenReloader: fn () => $this->loadTokens($company),
+    tokenPersister: fn (OAuthTokensData $new) => $this->persistTokens($company, $new),
+);
+\`\`\`
+
+Contract:
+- An exception it throws **reaches your code**: persistence failed and you must know. The client
+  keeps the new tokens and \`wasTokenRefreshed()\` is still \`true\`.
+- \`wasTokenRefreshed()\` keeps its meaning, so the after-the-call persistence pattern still works.
+
 ## Public Methods
 
 \`\`\`php
@@ -25498,6 +25531,13 @@ public function getTokens(): OAuthTokensData
 public function getVatNumber(): string
 public function getRateLimiter(): RateLimiter // concrete class only, not on interface
 \`\`\`
+
+\`getMessages()\` and \`getMessagesPaginated()\` throw \`ValidationException('CIF cannot be empty')\` for an
+empty or blank \`cif\`, before any quota is spent (since 4.0).
+
+\`convertXmlToPdf()\` throws \`ApiException\` with ANAF's status code when ANAF answers with a JSON
+error (with or without a JSON content type), or with any body that does not start with \`%PDF\`, such
+as a maintenance page (since 4.0).
 
 ## Token Refresh Behavior
 

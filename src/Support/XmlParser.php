@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Support;
 
 use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
-use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
 use BeeCoded\EFacturaSdk\Exceptions\XmlParsingException;
 use Sabre\Xml\Reader;
 
@@ -383,12 +382,14 @@ final class XmlParser
                 // @/_ keys and leaking them into the result.
                 $errorList = is_array($errors) && array_is_list($errors) ? $errors : [$errors];
                 $errorMessages = array_map(
-                    fn ($err): string => self::findErrorMessage($err) ?? 'Operation failed',
+                    fn ($err): string => self::messageOrDefault(self::findErrorMessage($err)),
                     $errorList
                 );
 
+                // No stare: ANAF answered with an error, not a verdict on the document
+                // (StatusResponseData::hasAnafError()), the same as JSON {"eroare": ...}.
                 return [
-                    'stare' => UploadStatusValue::Failed->value,
+                    'stare' => null,
                     'idDescarcare' => null,
                     'errors' => $errorMessages,
                 ];
@@ -428,14 +429,23 @@ final class XmlParser
                     : self::extractTextValue($errorDetail);
 
                 return [
-                    'stare' => UploadStatusValue::Failed->value,
+                    'stare' => null,
                     'idDescarcare' => null,
-                    'errors' => [$errorMessage],
+                    'errors' => [self::messageOrDefault($errorMessage)],
                 ];
             }
         }
 
         return null;
+    }
+
+    /**
+     * An error with no text is still an error: AnafValue::errors() would drop a
+     * blank message and leave a status answer with neither a verdict nor an error.
+     */
+    private static function messageOrDefault(?string $message): string
+    {
+        return $message === null || trim($message) === '' ? 'Operation failed' : $message;
     }
 
     /**

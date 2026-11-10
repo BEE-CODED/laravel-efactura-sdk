@@ -31,15 +31,46 @@ class ValidationResultData extends Data
     /**
      * Create from ANAF API response.
      *
+     * The one parser for ANAF's validare/verificare answers, used by
+     * EFacturaClient::validateXml(), verifySignature() and convertXmlToPdf():
+     * - valid: an explicit yes in "valid" (see AnafValue::flag()) or "stare": "ok";
+     * - details: mesaj, then detalii, details, message;
+     * - info: info, then trace_id;
+     * - errors: Messages[].message, then Errors, then eroare, as one list (null when empty).
+     *
+     * laravel-data treats any static from*() taking an array as a magic creation
+     * method, so ::from() hands this method EVERY array, including this DTO's own
+     * toArray() output. Its errors key (ANAF sends Errors) is read
+     * too, so that shape keeps its errors; valid, details and info share their keys.
+     *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
     {
+        // Messages carries {message} objects (or plain strings); AnafValue::errors() reads errorMessage.
+        $messages = $response['Messages'] ?? null;
+        if (is_array($messages)) {
+            $messages = array_map(
+                fn (mixed $entry): mixed => is_array($entry) ? ($entry['message'] ?? null) : $entry,
+                array_is_list($messages) ? $messages : [$messages],
+            );
+        }
+
+        $errors = array_merge(
+            AnafValue::errors($messages) ?? [],
+            AnafValue::errors($response['Errors'] ?? null) ?? [],
+            AnafValue::errors($response['eroare'] ?? null) ?? [],
+            AnafValue::errors($response['errors'] ?? null) ?? [],
+        );
+
         return new self(
-            valid: AnafValue::flag($response['valid'] ?? null),
-            details: AnafValue::text($response['details'] ?? null),
-            info: AnafValue::text($response['info'] ?? null),
-            errors: AnafValue::errors($response['Errors'] ?? null),
+            valid: AnafValue::flag($response['valid'] ?? null) || ($response['stare'] ?? null) === 'ok',
+            details: AnafValue::text($response['mesaj'] ?? null)
+                ?? AnafValue::text($response['detalii'] ?? null)
+                ?? AnafValue::text($response['details'] ?? null)
+                ?? AnafValue::text($response['message'] ?? null),
+            info: AnafValue::text($response['info'] ?? null) ?? AnafValue::text($response['trace_id'] ?? null),
+            errors: $errors === [] ? null : $errors,
         );
     }
 

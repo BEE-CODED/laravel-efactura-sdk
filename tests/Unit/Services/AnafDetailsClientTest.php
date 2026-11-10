@@ -5,6 +5,7 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 beforeEach(function () {
@@ -116,6 +117,23 @@ describe('AnafDetailsClient', function () {
             expect($result->first()->name)->toBe('Test Company SRL');
         });
 
+        it('decodes a 2xx lookup answer through a subclass\'s decodeJson override', function () {
+            Http::fake(['*' => Http::response('not json', 200)]);
+
+            $client = new class extends AnafDetailsClient
+            {
+                protected static function decodeJson(Response $response): mixed
+                {
+                    return ['found' => [], 'notFound' => [18547290]];
+                }
+            };
+
+            $result = $client->getCompanyData('RO18547290');
+
+            expect($result->success)->toBeTrue()
+                ->and($result->notFound)->toBe([18547290]);
+        });
+
         it('returns failure for invalid VAT code format', function () {
             Http::preventStrayRequests();
 
@@ -174,6 +192,17 @@ describe('AnafDetailsClient', function () {
             expect($result->success)->toBeTrue();
             expect($result->hasCompanies())->toBeFalse();
             expect($result->hasNotFound())->toBeTrue();
+            expect($result->notFound)->toBe([99999999]);
+        });
+
+        it('reads a BOM-prefixed 404 notFound body as a not-found result', function () {
+            Http::fake([
+                '*' => Http::response("\u{FEFF}{\"found\":[],\"notFound\":[99999999]}", 404),
+            ]);
+
+            $result = (new AnafDetailsClient)->getCompanyData('99999999');
+
+            expect($result->success)->toBeTrue();
             expect($result->notFound)->toBe([99999999]);
         });
 

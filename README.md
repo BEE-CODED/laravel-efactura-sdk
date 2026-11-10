@@ -263,7 +263,7 @@ return [
 
     'logging' => [
         'channel' => env('EFACTURA_LOG_CHANNEL', 'efactura-sdk'),
-        'debug' => env('EFACTURA_DEBUG', false), // logs full request/response bodies
+        'debug' => env('EFACTURA_DEBUG', false), // logs full request/response bodies and headers (Authorization redacted)
     ],
 
     // ... plus 'endpoints' (ANAF base URLs — rarely changed) and 'rate_limits'
@@ -474,9 +474,11 @@ if ($status->isReady()) {
 }
 ```
 
-- `nok` does not always carry a download id. An XML `<header>` with only `<Errors/>` (an unknown
-  upload id, "Nu aveti dreptul") maps to `nok` with `errors` and no `idDescarcare`. ANAF said
-  nothing about the document, so it is not a validation failure.
+- `nok` does not always carry a download id. A `nok` without `idDescarcare` is not a validation
+  failure: park it like `hasAnafError()`.
+- An XML `<header>` with only `<Errors/>` (an unknown upload id, "Nu aveti dreptul") has no
+  `stare`: it gives `errors` and `hasAnafError()`, like the JSON `eroare` answer below (since 4.0;
+  it used to map to `nok`). ANAF said nothing about the document.
 - `hasAnafError()` is true when ANAF answered with an error instead of a status: no recognisable
   `stare`, but `errors` is set (HTTP 200 with `{"eroare": "..."}`; the `eroare` text becomes
   `errors` when `Errors` holds nothing usable). This is not a verdict on the document either.
@@ -487,7 +489,9 @@ message ids) become strings, and big integers keep every digit. A `stare` that i
 text that is not a scalar, and an id that is a float, bool or array all become `null`. `Errors`
 can be a string, an `{errorMessage}` object or a list of either, and always comes back as a list of
 non-empty strings or `null`. A 2xx body that is not a JSON object (for example a bare number)
-throws `ApiException`, the same as an unparseable one.
+throws `ApiException`, the same as an unparseable one. Every response DTO also reads its own `toArray()` output
+back, so `StatusResponseData::from($status->toArray())` rebuilds an equal DTO (since 4.0), with
+laravel-data's default camelCase output names (not with a snake_case output mapper).
 
 #### Download Document
 
@@ -586,6 +590,10 @@ $pdfContent = $client->convertXmlToPdf($xmlContent, DocumentStandardType::FACT1,
 file_put_contents('invoice.pdf', $pdfContent);
 ```
 
+`convertXmlToPdf()` throws `ApiException` with ANAF's status code when ANAF answers with a JSON
+error (with or without a JSON content type), or with any body that is not a PDF, such as a
+maintenance page (since 4.0; it used to return that body as the PDF).
+
 #### Verify Signature
 
 ```php
@@ -620,6 +628,22 @@ if ($client->wasTokenRefreshed()) {
         'expires_at' => $newTokens->expiresAt,
     ]);
 }
+```
+
+**Multi-worker deployments:** pass a `tokenReloader` and a `tokenPersister` (since 4.0). The client
+takes a cache lock before it refreshes, held for the HTTP timeout plus 30 seconds. Under that lock it
+calls `tokenReloader` to adopt tokens another worker already rotated. After a refresh it calls
+`tokenPersister` with the new `OAuthTokensData` before releasing the lock, so no other worker can
+spend the rotated refresh token first. If `tokenPersister` throws, the exception reaches your code;
+the client keeps the new tokens and `wasTokenRefreshed()` is still true.
+
+```php
+$client = EFacturaClient::fromTokens(
+    $vatNumber,
+    $tokens,
+    tokenReloader: fn () => $this->loadTokens($company),
+    tokenPersister: fn (OAuthTokensData $new) => $this->persistTokens($company, $new),
+);
 ```
 
 **Recommended Pattern:**

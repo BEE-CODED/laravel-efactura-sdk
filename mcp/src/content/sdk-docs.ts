@@ -244,8 +244,8 @@ for ($i = 0; $i < $maxAttempts; $i++) {
     }
 
     if ($status->isFailed()) {
-        // nok WITHOUT a download id: an XML <header> with only <Errors/> (unknown upload id,
-        // "Nu aveti dreptul"). No verdict on the document — park it for a human, like hasAnafError()
+        // nok WITHOUT a download id: no verdict on the document — park it for a human,
+        // like hasAnafError()
         break;
     }
 
@@ -253,7 +253,7 @@ for ($i = 0; $i < $maxAttempts; $i++) {
         // Final: ANAF did not take the file in — no download id; correct and resubmit
         break;
     }
-    if ($status->hasAnafError()) {            // null stare with $status->errors: ANAF told us nothing about this upload
+    if ($status->hasAnafError()) {            // null stare with $status->errors (JSON eroare, or an XML <header> with only <Errors/>)
         // Park it for a human: do not complete it, fail it or keep polling
         break;
     }
@@ -990,6 +990,8 @@ class AuthenticationException extends EFacturaException
 - Token refresh lock timeout (concurrent refresh attempt)
 - API returns HTTP 401
 
+**Code:** for a token-endpoint answer, its HTTP status (400/401 when ANAF refuses the grant; 200 for an unreadable 2xx answer or one without tokens); 0 for a transport failure or a lock timeout; otherwise the default 401.
+
 ## ValidationException
 
 **Namespace:** \`BeeCoded\\EFacturaSdk\\Exceptions\\ValidationException\`
@@ -1225,7 +1227,7 @@ use BeeCoded\\EFacturaSdk\\Exceptions\\AuthenticationException;
 try {
     $tokens = EFacturaSdkAuth::exchangeCodeForToken($code);
 } catch (AuthenticationException $e) {
-    // $e->getCode() is 401
+    // $e->getCode() is ANAF's HTTP status (400/401 = grant refused), 0 for a transport failure
     Log::error('Token exchange failed', ['message' => $e->getMessage()]);
 }
 
@@ -1498,7 +1500,7 @@ foreach ($pendingUploads as $upload) {
 
 ## How RateLimiter Works
 
-The \`RateLimiter\` service (\`BeeCoded\\EFacturaSdk\\Services\\RateLimiter\`) uses Laravel's cache for atomic counter increments via \`RateLimitStore\`.
+The \`RateLimiter\` service (\`BeeCoded\\EFacturaSdk\\Services\\RateLimiter\`) uses Laravel's cache for counter increments via \`RateLimitStore\`. The count is atomic only on a cache store with an atomic increment (redis, memcached, database).
 
 - **Minute-window store:** Resets every 60 seconds. Used for global limit.
 - **Daily store:** Resets every 86400 seconds (24 hours). Used for per-endpoint/CUI/message limits.

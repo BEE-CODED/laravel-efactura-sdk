@@ -21,10 +21,14 @@ class RateLimitStore
     ) {}
 
     /**
-     * Atomically check limit and increment counter.
+     * Count one unit, or refuse when the limit is already reached.
      *
-     * This uses Laravel's RateLimiter::attempt() for atomic operation,
-     * preventing race conditions in concurrent environments.
+     * Increments first and reads the result, so two workers can never both take
+     * the last unit (a check-then-hit could). A refused call is left counted: it only
+     * lands in a full window, and increment() does not move the window's expiry, so
+     * the window still ends on time and no future quota is spent. (Taking it back
+     * via decrement() would re-put the key with a fresh TTL.) Atomic only on a cache
+     * store with an atomic increment (redis, memcached, database).
      *
      * @param  string  $key  The rate limit key
      * @param  int  $limit  Maximum allowed attempts
@@ -34,14 +38,7 @@ class RateLimitStore
     {
         $cacheKey = $this->buildKey($key);
 
-        // RateLimiter::attempt() is atomic - it checks AND increments in one operation
-        // Returns true if allowed (executed callback), false if rate limited
-        return RateLimiter::attempt(
-            $cacheKey,
-            $limit,
-            fn () => true, // Callback executed if allowed
-            $this->decaySeconds
-        );
+        return RateLimiter::increment($cacheKey, $this->decaySeconds) <= $limit;
     }
 
     /**
@@ -58,14 +55,6 @@ class RateLimitStore
     public function availableIn(string $key): int
     {
         return RateLimiter::availableIn($this->buildKey($key));
-    }
-
-    /**
-     * Clear the rate limit for a key.
-     */
-    public function clear(string $key): void
-    {
-        RateLimiter::clear($this->buildKey($key));
     }
 
     private function buildKey(string $key): string
