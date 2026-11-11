@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Support;
 
+use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+
 /**
  * Address sanitizer for Romanian e-Factura system.
  *
@@ -245,6 +248,45 @@ class AddressSanitizer
     public static function normalizeDiacritics(string $text): string
     {
         return strtr($text, self::DIACRITICS_MAP);
+    }
+
+    /**
+     * The county and city a UBL address files, exactly as InvoiceBuilder writes them.
+     *
+     * Only Romanian addresses are rewritten (BR-RO-100/101/110/111 bind only to country RO):
+     * the county becomes its ISO 3166-2:RO code and, in Bucharest (RO-B), the city becomes
+     * SECTORn, with n taken from $bucharestSector, else from the city or county text. Other
+     * countries keep their county and city as given, even when they look like "B" or "Sector 3".
+     *
+     * @return array{county: ?string, city: string}
+     *
+     * @throws ValidationException If an RO county cannot be mapped, a Bucharest address has no
+     *                             sector, or $bucharestSector is out of range or not on a
+     *                             Bucharest address
+     */
+    public static function canonicalize(AddressData $address): array
+    {
+        $sector = $address->bucharestSector;
+        $county = $address->county;
+        if ($address->countryCode === 'RO' && $county !== null) {
+            $county = self::isBucharest($county) ? 'RO-B' : self::sanitizeCounty($county)
+                ?? throw new ValidationException(__('efactura-sdk::validation.county_invalid_iso_code', ['county' => $county]));
+        }
+
+        if ($sector !== null && ($county !== 'RO-B' || $address->countryCode !== 'RO' || $sector < 1 || $sector > 6)) {
+            throw new ValidationException(__('efactura-sdk::validation.bucharest_sector_invalid'));
+        }
+
+        if ($county !== 'RO-B' || $address->countryCode !== 'RO') {
+            return ['county' => $county, 'city' => $address->city];
+        }
+
+        $sector ??= self::extractBucharestSectorNumber($address->city) ?? self::extractBucharestSectorNumber((string) $address->county);
+        if ($sector === null) {
+            throw new ValidationException(__('efactura-sdk::validation.bucharest_sector_required', ['city' => $address->city]));
+        }
+
+        return ['county' => 'RO-B', 'city' => 'SECTOR'.$sector];
     }
 
     /**

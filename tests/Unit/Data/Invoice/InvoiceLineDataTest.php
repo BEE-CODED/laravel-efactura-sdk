@@ -158,28 +158,51 @@ describe('getTaxAmount', function () {
     });
 });
 
-describe('getRawLineTotal', function () {
-    it('returns unrounded line total', function () {
-        $line = new InvoiceLineData(
-            name: 'Product',
-            quantity: 3,
-            unitPrice: 33.333,
-            taxAmount: 0.00,
-        );
+describe('getRawLineTotal (removed in 4.0)', function () {
+    it('no longer offers a float line total that is not what the invoice files', function () {
+        expect(method_exists(InvoiceLineData::class, 'getRawLineTotal'))->toBeFalse();
+    });
+});
 
-        expect($line->getRawLineTotal())->toBe(99.999);
+describe('amounts typed float|string', function () {
+    it('validates and creates lines from int, float and numeric-string amounts', function (mixed $quantity, mixed $price, mixed $tax, mixed $percent, float $total) {
+        $line = InvoiceLineData::validateAndCreate(['name' => 'P', 'quantity' => $quantity, 'unitPrice' => $price, 'taxAmount' => $tax, 'taxPercent' => $percent]);
+
+        expect($line->getLineTotal())->toBe($total)
+            ->and(InvoiceLineData::validateAndCreate($line->toArray())->toArray())->toBe($line->toArray());
+    })->with([
+        'int' => [2, 100, 38, 19, 200.0],
+        'float with binary noise' => [1.5, 0.1 + 0.2, 0.09, 19.0, 0.45],
+        'numeric string' => ['3', '1.005', '0.57', '19', 3.02],
+    ]);
+
+    it('keeps string amounts verbatim through serialization', function () {
+        $line = new InvoiceLineData('P', '123456789012.5', '1.000001', '0', taxPercent: '0');
+
+        expect($line->toArray())->toMatchArray(['quantity' => '123456789012.5', 'unitPrice' => '1.000001', 'taxAmount' => '0', 'taxPercent' => '0'])
+            ->and(InvoiceLineData::from($line->toArray())->toArray())->toBe($line->toArray())
+            ->and($line->getLineTotal())->toBe(123456912469.29);
     });
 
-    it('is used for tax grouping calculations', function () {
-        $line = new InvoiceLineData(
-            name: 'Product',
-            quantity: 3,
-            unitPrice: 33.333,
-            taxAmount: 0.00,
-        );
+    it('declares numeric rules for every amount', function () {
+        $rules = InvoiceLineData::getValidationRules(['name' => 'P', 'quantity' => 1, 'unitPrice' => 1, 'taxAmount' => 0, 'taxPercent' => 0]);
 
-        // Raw total preserves precision for grouping
-        expect($line->getRawLineTotal())->not->toBe($line->getLineTotal());
+        expect($rules['quantity'])->toBe(['required', 'numeric'])
+            ->and($rules['unitPrice'])->toBe(['required', 'numeric'])
+            ->and($rules['taxAmount'])->toBe(['required', 'numeric'])
+            ->and($rules['taxPercent'])->toBe(['sometimes', 'numeric', 'min:0']);
+    });
+
+    it('keeps the 0% default when taxPercent is absent from the payload', function () {
+        $line = InvoiceLineData::validateAndCreate(['name' => 'P', 'quantity' => 1, 'unitPrice' => 10, 'taxAmount' => 0]);
+
+        expect($line->taxPercent)->toBe(0.0);
+    });
+
+    it('refuses excess precision when the amount is consumed, naming the field', function () {
+        $line = new InvoiceLineData('P', '1.0000001', 1, 0);
+
+        expect(fn () => $line->getLineTotal())->toThrow(SdkValidationException::class, 'quantity must be a finite amount with at most 6 decimal places');
     });
 });
 
@@ -301,24 +324,27 @@ describe('explicit VAT category compatibility', function () {
         $line->taxCategoryId = TaxCategoryId::ZeroRated;
         expect($line->getTaxGroupKey(true))->toBe('Z:0');
         $line->taxCategoryId = TaxCategoryId::Standard;
-        $line->taxPercent = 19.00000001;
+        $line->taxPercent = '19.00';
         expect($line->getTaxGroupKey(true))->toBe('S:19');
+        $line->taxPercent = 19.00000001;
+        expect(fn () => $line->getTaxGroupKey(true))->toThrow(SdkValidationException::class, 'taxPercent must be a finite amount');
     });
 
-    it('rejects raw nonzero AE values even when money or rate rounding would hide them', function (string $field, float $value) {
+    it('rejects raw nonzero AE values and rates finer than the filed precision', function (string $field, float|string $value, string $message) {
         $line = InvoiceLineData::from([
             'name' => 'Product', 'quantity' => 1, 'unitPrice' => 100,
             'taxAmount' => 0, 'taxPercent' => 0, 'taxCategoryId' => 'AE',
         ]);
         $line->{$field} = $value;
-        expect(fn () => $line->getTaxCategory(true))->toThrow(SdkValidationException::class, 'exactly zero raw');
+        expect(fn () => $line->getTaxCategory(true))->toThrow(SdkValidationException::class, $message);
     })->with([
-        'tiny rate' => ['taxPercent', 0.000001],
-        'tiny negative rate' => ['taxPercent', -0.000001],
-        'tiny tax' => ['taxAmount', 0.000001],
-        'tiny negative tax' => ['taxAmount', -0.000001],
-        'NaN tax' => ['taxAmount', NAN],
-        'infinite rate' => ['taxPercent', INF],
+        'tiny rate' => ['taxPercent', 0.000001, 'taxPercent must be a finite amount'],
+        'tiny negative rate' => ['taxPercent', -0.000001, 'taxPercent must be a finite amount'],
+        'sub-cent rate string' => ['taxPercent', '0.001', 'taxPercent must be a finite amount'],
+        'tiny tax' => ['taxAmount', 0.000001, 'exactly zero raw'],
+        'tiny negative tax string' => ['taxAmount', '-0.000001', 'exactly zero raw'],
+        'NaN tax' => ['taxAmount', NAN, 'taxAmount must be a finite amount'],
+        'infinite rate' => ['taxPercent', INF, 'taxPercent must be a finite amount'],
     ]);
 
     it('rejects unknown categories at the real data validation gate', function () {

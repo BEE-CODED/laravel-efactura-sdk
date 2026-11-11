@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\RequestNotSentException;
 use BeeCoded\EFacturaSdk\Support\AnafValue;
 use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Closure;
@@ -13,8 +14,8 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Str;
 use Psr\Log\LoggerInterface;
+use Psr\Log\LoggerTrait;
 
 abstract class BaseApiClient implements HasLogger
 {
@@ -23,6 +24,9 @@ abstract class BaseApiClient implements HasLogger
     protected const int MAX_TRY_COUNT = 3;
 
     protected const int RETRY_DELAY = 5;
+
+    /** The message of an error answer that carried no message of its own. */
+    public const string NO_ERROR_MESSAGE = 'No error message in API response';
 
     /**
      * cURL error numbers that prove the request never reached the server.
@@ -36,7 +40,11 @@ abstract class BaseApiClient implements HasLogger
      * $connectionErrors map), but both can fire *after* the request body was
      * delivered and accepted -- a read timeout is exactly the case where ANAF
      * has the document and we simply never saw the reply. The exception class is
-     * therefore not proof of anything; the errno is.
+     * therefore not proof of anything; the errno is. A 28 counts as pre-send only
+     * with the connect-phase evidence checked in wasNotSent().
+     *
+     * A failure proven pre-send surfaces as RequestNotSentException once the
+     * retries are spent.
      *
      * @var list<int>
      */
@@ -49,9 +57,36 @@ abstract class BaseApiClient implements HasLogger
 
     protected float $lastRequestDurationMilliseconds = 0;
 
+    /**
+     * Whether an attempt of the call in flight may have reached ANAF: it got a response,
+     * or failed in a way wasNotSent() cannot rule out. Reset when a call starts.
+     */
+    protected bool $attemptDelivered = false;
+
     public function __construct()
     {
-        $this->logger = static::getLogger();
+        $this->logger = new class(static::getLogger()) implements LoggerInterface
+        {
+            use LoggerTrait;
+
+            public function __construct(private readonly LoggerInterface $inner) {}
+
+            /**
+             * A failing log handler (an unwritable file, a full disk) must never cost an
+             * ANAF answer or turn a delivered request into a transport failure.
+             *
+             * @param  array<mixed>  $context
+             */
+            public function log($level, string|\Stringable $message, array $context = []): void
+            {
+                try {
+                    // The named method (debug(), error(), ...), so a host's logger sees the same calls as before.
+                    $this->inner->{$level}($message, $context);
+                } catch (\Throwable) {
+                    // Swallowed on purpose: logging is never part of the call's outcome.
+                }
+            }
+        };
     }
 
     abstract public static function getBaseUrl(): string;
@@ -73,6 +108,14 @@ abstract class BaseApiClient implements HasLogger
     }
 
     /**
+     * The timeout of this client's requests; an instance may differ from the class default.
+     */
+    protected function getRequestTimeout(): float|int
+    {
+        return static::getTimeoutDuration();
+    }
+
+    /**
      * Get the max retry count.
      * Can be overridden in subclasses for custom behavior.
      */
@@ -89,8 +132,16 @@ abstract class BaseApiClient implements HasLogger
         return [];
     }
 
+    /**
+     * The URL for a route under the base URL; an absolute http(s) URL is used as is
+     * (ANAF's validate, verify and PDF services live on another host).
+     */
     public function getRequestUrl(string $route): string
     {
+        if (preg_match('#^https?://#i', $route) === 1) {
+            return $route;
+        }
+
         $baseUrl = rtrim(static::getBaseUrl(), '/');
         $route = ltrim($route, '/');
 
@@ -115,13 +166,7 @@ abstract class BaseApiClient implements HasLogger
         $url = $this->getRequestUrl($route);
 
         $startTime = Carbon::now();
-        $request = Http::timeout(static::getTimeoutDuration());
-
-        $asMultipart = false;
-        if (isset($headers['Content-Type']) && Str::startsWith($headers['Content-Type'], 'multipart/form-data')) {
-            $asMultipart = true;
-            unset($headers['Content-Type']);
-        }
+        $request = Http::timeout($this->getRequestTimeout());
 
         $request->withHeaders($this->getDefaultHeaders() + $headers);
 
@@ -129,25 +174,15 @@ abstract class BaseApiClient implements HasLogger
             // When contentType is provided, data must be a string (raw body)
             assert(is_string($data), 'Data must be a string when contentType is provided');
             $response = $request->withBody($data, $contentType)->$method($url);
+        } elseif ($data === [] || $data === '') {
+            // Only the URL: Laravel's PendingRequest::get($url, []) passes ['query' => []]
+            // to Guzzle, which would strip query params already embedded in the URL.
+            $response = $request->$method($url);
+        } elseif (strtolower($method) === 'get') {
+            $response = $request->get($url, $data);
         } else {
-            if (strtolower($method) === 'get') {
-                // When $data is empty, call with only the URL to avoid Guzzle
-                // overwriting URL query params with an empty query string.
-                // Laravel's PendingRequest::get($url, []) passes ['query' => []]
-                // to Guzzle, which builds '' and calls $uri->withQuery(''),
-                // stripping any query params already embedded in the URL.
-                $response = empty($data)
-                    ? $request->$method($url)
-                    : $request->$method($url, $data);
-            } else {
-                if ($asMultipart) {
-                    $response = $request->asMultipart()->$method($url, $data);
-                } elseif (isset($headers['Content-Type']) && $headers['Content-Type'] === 'application/x-www-form-urlencoded') {
-                    $response = $request->asForm()->$method($url, $data);
-                } else {
-                    $response = $request->$method($url, $data);
-                }
-            }
+            // Every SDK body travels through callRaw() with an explicit content type.
+            throw new \LogicException('A request body needs a content type: send it through callRaw().');
         }
 
         $endTime = Carbon::now();
@@ -211,6 +246,9 @@ abstract class BaseApiClient implements HasLogger
         int $tryCount = 0
     ): Response {
         $tryCount++;
+        if ($tryCount === 1) {
+            $this->attemptDelivered = false;
+        }
         $startTime = Carbon::now();
         $context = fn () => [
             'route' => $route,
@@ -236,6 +274,8 @@ abstract class BaseApiClient implements HasLogger
                 $context()
             );
 
+            $this->attemptDelivered = $this->attemptDelivered || ! $this->wasNotSent($exception);
+
             if ($tryCount < $this->getMaxTryCount() && $this->isRetryableException($exception, $idempotent)) {
                 sleep($this->getRetryDelay());
                 $this->onRetryAttempt();
@@ -243,16 +283,12 @@ abstract class BaseApiClient implements HasLogger
                 return $this->call($route, $method, $data, $customHeaders, $idempotent, $tryCount);
             }
 
-            throw new ApiException(
-                $exception->getMessage(),
-                500,
-                null,
-                $exception,
-                $context()
-            );
+            throw $this->transportFailure($exception, $context());
         }
 
         if (! $response->successful()) {
+            $this->attemptDelivered = true;
+
             // A response means the request was delivered and ANAF acted on it, so a
             // non-idempotent call must never be re-sent -- even on a 5xx.
             if ($tryCount < $this->getMaxTryCount() && $idempotent && $this->isRetryable($response)) {
@@ -295,6 +331,9 @@ abstract class BaseApiClient implements HasLogger
         int $tryCount = 0
     ): Response {
         $tryCount++;
+        if ($tryCount === 1) {
+            $this->attemptDelivered = false;
+        }
         $startTime = Carbon::now();
         $context = fn () => [
             'route' => $route,
@@ -322,6 +361,8 @@ abstract class BaseApiClient implements HasLogger
                 $context()
             );
 
+            $this->attemptDelivered = $this->attemptDelivered || ! $this->wasNotSent($exception);
+
             if ($tryCount < $this->getMaxTryCount() && $this->isRetryableException($exception, $idempotent)) {
                 sleep($this->getRetryDelay());
                 $this->onRetryAttempt();
@@ -329,16 +370,12 @@ abstract class BaseApiClient implements HasLogger
                 return $this->callRaw($route, $method, $body, $contentType, $customHeaders, $idempotent, $tryCount);
             }
 
-            throw new ApiException(
-                $exception->getMessage(),
-                500,
-                null,
-                $exception,
-                $context()
-            );
+            throw $this->transportFailure($exception, $context());
         }
 
         if (! $response->successful()) {
+            $this->attemptDelivered = true;
+
             // A response means the request was delivered and ANAF acted on it, so a
             // non-idempotent call must never be re-sent -- even on a 5xx.
             if ($tryCount < $this->getMaxTryCount() && $idempotent && $this->isRetryable($response)) {
@@ -401,13 +438,55 @@ abstract class BaseApiClient implements HasLogger
      */
     protected function isRetryableException(\Throwable $exception, bool $idempotent): bool
     {
-        if ($idempotent) {
+        return $idempotent || $this->wasNotSent($exception);
+    }
+
+    /**
+     * Whether a transport failure provably happened before the request was sent.
+     *
+     * True for the PRE_SEND_CURL_ERRORS, and for a timeout (28) only when the
+     * handler context proves the connect phase never finished: no transfer had
+     * started (pretransfer_time 0) and no request bytes were issued (request_size
+     * 0). A timeout without that evidence may have delivered the request.
+     */
+    private function wasNotSent(\Throwable $exception): bool
+    {
+        $errno = $this->extractCurlErrno($exception);
+
+        if ($errno !== null && in_array($errno, static::PRE_SEND_CURL_ERRORS, true)) {
             return true;
         }
 
-        $errno = $this->extractCurlErrno($exception);
+        if ($errno !== 28) {
+            return false;
+        }
 
-        return $errno !== null && in_array($errno, static::PRE_SEND_CURL_ERRORS, true);
+        // The timings live on Guzzle's exception, below Laravel's ConnectionException.
+        for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            /** @var mixed $context */
+            $context = method_exists($current, 'getHandlerContext') ? $current->getHandlerContext() : null;
+
+            if (is_array($context) && $context !== []) {
+                $zero = static fn (mixed $value): bool => (is_int($value) || is_float($value)) && $value == 0;
+
+                return $zero($context['pretransfer_time'] ?? null) && $zero($context['request_size'] ?? null);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The exception for a transport failure that got no response: RequestNotSentException
+     * only when no attempt of the call may have reached ANAF.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function transportFailure(\Throwable $exception, array $context): ApiException
+    {
+        return ! $this->attemptDelivered
+            ? new RequestNotSentException($exception->getMessage(), $exception, $context)
+            : new ApiException($exception->getMessage(), 500, null, $exception, $context);
     }
 
     /**
@@ -491,7 +570,7 @@ abstract class BaseApiClient implements HasLogger
             ?? $message($data['eroare'] ?? null)
             ?? $message($data['error'] ?? null)
             ?? $message(XmlParser::extractErrorMessage(AnafValue::withoutBom($response->body())))
-            ?? 'No error message in API response';
+            ?? self::NO_ERROR_MESSAGE;
     }
 
     /**

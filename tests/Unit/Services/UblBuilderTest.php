@@ -11,6 +11,7 @@ use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Facades\UblBuilder as UblBuilderFacade;
 use BeeCoded\EFacturaSdk\Services\UblBuilder;
 
 describe('UblBuilder', function () {
@@ -20,12 +21,13 @@ describe('UblBuilder', function () {
         $invoice = new InvoiceData(
             invoiceNumber: 'INV-001',
             issueDate: '2024-06-15',
+            dueDate: '2024-07-15',
             supplier: new PartyData(
                 registrationName: 'Supplier SRL',
                 companyId: 'RO12345678',
                 address: new AddressData(
                     street: 'Main Street 1',
-                    city: 'Bucharest',
+                    city: 'Sector 1',
                     postalZone: '010101',
                     county: 'Bucuresti',
                     countryCode: 'RO',
@@ -216,7 +218,7 @@ it('uses native payable rounding through direct container and custom injected bu
     $invoice = new InvoiceData(
         invoiceNumber: 'ROUND-001', issueDate: '2024-06-15', supplier: $party, customer: $party,
         lines: [new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 19, taxPercent: 19)],
-        payableRoundingAmount: -0.01,
+        dueDate: '2024-07-15', payableRoundingAmount: -0.01,
     );
     config()->set('efactura-sdk', ['sandbox' => true]);
     $custom = new class extends InvoiceBuilder
@@ -256,7 +258,7 @@ it('serializes AE through the live container binding with document and accountin
     $invoice = InvoiceData::from((new InvoiceData(
         invoiceNumber: 'AE-001', issueDate: '2026-10-21T00:00:00+00:00', supplier: $party, customer: $party,
         lines: [new InvoiceLineData('Reverse charge', $sign, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge)],
-        currency: $currency, invoiceTypeCode: $type, taxAmountRon: $currency === 'RON' ? null : 0,
+        dueDate: '2026-11-21T00:00:00+00:00', currency: $currency, invoiceTypeCode: $type, taxAmountRon: $currency === 'RON' ? null : 0,
     ))->toArray());
     $service = app(UblBuilderInterface::class);
     $xml = $service->generateInvoiceXml($invoice);
@@ -279,3 +281,19 @@ it('serializes AE through the live container binding with document and accountin
     'negative 380' => [InvoiceTypeCode::CommercialInvoice, -1],
     '381' => [InvoiceTypeCode::CreditNote, 1],
 ])->with(['RON', 'EUR']);
+
+it('validates an invoice without returning XML through the live binding and the facade', function () {
+    $party = new PartyData(
+        registrationName: 'Supplier SRL', companyId: 'RO12345678',
+        address: new AddressData(street: 'Street 1', city: 'Cluj', postalZone: '400001', county: 'Cluj'),
+        isVatPayer: true,
+    );
+    $lines = [new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 19, taxPercent: 19)];
+    $valid = new InvoiceData(invoiceNumber: 'VAL-001', issueDate: '2026-11-10', supplier: $party, customer: $party, lines: $lines, dueDate: '2026-12-10');
+    $withoutDueDate = new InvoiceData(invoiceNumber: 'VAL-002', issueDate: '2026-11-10', supplier: $party, customer: $party, lines: $lines);
+
+    expect(app(UblBuilderInterface::class)->validateInvoice($valid))->toBeNull()
+        ->and(UblBuilderFacade::validateInvoice($valid))->toBeNull()
+        ->and(fn () => app(UblBuilderInterface::class)->validateInvoice($withoutDueDate))->toThrow(ValidationException::class, 'BR-CO-25')
+        ->and(fn () => UblBuilderFacade::validateInvoice($withoutDueDate))->toThrow(ValidationException::class, 'BR-CO-25');
+});

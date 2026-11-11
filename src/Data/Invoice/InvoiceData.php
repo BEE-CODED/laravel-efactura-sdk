@@ -6,6 +6,7 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Support\Amount;
 use Brick\Math\BigDecimal;
 use Brick\Math\RoundingMode;
 use Carbon\Carbon;
@@ -73,6 +74,11 @@ class InvoiceData extends Data
 
     public ?InvoiceTypeCode $invoiceTypeCode = null;
 
+    /**
+     * @deprecated Since 4.0; use $precedingInvoices. Still honoured: it is read as a single
+     *             reference when $precedingInvoices is empty, and must name its only entry
+     *             when both are set (see getPrecedingInvoices()).
+     */
     public ?string $precedingInvoiceNumber = null;
 
     /**
@@ -99,13 +105,42 @@ class InvoiceData extends Data
      * Supplied in the same positive sense as the per-line tax amounts; the
      * builder sign-flips it for credit notes alongside them.
      */
-    public ?float $taxAmountRon = null;
+    public float|string|null $taxAmountRon = null;
 
     /** Optional VAT applicability date (BT-7); never inferred by the SDK. */
     public Carbon|string|null $taxPointDate = null;
 
     /** Optional payable rounding (BT-114), in the same sign convention as the lines. */
-    public ?float $payableRoundingAmount = null;
+    public float|string|null $payableRoundingAmount = null;
+
+    /**
+     * Preceding invoice references (BG-3, at most 500): number (BT-25) and optional issue date (BT-26).
+     *
+     * @var list<PrecedingInvoiceData>
+     */
+    #[DataCollectionOf(PrecedingInvoiceData::class)]
+    public array $precedingInvoices = [];
+
+    /**
+     * Invoice notes (BT-22): at most 20, each at most 300 characters.
+     *
+     * @var list<string>
+     */
+    public array $notes = [];
+
+    /** VAT point date code (BT-8): "3", "35" or "432"; never together with $taxPointDate (BR-CO-03). */
+    public ?string $vatPointDateCode = null;
+
+    /** Delivery date (BT-72) and deliver-to address (BG-15); required for VAT category K. */
+    public ?DeliveryData $delivery = null;
+
+    /**
+     * VAT exemption reasons (BT-120/BT-121) for categories E, G, K and AE, one per category.
+     *
+     * @var list<ExemptionReasonData>
+     */
+    #[DataCollectionOf(ExemptionReasonData::class)]
+    public array $exemptionReasons = [];
 
     /**
      * @param  string  $invoiceNumber  Invoice number/identifier
@@ -117,10 +152,15 @@ class InvoiceData extends Data
      * @param  string  $currency  Currency code (ISO 4217)
      * @param  string|null  $paymentIban  IBAN for payment
      * @param  InvoiceTypeCode|null  $invoiceTypeCode  Type of invoice (default: CommercialInvoice)
-     * @param  string|null  $precedingInvoiceNumber  Preceding invoice number for credit notes (BT-25, used in BillingReference)
-     * @param  float|null  $taxAmountRon  Total VAT in RON (BT-111); required when $currency is not RON, rejected when it is
+     * @param  string|null  $precedingInvoiceNumber  Deprecated alias of a single $precedingInvoices entry (BT-25)
+     * @param  float|string|null  $taxAmountRon  Total VAT in RON (BT-111, at most 2 decimals); required when $currency is not RON, rejected when it is
      * @param  CarbonInterface|string|null  $taxPointDate  VAT applicability date (BT-7), omitted from XML and serialization when null
-     * @param  float|null  $payableRoundingAmount  Finite cent-precision payable adjustment (BT-114); null is omitted from serialization
+     * @param  float|string|null  $payableRoundingAmount  Payable adjustment (BT-114, at most 2 decimals); null is omitted from serialization
+     * @param  list<PrecedingInvoiceData>  $precedingInvoices  Preceding invoice references (BG-3); empty is omitted from serialization
+     * @param  list<string>  $notes  Invoice notes (BT-22); empty is omitted from serialization
+     * @param  string|null  $vatPointDateCode  VAT point date code (BT-8); null is omitted from serialization
+     * @param  DeliveryData|null  $delivery  Delivery date and address (BG-13); null is omitted from serialization
+     * @param  list<ExemptionReasonData>  $exemptionReasons  VAT exemption reasons; empty is omitted from serialization
      */
     public function __construct(
         string $invoiceNumber,
@@ -133,9 +173,14 @@ class InvoiceData extends Data
         ?string $paymentIban = null,
         ?InvoiceTypeCode $invoiceTypeCode = null,
         ?string $precedingInvoiceNumber = null,
-        ?float $taxAmountRon = null,
+        float|string|null $taxAmountRon = null,
         CarbonInterface|string|null $taxPointDate = null,
-        ?float $payableRoundingAmount = null,
+        float|string|null $payableRoundingAmount = null,
+        array $precedingInvoices = [],
+        array $notes = [],
+        ?string $vatPointDateCode = null,
+        ?DeliveryData $delivery = null,
+        array $exemptionReasons = [],
     ) {
         $this->invoiceNumber = $invoiceNumber;
         $this->issueDate = $issueDate instanceof CarbonInterface && ! $issueDate instanceof Carbon
@@ -156,11 +201,28 @@ class InvoiceData extends Data
             ? Carbon::instance($taxPointDate)
             : $taxPointDate;
         $this->payableRoundingAmount = $payableRoundingAmount;
-        $this->payableRoundingAmount = $this->getPayableRoundingAmount();
+        $this->precedingInvoices = $precedingInvoices;
+        $this->notes = $notes;
+        $this->vatPointDateCode = $vatPointDateCode;
+        $this->delivery = $delivery;
+        $this->exemptionReasons = $exemptionReasons;
     }
 
     /**
-     * Preserve the legacy serialized key set when optional date/rounding is absent.
+     * Explicit rules for the float|string amounts, which laravel-data cannot infer from a union.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function rules(): array
+    {
+        return [
+            'taxAmountRon' => ['nullable', 'numeric'],
+            'payableRoundingAmount' => ['nullable', 'numeric'],
+        ];
+    }
+
+    /**
+     * Preserve the legacy serialized key set when optional values are absent.
      * Spatie routes both toArray() and toJson() through this method. Filter each
      * transformation without retaining an exclusion that would hide a later date.
      *
@@ -169,7 +231,8 @@ class InvoiceData extends Data
     public function transform(
         TransformationContextFactory|TransformationContext|null $transformationContext = null,
     ): array {
-        $this->payableRoundingAmount = $this->getPayableRoundingAmount();
+        // Validate on the way out without assigning: the caller's value is serialized as given.
+        $this->getPayableRoundingAmount();
 
         $context = match (true) {
             $transformationContext instanceof TransformationContext => clone $transformationContext,
@@ -181,8 +244,10 @@ class InvoiceData extends Data
         if ($this->taxPointDate === null) {
             $context->addExceptPartial(Partial::create('taxPointDate'));
         }
-        if ($this->payableRoundingAmount === null) {
-            $context->addExceptPartial(Partial::create('payableRoundingAmount'));
+        foreach (['payableRoundingAmount', 'precedingInvoices', 'notes', 'vatPointDateCode', 'delivery', 'exemptionReasons'] as $property) {
+            if ($this->{$property} === null || $this->{$property} === []) {
+                $context->addExceptPartial(Partial::create($property));
+            }
         }
 
         return parent::transform($context);
@@ -269,6 +334,34 @@ class InvoiceData extends Data
     }
 
     /**
+     * The preceding invoice references to file, resolving the deprecated $precedingInvoiceNumber.
+     *
+     * An alias alone becomes one reference; when $precedingInvoices is also set, the alias must
+     * name its only entry.
+     *
+     * @return list<PrecedingInvoiceData>
+     *
+     * @throws ValidationException If the alias and the list disagree
+     */
+    public function getPrecedingInvoices(): array
+    {
+        $alias = $this->precedingInvoiceNumber;
+        if ($alias === null || $alias === '') {
+            return $this->precedingInvoices;
+        }
+
+        if ($this->precedingInvoices === []) {
+            return [new PrecedingInvoiceData($alias)];
+        }
+
+        if (count($this->precedingInvoices) !== 1 || $this->precedingInvoices[0]->number !== $alias) {
+            throw new ValidationException(__('efactura-sdk::validation.preceding_invoice_conflict'));
+        }
+
+        return $this->precedingInvoices;
+    }
+
+    /**
      * Get the invoice type code, defaulting to CommercialInvoice.
      */
     public function getInvoiceTypeCode(): InvoiceTypeCode
@@ -323,33 +416,17 @@ class InvoiceData extends Data
     }
 
     /**
-     * Return normalized payable rounding (BT-114), validating every consuming path.
+     * Return the payable rounding (BT-114) read at 2 decimals, validating every consuming path.
      *
-     * Spatie hydration and later public-property assignment can overwrite constructor
-     * normalization. Never silently round a meaningful sub-cent adjustment. The range
-     * keeps adjacent cents distinguishable in a double; the tolerance only admits
-     * binary representation noise, and is capped below meaningful sub-cent precision.
+     * The property keeps the caller's float or string; it is parsed wherever it is used, so
+     * hydration and later assignment cannot bypass the check. A meaningful sub-cent value is
+     * refused, never rounded (see Amount::parse()).
      *
      * @throws ValidationException
      */
     public function getPayableRoundingAmount(): ?float
     {
-        $amount = $this->payableRoundingAmount;
-        if ($amount === null) {
-            return null;
-        }
-
-        if (! is_finite($amount) || abs($amount) >= 2 ** 46) {
-            throw new ValidationException(__('efactura-sdk::validation.payable_rounding_amount_invalid'));
-        }
-
-        $rounded = round($amount, 2);
-        $tolerance = min(0.000001, max(0.000000001, abs($amount) * PHP_FLOAT_EPSILON * 2));
-        if (abs($amount - $rounded) > $tolerance) {
-            throw new ValidationException(__('efactura-sdk::validation.payable_rounding_amount_invalid'));
-        }
-
-        return $rounded == 0.0 ? 0.0 : $rounded;
+        return $this->payableRoundingAmount === null ? null : $this->exactPayableRounding()->toFloat();
     }
 
     /**
@@ -370,9 +447,12 @@ class InvoiceData extends Data
      */
     public function getTotalIncludingVat(): float
     {
-        $rounding = self::decimal($this->getPayableRoundingAmount() ?? 0.0)->toScale(2, RoundingMode::HalfUp);
+        return $this->exactTotalExcludingVat()->plus($this->exactTotalVat())->plus($this->exactPayableRounding())->toFloat();
+    }
 
-        return $this->exactTotalExcludingVat()->plus($this->exactTotalVat())->plus($rounding)->toFloat();
+    private function exactPayableRounding(): BigDecimal
+    {
+        return Amount::parse($this->payableRoundingAmount ?? 0, 2, 'payableRoundingAmount');
     }
 
     /** The per-line nets as getLineTotal() and the XML compute them, summed exactly. */
@@ -380,7 +460,7 @@ class InvoiceData extends Data
     {
         $total = BigDecimal::zero();
         foreach ($this->lines as $line) {
-            $total = $total->plus(self::decimal($line->quantity)->multipliedBy(self::decimal($line->unitPrice))->toScale(2, RoundingMode::HalfUp));
+            $total = $total->plus(Amount::parse($line->quantity, 6, 'quantity')->multipliedBy(Amount::parse($line->unitPrice, 6, 'unitPrice'))->toScale(2, RoundingMode::HalfUp));
         }
 
         return $total;
@@ -394,7 +474,7 @@ class InvoiceData extends Data
 
         foreach ($this->lines as $line) {
             $key = $line->getTaxGroupKey($this->supplier->isVatPayer);
-            $groups[$key] = ($groups[$key] ?? BigDecimal::zero())->plus(self::decimal($line->taxAmount));
+            $groups[$key] = ($groups[$key] ?? BigDecimal::zero())->plus(Amount::parse($line->taxAmount, 6, 'taxAmount'));
         }
 
         $total = BigDecimal::zero();
@@ -403,11 +483,5 @@ class InvoiceData extends Data
         }
 
         return $total;
-    }
-
-    /** Read an amount at the 6 decimals the XML files, as InvoiceLineData and InvoiceBuilder do. */
-    private static function decimal(float $value): BigDecimal
-    {
-        return BigDecimal::of(number_format($value, 6, '.', ''));
     }
 }

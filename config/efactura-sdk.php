@@ -85,7 +85,8 @@ return [
         'services' => [
             'validate' => 'https://webservicesp.anaf.ro/prod/FCTEL/rest/validare',
             'transform' => 'https://webservicesp.anaf.ro/prod/FCTEL/rest/transformare',
-            'verify_signature' => 'https://webservicesp.anaf.ro/prod/FCTEL/rest/verificare-semnatura',
+            // ANAF also serves it with OAuth at https://api.anaf.ro/api/validate/signature.
+            'verify_signature' => 'https://webservicesp.anaf.ro/api/validate/signature',
         ],
         'company_lookup' => 'https://webservicesp.anaf.ro/api/PlatitorTvaRest/v9/tva',
     ],
@@ -139,7 +140,10 @@ return [
 
         // Company details lookup (PlatitorTvaRest) — ANAF limit: 1 request/second.
         // This is the one default that is NOT halved: 1 is already ANAF's own cap,
-        // and any lower integer would disable lookups entirely.
+        // and any lower integer would disable lookups entirely. It is counted over a
+        // 2-second window so cache stores that expire keys at whole seconds
+        // (database, file, memcached) still keep lookups at least 1 s apart. A value N
+        // above 1 therefore allows N lookups per 2 s, not per second.
         'company_lookup_per_second' => env('EFACTURA_RATE_LIMIT_COMPANY_LOOKUP', 1),
     ],
 ];

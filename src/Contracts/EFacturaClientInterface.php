@@ -136,16 +136,21 @@ interface EFacturaClientInterface
     public function validateXml(string $xml, DocumentStandardType $standard): ValidationResultData;
 
     /**
-     * Verify the digital signature of an XML document.
+     * Verify the Ministry of Finance signature on an invoice (ANAF's validate/signature service).
      *
-     * @param  string  $xml  The signed XML content to verify
+     * Both files come from the archive downloadDocument() returns.
+     * ANAF documents no answer: it is read like a validation answer, and when nothing
+     * in it is read, details holds its first 500 bytes.
+     *
+     * @param  string  $xml  The invoice XML
+     * @param  string  $signature  The XML holding the signature applied to that invoice
      * @return ValidationResultData Contains signature verification result
      *
-     * @throws ValidationException When XML content is empty
+     * @throws ValidationException When either XML is empty
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
      */
-    public function verifySignature(string $xml): ValidationResultData;
+    public function verifySignature(string $xml, string $signature): ValidationResultData;
 
     /**
      * Convert XML invoice to PDF format.

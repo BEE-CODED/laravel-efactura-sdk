@@ -5,19 +5,23 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Builders;
 
 use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
+use BeeCoded\EFacturaSdk\Data\Invoice\DeliveryData;
+use BeeCoded\EFacturaSdk\Data\Invoice\ExemptionReasonData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PrecedingInvoiceData;
 use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Support\AddressSanitizer;
+use BeeCoded\EFacturaSdk\Support\Amount;
 use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use Brick\Math\BigDecimal;
-use Brick\Math\Exception\NumberFormatException;
 use Brick\Math\RoundingMode;
 use Carbon\Carbon;
 use Sabre\Xml\Service as XmlService;
 use Sabre\Xml\Writer;
+use Spatie\LaravelData\Data;
 
 /**
  * UBL 2.1 Invoice XML Builder for ANAF e-Factura.
@@ -97,44 +101,56 @@ class InvoiceBuilder
     private const PAYMENT_MEANS_NOT_DEFINED = '1';
 
     /**
-     * VAT identifier prefixes that differ from the party's ISO 3166-1 alpha-2
-     * country code.
-     *
-     * Greece is the only EU member state whose VAT prefix is not its country
-     * code: it registers VAT under "EL" (Elláda) while its country code is "GR".
-     *
-     * @var array<string, string>
-     */
-    private const VAT_PREFIX_OVERRIDES = [
-        'GR' => 'EL',
-    ];
-
-    /**
-     * Recognised VAT identifier prefixes.
-     *
-     * The EU-27 VAT prefixes (which use "EL" for Greece rather than "GR"), plus
-     * "GB" and Northern Ireland's "XI", which remains in the EU VAT area for
-     * goods under the Windsor Framework and appears on otherwise-"GB" addresses.
-     *
-     * @var list<string>
-     */
-    private const VAT_COUNTRY_PREFIXES = [
-        'AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR',
-        'GB', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PL', 'PT',
-        'RO', 'SE', 'SI', 'SK', 'XI',
-    ];
-
-    /**
-     * Maximum decimals retained for quantities (BT-129/BT-130) and item net
-     * prices (BT-146).
+     * Maximum decimals retained for quantities (BT-129/BT-130), item net prices
+     * (BT-146) and the caller's per-line tax amount.
      *
      * Six covers the real-world cases that 2 decimals destroy — per-unit pricing
      * below a bani (telecom, energy, per-page/per-SMS tariffs) and fine-grained
-     * quantities (grams billed in KGM, hours billed in fractions) — while still
-     * capping binary floating-point artefacts, so a quantity of 1/3 renders as
-     * "0.333333" rather than seventeen digits of noise.
+     * quantities (grams billed in KGM, hours billed in fractions). A value with more
+     * decimals is refused by Amount::parse() rather than rounded.
      */
     private const QUANTITY_PRECISION = 6;
+
+    /**
+     * Decimals of every monetary amount, rate, BT-111 and BT-114 (BR-DEC-*).
+     */
+    private const AMOUNT_PRECISION = 2;
+
+    /**
+     * VAT point date codes (BT-8, UNTDID 2005 subset): issue date, delivery date, payment date.
+     */
+    private const VAT_POINT_DATE_CODES = ['3', '35', '432'];
+
+    /**
+     * Exemption reason codes fixed by the category (BT-121); the caller may add only a text.
+     *
+     * @var array<string, string>
+     */
+    private const FIXED_EXEMPTION_CODES = [
+        'AE' => 'VATEX-EU-AE',
+        'G' => 'VATEX-EU-G',
+        'K' => 'VATEX-EU-IC',
+    ];
+
+    /**
+     * The CEF VATEX code list as ANAF's ro16931-ubl 1.0.9 bundle checks it (BR-CL-22).
+     */
+    private const VATEX_CODES = [
+        'VATEX-EU-79-C',
+        'VATEX-EU-132', 'VATEX-EU-132-1A', 'VATEX-EU-132-1B', 'VATEX-EU-132-1C', 'VATEX-EU-132-1D',
+        'VATEX-EU-132-1E', 'VATEX-EU-132-1F', 'VATEX-EU-132-1G', 'VATEX-EU-132-1H', 'VATEX-EU-132-1I',
+        'VATEX-EU-132-1J', 'VATEX-EU-132-1K', 'VATEX-EU-132-1L', 'VATEX-EU-132-1M', 'VATEX-EU-132-1N',
+        'VATEX-EU-132-1O', 'VATEX-EU-132-1P', 'VATEX-EU-132-1Q',
+        'VATEX-EU-143', 'VATEX-EU-143-1A', 'VATEX-EU-143-1B', 'VATEX-EU-143-1C', 'VATEX-EU-143-1D',
+        'VATEX-EU-143-1E', 'VATEX-EU-143-1F', 'VATEX-EU-143-1FA', 'VATEX-EU-143-1G', 'VATEX-EU-143-1H',
+        'VATEX-EU-143-1I', 'VATEX-EU-143-1J', 'VATEX-EU-143-1K', 'VATEX-EU-143-1L',
+        'VATEX-EU-148', 'VATEX-EU-148-A', 'VATEX-EU-148-B', 'VATEX-EU-148-C', 'VATEX-EU-148-D',
+        'VATEX-EU-148-E', 'VATEX-EU-148-F', 'VATEX-EU-148-G',
+        'VATEX-EU-151', 'VATEX-EU-151-1A', 'VATEX-EU-151-1AA', 'VATEX-EU-151-1B', 'VATEX-EU-151-1C',
+        'VATEX-EU-151-1D', 'VATEX-EU-151-1E',
+        'VATEX-EU-309', 'VATEX-EU-AE', 'VATEX-EU-D', 'VATEX-EU-F', 'VATEX-EU-G', 'VATEX-EU-I',
+        'VATEX-EU-IC', 'VATEX-EU-J', 'VATEX-EU-O',
+    ];
 
     /**
      * Build a UBL 2.1 XML invoice or credit note from the provided invoice data.
@@ -147,14 +163,13 @@ class InvoiceBuilder
      * @return string The generated UBL 2.1 XML string
      *
      * @throws ValidationException If the invoice data is invalid
-     * @throws NumberFormatException If a quantity, price or amount is not finite (INF/NAN)
      */
     public function buildInvoiceXml(InvoiceData $input): string
     {
         $this->validateInvoiceInput($input);
-        $payableRoundingAmount = $this->decimal($input->getPayableRoundingAmount() ?? 0.0)->toScale(2, RoundingMode::HalfUp);
+        $payableRoundingAmount = Amount::parse($input->payableRoundingAmount ?? 0, self::AMOUNT_PRECISION, 'payableRoundingAmount');
 
-        $currency = $input->currency ?: self::DEFAULT_CURRENCY;
+        $currency = $input->currency;
         $isSupplierVatPayer = $input->supplier->isVatPayer;
         $isCreditNote = $input->getInvoiceTypeCode()->isCreditNote();
 
@@ -212,7 +227,7 @@ class InvoiceBuilder
             $this->writeElement($writer, self::NS_CBC, 'DueDate', $dueDate->format('Y-m-d'));
         }
 
-        // UBL CreditNote places BT-7 before its type code; Invoice places it after.
+        // UBL CreditNote places BT-7 before its type code; Invoice places it after its notes.
         $taxPointDate = $input->getTaxPointDateAsCarbon();
         if ($isCreditNote && $taxPointDate !== null) {
             $this->writeElement($writer, self::NS_CBC, 'TaxPointDate', $taxPointDate->format('Y-m-d'));
@@ -221,6 +236,12 @@ class InvoiceBuilder
         // Type code element name differs between Invoice and CreditNote
         $typeCodeElement = $isCreditNote ? 'CreditNoteTypeCode' : 'InvoiceTypeCode';
         $this->writeElement($writer, self::NS_CBC, $typeCodeElement, $input->getInvoiceTypeCode()->value);
+
+        // BT-22: both schemas place cbc:Note right after the type code.
+        foreach ($input->notes as $note) {
+            $this->writeElement($writer, self::NS_CBC, 'Note', $note);
+        }
+
         if (! $isCreditNote && $taxPointDate !== null) {
             $this->writeElement($writer, self::NS_CBC, 'TaxPointDate', $taxPointDate->format('Y-m-d'));
         }
@@ -231,13 +252,20 @@ class InvoiceBuilder
             $this->writeElement($writer, self::NS_CBC, 'TaxCurrencyCode', self::DEFAULT_CURRENCY);
         }
 
-        // BillingReference for credit notes (BG-3: Preceding invoice reference)
-        if ($input->precedingInvoiceNumber !== null && $input->precedingInvoiceNumber !== '') {
-            $this->buildBillingReferenceXml($writer, $input->precedingInvoiceNumber);
+        // BT-8 VAT point date code (BG-14 invoicing period)
+        if ($input->vatPointDateCode !== null) {
+            $writer->startElement('{'.self::NS_CAC.'}InvoicePeriod');
+            $this->writeElement($writer, self::NS_CBC, 'DescriptionCode', $input->vatPointDateCode);
+            $writer->endElement(); // InvoicePeriod
+        }
+
+        // BG-3: Preceding invoice references
+        foreach ($input->getPrecedingInvoices() as $precedingInvoice) {
+            $this->buildBillingReferenceXml($writer, $precedingInvoice);
         }
 
         // Write supplier party
-        $this->buildPartyXml($writer, 'AccountingSupplierParty', $input->supplier, $isSupplierVatPayer);
+        $this->buildPartyXml($writer, 'AccountingSupplierParty', $input->supplier, $isSupplierVatPayer, fileLegalForm: true);
 
         // Write customer party
         // BR-O-02: when the supplier is not a VAT payer every line carries VAT
@@ -250,6 +278,11 @@ class InvoiceBuilder
             $input->customer,
             $isSupplierVatPayer && $input->customer->isVatPayer
         );
+
+        // BG-13 Delivery information
+        if ($input->delivery !== null) {
+            $this->buildDeliveryXml($writer, $input->delivery);
+        }
 
         // BG-16 Payment instructions.
         //
@@ -274,21 +307,17 @@ class InvoiceBuilder
         // BR-RO-030: When currency is not RON, we need two TaxTotal elements:
         // 1. TaxAmount in document currency
         // 2. TaxAmount in RON (tax accounting currency)
-        $this->buildTaxTotalXml($writer, $taxGroups, $totalTaxAmount, $currency);
+        $this->buildTaxTotalXml($writer, $taxGroups, $totalTaxAmount, $currency, $this->exemptionReasonsByCategory($input));
 
         // Add second TaxTotal in RON for non-RON invoices (BR-53). Only for
         // non-RON: BR-CO-15 asserts exactly one TaxTotal in the document
         // currency, so a RON invoice must not get a second one.
         if ($currency !== self::DEFAULT_CURRENCY) {
-            /** @var float $taxAmountRon PHPStan: guaranteed non-null by validateTaxAccountingCurrency() */
-            $taxAmountRon = $input->taxAmountRon;
-
             // Sign-flipped for credit notes exactly as the per-line tax amounts
             // are, so BT-111 agrees with the document-currency total it converts.
-            $this->buildTaxTotalInAccountingCurrency(
-                $writer,
-                $this->decimal($isCreditNote ? -$taxAmountRon : $taxAmountRon)
-            );
+            // Non-null: guaranteed by validateTaxAccountingCurrency().
+            $taxAmountRon = Amount::parse($input->taxAmountRon, self::AMOUNT_PRECISION, 'taxAmountRon');
+            $this->buildTaxTotalInAccountingCurrency($writer, $isCreditNote ? $taxAmountRon->negated() : $taxAmountRon);
         }
 
         // Write monetary total
@@ -321,7 +350,10 @@ class InvoiceBuilder
      */
     private function validateInvoiceInput(InvoiceData $input): void
     {
-        if (empty($input->invoiceNumber)) {
+        // S16: every string must be text XML can carry, before anything reads it.
+        $this->validateXmlText($input, '');
+
+        if (trim($input->invoiceNumber) === '') {
             throw new ValidationException(__('efactura-sdk::validation.invoice_number_required'));
         }
 
@@ -335,61 +367,217 @@ class InvoiceBuilder
             throw new ValidationException(__('efactura-sdk::validation.invoice_number_max_length'));
         }
 
-        if (empty($input->issueDate)) {
+        if (is_string($input->issueDate) && trim($input->issueDate) === '') {
             throw new ValidationException(__('efactura-sdk::validation.issue_date_required'));
+        }
+
+        // BR-CL-04: ISO 4217 is uppercase; the list itself is ANAF's to check.
+        if (preg_match('/^[A-Z]{3}$/D', $input->currency) !== 1) {
+            throw new ValidationException(__('efactura-sdk::validation.currency_code_invalid'));
         }
 
         $this->validateParty($input->supplier, 'Supplier');
         $this->validateParty($input->customer, 'Customer');
 
-        if (empty($input->lines)) {
+        // BR-RO-L1000: seller additional legal information (BT-33)
+        if ($input->supplier->registrationNumber !== null && mb_strlen($input->supplier->registrationNumber) > 1000) {
+            throw new ValidationException(__('efactura-sdk::validation.party_registration_number_max_length', ['role' => 'Supplier']));
+        }
+
+        if ($input->lines === []) {
             throw new ValidationException(__('efactura-sdk::validation.at_least_one_line_required'));
         }
 
         foreach ($input->lines as $index => $line) {
             $this->validateLine($line, $index, $input->supplier->isVatPayer);
         }
-        $this->validateReverseCharge($input);
 
-        // BR-RO-L200: Preceding invoice number max 200 characters
-        if ($input->precedingInvoiceNumber !== null && mb_strlen($input->precedingInvoiceNumber) > 200) {
-            throw new ValidationException(__('efactura-sdk::validation.preceding_invoice_number_max_length'));
+        $categories = array_map(fn (InvoiceLineData $line): TaxCategoryId => $line->getTaxCategory($input->supplier->isVatPayer), $input->lines);
+        $this->validateTaxCategories($input, $categories);
+        $this->validatePrecedingInvoices($input);
+        $this->validateNotesAndDelivery($input);
+        $this->validateTaxAccountingCurrency($input, in_array(TaxCategoryId::Standard, $categories, true));
+
+        // BR-CO-25 (fatal on the Invoice root only): a positive amount due needs BT-9.
+        if (! $input->getInvoiceTypeCode()->isCreditNote() && $input->dueDate === null && $input->getTotalIncludingVat() > 0) {
+            throw new ValidationException(__('efactura-sdk::validation.due_date_required_for_positive_payable'));
         }
-
-        $this->validateTaxAccountingCurrency($input);
     }
 
     /**
-     * AE requires both VAT identifiers through the existing PartyTaxScheme path
-     * and zero accounting-currency VAT when no standard-rated lines are present.
-     * This checks usable identifiers, not national checksums or legal eligibility.
+     * Refuse invalid UTF-8 and characters outside the XML 1.0 Char production in any string
+     * of the input, naming its path ("lines.0.name"). XMLWriter would otherwise drop text
+     * after a NUL, replace C0 controls with U+FFFD, or emit a document that is not well-formed.
      *
      * @throws ValidationException
      */
-    private function validateReverseCharge(InvoiceData $input): void
+    private function validateXmlText(mixed $value, string $path): void
     {
-        $hasReverseCharge = false;
-        $hasStandard = false;
-        foreach ($input->lines as $line) {
-            $category = $line->getTaxCategory($input->supplier->isVatPayer);
-            $hasReverseCharge = $hasReverseCharge || $category === TaxCategoryId::ReverseCharge;
-            $hasStandard = $hasStandard || $category === TaxCategoryId::Standard;
-        }
-        if (! $hasReverseCharge) {
+        if (is_string($value)) {
+            if (preg_match('/^[\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]*$/uD', $value) !== 1) {
+                throw new ValidationException(__('efactura-sdk::validation.xml_text_invalid', ['field' => $path]));
+            }
+
             return;
         }
 
-        foreach (['Supplier' => $input->supplier, 'Customer' => $input->customer] as $role => $party) {
-            $vatNumber = $this->normalizeVatNumber($party->companyId, $party->address->countryCode);
-            if (! $party->isVatPayer || preg_match('/^[A-Z]{2}[A-Z0-9]+$/D', $vatNumber) !== 1) {
-                throw new ValidationException(__('efactura-sdk::validation.reverse_charge_vat_identifier_required', ['role' => $role]));
+        if ($value instanceof Data || is_array($value)) {
+            // get_object_vars() from this scope sees only the DTO's public properties.
+            foreach ($value instanceof Data ? get_object_vars($value) : $value as $key => $item) {
+                $this->validateXmlText($item, ltrim($path.'.'.$key, '.'));
+            }
+        }
+    }
+
+    /**
+     * Identifier, exemption-reason and delivery requirements of the declared VAT categories.
+     * This checks usable identifiers, not national checksums or legal eligibility.
+     *
+     * @param  array<TaxCategoryId>  $categories  The category of every line
+     *
+     * @throws ValidationException
+     */
+    private function validateTaxCategories(InvoiceData $input, array $categories): void
+    {
+        // AE and K need both VAT identifiers (BR-AE-02, BR-IC-02); E and G the seller's.
+        $parties = [
+            TaxCategoryId::ReverseCharge->value => ['Supplier' => $input->supplier, 'Customer' => $input->customer],
+            TaxCategoryId::IntraCommunitySupply->value => ['Supplier' => $input->supplier, 'Customer' => $input->customer],
+            TaxCategoryId::Exempt->value => ['Supplier' => $input->supplier],
+            TaxCategoryId::Export->value => ['Supplier' => $input->supplier],
+        ];
+        foreach ($parties as $category => $roles) {
+            if (! in_array(TaxCategoryId::from($category), $categories, true)) {
+                continue;
+            }
+
+            foreach ($roles as $role => $party) {
+                $vatNumber = VatNumberValidator::withCountryPrefix($party->companyId, $party->address->countryCode);
+                if (! $party->isVatPayer || preg_match('/^[A-Z]{2}[A-Z0-9]+$/D', $vatNumber) !== 1) {
+                    throw new ValidationException(__('efactura-sdk::validation.category_vat_identifier_required', ['role' => $role, 'category' => $category]));
+                }
             }
         }
 
-        // A document containing only AE/Z cannot declare collected VAT in RON.
-        // Mixed AE/S retains the existing caller-owned conversion contract.
-        if (! $hasStandard && $input->taxAmountRon !== null && $input->taxAmountRon !== 0.0) {
-            throw new ValidationException(__('efactura-sdk::validation.reverse_charge_tax_amount_ron_must_be_zero'));
+        $reasons = [];
+        foreach ($input->exemptionReasons as $reason) {
+            $category = $reason->category->value;
+            $code = $this->filled($reason->code);
+            $fixedCode = self::FIXED_EXEMPTION_CODES[$category] ?? null;
+
+            if (! in_array($reason->category, [TaxCategoryId::Exempt, TaxCategoryId::Export, TaxCategoryId::IntraCommunitySupply, TaxCategoryId::ReverseCharge], true)) {
+                throw new ValidationException(__('efactura-sdk::validation.exemption_reason_category_invalid', ['category' => $category]));
+            }
+            if (isset($reasons[$category])) {
+                throw new ValidationException(__('efactura-sdk::validation.exemption_reason_duplicate', ['category' => $category]));
+            }
+            if (! in_array($reason->category, $categories, true)) {
+                throw new ValidationException(__('efactura-sdk::validation.exemption_reason_without_lines', ['category' => $category]));
+            }
+            if ($fixedCode !== null && $code !== null && $code !== $fixedCode) {
+                throw new ValidationException(__('efactura-sdk::validation.exemption_reason_code_fixed', ['category' => $category, 'code' => $fixedCode]));
+            }
+            if ($fixedCode === null && $code !== null && ! in_array($code, self::VATEX_CODES, true)) {
+                throw new ValidationException(__('efactura-sdk::validation.exemption_reason_code_invalid', ['code' => $code]));
+            }
+            // BR-RO-L100
+            if ($reason->text !== null && mb_strlen($reason->text) > 100) {
+                throw new ValidationException(__('efactura-sdk::validation.exemption_reason_text_max_length', ['category' => $category]));
+            }
+
+            $reasons[$category] = $reason;
+        }
+
+        // BR-E-10: E has no fixed code, so the caller must state why the supply is exempt.
+        $exempt = $reasons[TaxCategoryId::Exempt->value] ?? null;
+        if (in_array(TaxCategoryId::Exempt, $categories, true) && ($exempt === null || ($this->filled($exempt->code) ?? $this->filled($exempt->text)) === null)) {
+            throw new ValidationException(__('efactura-sdk::validation.exemption_reason_required'));
+        }
+
+        // BR-IC-11/12 accept an invoicing period or a country alone; this SDK deliberately
+        // requires the actual delivery date and a full delivery address for K.
+        if (in_array(TaxCategoryId::IntraCommunitySupply, $categories, true)
+            && ($input->delivery?->actualDeliveryDate === null || $input->delivery->address === null)) {
+            throw new ValidationException(__('efactura-sdk::validation.intra_community_delivery_required'));
+        }
+    }
+
+    /**
+     * BG-3: at most 500 references (BR-RO-A500), each with a non-blank number (BR-55) of at
+     * most 200 characters (BR-RO-L200) and a parseable optional date.
+     *
+     * @throws ValidationException
+     */
+    private function validatePrecedingInvoices(InvoiceData $input): void
+    {
+        $precedingInvoices = $input->getPrecedingInvoices();
+        if (count($precedingInvoices) > 500) {
+            throw new ValidationException(__('efactura-sdk::validation.preceding_invoices_max_count'));
+        }
+
+        foreach ($precedingInvoices as $precedingInvoice) {
+            if (trim($precedingInvoice->number) === '') {
+                throw new ValidationException(__('efactura-sdk::validation.preceding_invoice_number_required'));
+            }
+            if (mb_strlen($precedingInvoice->number) > 200) {
+                throw new ValidationException(__('efactura-sdk::validation.preceding_invoice_number_max_length'));
+            }
+            try {
+                $precedingInvoice->getIssueDateAsCarbon();
+            } catch (\InvalidArgumentException $e) {
+                throw new ValidationException(__('efactura-sdk::validation.preceding_invoice_issue_date_invalid', ['date' => (string) $precedingInvoice->issueDate]), previous: $e);
+            }
+        }
+    }
+
+    /**
+     * The actual delivery date (BT-72), or null when there is none.
+     *
+     * @throws ValidationException When it is blank or not a date
+     */
+    private function actualDeliveryDate(InvoiceData $input): ?Carbon
+    {
+        try {
+            return $input->delivery?->getActualDeliveryDateAsCarbon();
+        } catch (\InvalidArgumentException $e) {
+            throw new ValidationException(__('efactura-sdk::validation.actual_delivery_date_invalid', ['date' => (string) $input->delivery->actualDeliveryDate]), previous: $e);
+        }
+    }
+
+    /**
+     * Notes (BT-22), the VAT point date code (BT-8) and the delivery (BG-13).
+     *
+     * @throws ValidationException
+     */
+    private function validateNotesAndDelivery(InvoiceData $input): void
+    {
+        if (count($input->notes) > 20) {
+            throw new ValidationException(__('efactura-sdk::validation.notes_max_count'));
+        }
+
+        foreach ($input->notes as $index => $note) {
+            if (trim($note) === '') {
+                throw new ValidationException(__('efactura-sdk::validation.note_required', ['index' => $index + 1]));
+            }
+            // BR-RO-L300
+            if (mb_strlen($note) > 300) {
+                throw new ValidationException(__('efactura-sdk::validation.note_max_length', ['index' => $index + 1]));
+            }
+        }
+
+        if ($input->vatPointDateCode !== null) {
+            if (! in_array($input->vatPointDateCode, self::VAT_POINT_DATE_CODES, true)) {
+                throw new ValidationException(__('efactura-sdk::validation.vat_point_date_code_invalid'));
+            }
+            if ($input->taxPointDate !== null) {
+                throw new ValidationException(__('efactura-sdk::validation.vat_point_date_code_with_tax_point_date'));
+            }
+        }
+
+        $this->actualDeliveryDate($input);
+        if ($input->delivery?->address !== null) {
+            // A deliver-to address needs a street, city and county for every country.
+            $this->validateAddress($input->delivery->address, 'Delivery', requireCounty: true);
         }
     }
 
@@ -406,13 +594,14 @@ class InvoiceBuilder
      * and quietly discarding it would repeat the silent-wrong-figure failure this
      * guard exists to prevent.
      *
+     * Without a standard-rated line every breakdown files zero VAT (BR-Z/O/E/G/IC/AE-09),
+     * so BT-111 must be exactly zero too.
+     *
      * @throws ValidationException If validation fails
      */
-    private function validateTaxAccountingCurrency(InvoiceData $input): void
+    private function validateTaxAccountingCurrency(InvoiceData $input, bool $hasStandard): void
     {
-        $currency = $input->currency ?: self::DEFAULT_CURRENCY;
-
-        if ($currency === self::DEFAULT_CURRENCY) {
+        if ($input->currency === self::DEFAULT_CURRENCY) {
             if ($input->taxAmountRon !== null) {
                 throw new ValidationException(__('efactura-sdk::validation.tax_amount_ron_not_allowed_for_ron'));
             }
@@ -422,8 +611,13 @@ class InvoiceBuilder
 
         if ($input->taxAmountRon === null) {
             throw new ValidationException(
-                __('efactura-sdk::validation.tax_amount_ron_required', ['currency' => $currency])
+                __('efactura-sdk::validation.tax_amount_ron_required', ['currency' => $input->currency])
             );
+        }
+
+        $taxAmountRon = Amount::parse($input->taxAmountRon, self::AMOUNT_PRECISION, 'taxAmountRon');
+        if (! $hasStandard && ! $taxAmountRon->isZero()) {
+            throw new ValidationException(__('efactura-sdk::validation.tax_amount_ron_must_be_zero'));
         }
 
         // A converted total must agree in sign with the total it converts. This
@@ -431,7 +625,7 @@ class InvoiceBuilder
         // catch a credited VAT filed as collected, and vice versa.
         // Either total can round to zero independently when the caller converts
         // the taxable base before rounding VAT in the accounting currency.
-        $ronSign = $this->decimal($input->taxAmountRon)->toScale(2, RoundingMode::HalfUp)->getSign();
+        $ronSign = $taxAmountRon->getSign();
         $documentSign = $input->getTotalVat() <=> 0.0;
         if ($ronSign !== 0 && $documentSign !== 0 && $ronSign !== $documentSign) {
             throw new ValidationException(__('efactura-sdk::validation.tax_amount_ron_sign_mismatch'));
@@ -445,7 +639,7 @@ class InvoiceBuilder
      */
     private function validateParty(PartyData $party, string $role): void
     {
-        if (empty($party->registrationName)) {
+        if (trim($party->registrationName) === '') {
             throw new ValidationException(__('efactura-sdk::validation.party_registration_name_required', ['role' => $role]));
         }
 
@@ -454,7 +648,7 @@ class InvoiceBuilder
             throw new ValidationException(__('efactura-sdk::validation.party_registration_name_max_length', ['role' => $role]));
         }
 
-        if (empty($party->companyId)) {
+        if (trim($party->companyId) === '') {
             throw new ValidationException(__('efactura-sdk::validation.party_company_id_required', ['role' => $role]));
         }
 
@@ -464,11 +658,13 @@ class InvoiceBuilder
     /**
      * Validate address data.
      *
+     * @param  bool  $requireCounty  Require a county for every country, not only RO
+     *
      * @throws ValidationException If validation fails
      */
-    private function validateAddress(AddressData $address, string $role): void
+    private function validateAddress(AddressData $address, string $role, bool $requireCounty = false): void
     {
-        if (empty($address->street)) {
+        if (trim($address->street) === '') {
             throw new ValidationException(__('efactura-sdk::validation.party_street_required', ['role' => $role]));
         }
 
@@ -477,7 +673,7 @@ class InvoiceBuilder
             throw new ValidationException(__('efactura-sdk::validation.party_street_max_length', ['role' => $role]));
         }
 
-        if (empty($address->city)) {
+        if (trim($address->city) === '') {
             throw new ValidationException(__('efactura-sdk::validation.party_city_required', ['role' => $role]));
         }
 
@@ -491,14 +687,27 @@ class InvoiceBuilder
             throw new ValidationException(__('efactura-sdk::validation.party_postal_code_max_length', ['role' => $role]));
         }
 
-        // BR-RO-110/111: Romanian addresses require CountrySubentity (county)
-        if ($address->countryCode === 'RO' && empty($address->county)) {
-            throw new ValidationException(__('efactura-sdk::validation.party_county_required_ro', ['role' => $role]));
+        // BR-CL-14: ISO 3166-1 alpha-2 is uppercase; the list itself is ANAF's to check.
+        if (preg_match('/^[A-Z]{2}$/D', $address->countryCode) !== 1) {
+            throw new ValidationException(__('efactura-sdk::validation.country_code_invalid', ['role' => $role]));
+        }
+
+        if (trim($address->county ?? '') === '') {
+            // BR-RO-110/111: Romanian addresses require CountrySubentity (county)
+            if ($requireCounty) {
+                throw new ValidationException(__('efactura-sdk::validation.delivery_county_required'));
+            }
+            if ($address->countryCode === self::DEFAULT_COUNTRY_CODE) {
+                throw new ValidationException(__('efactura-sdk::validation.party_county_required_ro', ['role' => $role]));
+            }
         }
     }
 
     /**
      * Validate invoice line data.
+     *
+     * Every amount is parsed first, at the precision it files with, so a value that cannot be
+     * filed exactly is refused with its path ("lines.0.quantity") before anything uses it.
      *
      * @param  bool  $isSupplierVatPayer  Whether the supplier is a VAT payer
      *
@@ -507,9 +716,13 @@ class InvoiceBuilder
     private function validateLine(InvoiceLineData $line, int $index, bool $isSupplierVatPayer = true): void
     {
         $lineNum = $index + 1;
+        $quantity = Amount::parse($line->quantity, self::QUANTITY_PRECISION, "lines.$index.quantity");
+        $unitPrice = Amount::parse($line->unitPrice, self::QUANTITY_PRECISION, "lines.$index.unitPrice");
+        $taxAmount = Amount::parse($line->taxAmount, self::QUANTITY_PRECISION, "lines.$index.taxAmount");
+        $taxPercent = Amount::parse($line->taxPercent, self::AMOUNT_PRECISION, "lines.$index.taxPercent");
         $line->getTaxCategory($isSupplierVatPayer);
 
-        if (empty($line->name)) {
+        if (trim($line->name) === '') {
             throw new ValidationException(__('efactura-sdk::validation.line_item_name_required', ['lineNum' => $lineNum]));
         }
 
@@ -524,15 +737,15 @@ class InvoiceBuilder
         }
 
         // Allow negative quantities for credit notes, but not zero
-        if ($line->quantity == 0) {
+        if ($quantity->isZero()) {
             throw new ValidationException(__('efactura-sdk::validation.line_quantity_cannot_be_zero', ['lineNum' => $lineNum]));
         }
 
-        if ($line->unitPrice < 0) {
+        if ($unitPrice->isNegative()) {
             throw new ValidationException(__('efactura-sdk::validation.line_unit_price_not_negative', ['lineNum' => $lineNum]));
         }
 
-        if ($line->taxPercent < 0 || $line->taxPercent > 100) {
+        if ($taxPercent->isNegative() || $taxPercent->isGreaterThan(100)) {
             throw new ValidationException(__('efactura-sdk::validation.line_tax_percent_range', ['lineNum' => $lineNum]));
         }
 
@@ -542,11 +755,9 @@ class InvoiceBuilder
         // fails fatally otherwise. A supplier not registered for VAT cannot
         // legally charge it, so this is caller error rather than a lost rounding
         // penny: fail fast here instead of letting ANAF reject the submission.
-        // The epsilon mirrors InvoiceLineData::getTaxCategory(); the tax amount
-        // is compared as it will be emitted (rounded to 2 decimals). A non-finite
-        // amount cannot be emitted at all, so it fails here as it always has.
-        $emitsTax = ! is_finite($line->taxAmount) || $line->getTaxAmount() != 0.0;
-        if (! $isSupplierVatPayer && (abs($line->taxPercent) >= 0.01 || $emitsTax)) {
+        // The tax amount is compared as it will be emitted (rounded to 2 decimals).
+        $emitsTax = ! $taxAmount->toScale(self::AMOUNT_PRECISION, RoundingMode::HalfUp)->isZero();
+        if (! $isSupplierVatPayer && (! $taxPercent->isZero() || $emitsTax)) {
             throw new ValidationException(
                 __('efactura-sdk::validation.line_tax_not_allowed_for_non_vat_payer', ['lineNum' => $lineNum])
             );
@@ -558,10 +769,9 @@ class InvoiceBuilder
         // BR-Z-09 tests xs:decimal(cbc:TaxAmount) = 0 with no tolerance, and BR-CO-17 fails
         // alongside it because the amount cannot match TaxableAmount x 0%. Both are fatal, so
         // this fails fast for the same reason BR-O-09 does rather than letting ANAF reject the
-        // submission. The condition mirrors InvoiceLineData::getTaxCategory()'s epsilon
-        // so it binds exactly when category Z (or O) is emitted, and compares the tax amount
-        // (rounded to 2 decimals) so a sub-cent residue that files as 0.00 is not rejected.
-        if (abs($line->taxPercent) < 0.01 && $emitsTax) {
+        // submission. A sub-cent residue that files as 0.00 is not rejected here; the group
+        // check in groupLinesByTax() catches residues that add up to a cent.
+        if ($taxPercent->isZero() && $emitsTax) {
             throw new ValidationException(
                 __('efactura-sdk::validation.line_tax_amount_must_be_zero_for_zero_rate', ['lineNum' => $lineNum])
             );
@@ -587,7 +797,9 @@ class InvoiceBuilder
      * generated XML in tests/Unit/Builders/InvoiceBuilderTest.php.
      *
      * The per-line tax amount is not itself emitted anywhere — EN 16931 defines no per-line VAT
-     * amount — so it exists only to be accumulated here.
+     * amount — so it exists only to be accumulated here. Outside S (and AE, whose lines are
+     * exactly zero) every breakdown must file exactly zero VAT (BR-Z/O/E/G/IC-09), so sub-cent
+     * residues that add up to a cent there are refused.
      *
      * Known consequence, deliberately not guarded: the group tax amount is never checked
      * against TaxableAmount x Percent. BR-CO-17/BR-S-09 tolerate a drift of strictly less than
@@ -603,20 +815,21 @@ class InvoiceBuilder
      *
      * @param  InvoiceLineData[]  $lines  The invoice lines
      * @param  bool  $isSupplierVatPayer  Whether the supplier is a VAT payer
-     * @return array<int, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}> Grouped tax data
+     * @return array<int, array{taxPercent: BigDecimal, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}> Grouped tax data
+     *
+     * @throws ValidationException If a zero-VAT breakdown sums to a non-zero amount
      */
     private function groupLinesByTax(array $lines, bool $isSupplierVatPayer, bool $isCreditNote = false): array
     {
-        /** @var array<string, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}> $groups */
+        /** @var array<string, array{taxPercent: BigDecimal, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}> $groups */
         $groups = [];
 
         foreach ($lines as $line) {
-            $taxPercent = $line->taxPercent;
             $key = $line->getTaxGroupKey($isSupplierVatPayer);
 
             if (! isset($groups[$key])) {
                 $groups[$key] = [
-                    'taxPercent' => $taxPercent,
+                    'taxPercent' => Amount::parse($line->taxPercent, self::AMOUNT_PRECISION, 'taxPercent'),
                     'taxCategoryId' => $line->getTaxCategory($isSupplierVatPayer),
                     'taxableAmount' => BigDecimal::zero(),
                     'taxAmount' => BigDecimal::zero(),
@@ -629,14 +842,18 @@ class InvoiceBuilder
             $groups[$key]['taxableAmount'] = $groups[$key]['taxableAmount']->plus($lineAmount);
 
             // Accumulate pre-computed per-line tax (negate for credit notes, matching quantity sign handling)
-            $lineTax = $this->decimal($line->taxAmount);
+            $lineTax = Amount::parse($line->taxAmount, self::QUANTITY_PRECISION, 'taxAmount');
             $groups[$key]['taxAmount'] = $groups[$key]['taxAmount']->plus($isCreditNote ? $lineTax->negated() : $lineTax);
         }
 
         // Round each group's tax once at the end; the taxable sum of 2-decimal nets is already exact
         foreach ($groups as &$group) {
             // Use accumulated per-line tax amounts instead of recalculating from group totals
-            $group['taxAmount'] = $group['taxAmount']->toScale(2, RoundingMode::HalfUp);
+            $group['taxAmount'] = $group['taxAmount']->toScale(self::AMOUNT_PRECISION, RoundingMode::HalfUp);
+
+            if ($group['taxCategoryId'] !== TaxCategoryId::Standard && ! $group['taxAmount']->isZero()) {
+                throw new ValidationException(__('efactura-sdk::validation.zero_vat_group_tax_amount_must_be_zero', ['category' => $group['taxCategoryId']->value]));
+            }
         }
 
         return array_values($groups);
@@ -657,9 +874,30 @@ class InvoiceBuilder
      */
     private function calculateLineExtension(InvoiceLineData $line, bool $isCreditNote = false): BigDecimal
     {
-        $amount = $this->decimal($line->quantity)->multipliedBy($this->decimal($line->unitPrice))->toScale(2, RoundingMode::HalfUp);
+        $amount = Amount::parse($line->quantity, self::QUANTITY_PRECISION, 'quantity')
+            ->multipliedBy(Amount::parse($line->unitPrice, self::QUANTITY_PRECISION, 'unitPrice'))
+            ->toScale(self::AMOUNT_PRECISION, RoundingMode::HalfUp);
 
         return $isCreditNote ? $amount->negated() : $amount;
+    }
+
+    /** The value, or null when it is null or blank. */
+    private function filled(?string $value): ?string
+    {
+        return $value === null || trim($value) === '' ? null : $value;
+    }
+
+    /**
+     * @return array<string, ExemptionReasonData> keyed by category code (validated unique)
+     */
+    private function exemptionReasonsByCategory(InvoiceData $input): array
+    {
+        $reasons = [];
+        foreach ($input->exemptionReasons as $reason) {
+            $reasons[$reason->category->value] = $reason;
+        }
+
+        return $reasons;
     }
 
     /**
@@ -692,8 +930,10 @@ class InvoiceBuilder
 
     /**
      * Build XML for a party (supplier or customer).
+     *
+     * @param  bool  $fileLegalForm  File the registration number as BT-33 (seller only)
      */
-    private function buildPartyXml(Writer $writer, string $tagName, PartyData $party, bool $isVatPayer): void
+    private function buildPartyXml(Writer $writer, string $tagName, PartyData $party, bool $isVatPayer, bool $fileLegalForm = false): void
     {
         $writer->startElement('{'.self::NS_CAC.'}'.$tagName);
         $writer->startElement('{'.self::NS_CAC.'}Party');
@@ -705,7 +945,7 @@ class InvoiceBuilder
         if ($isVatPayer) {
             $writer->startElement('{'.self::NS_CAC.'}PartyTaxScheme');
 
-            $companyId = $this->normalizeVatNumber($party->companyId, $party->address->countryCode);
+            $companyId = VatNumberValidator::withCountryPrefix($party->companyId, $party->address->countryCode);
             $this->writeElement($writer, self::NS_CBC, 'CompanyID', $companyId);
 
             $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
@@ -719,6 +959,12 @@ class InvoiceBuilder
         $writer->startElement('{'.self::NS_CAC.'}PartyLegalEntity');
         $this->writeElement($writer, self::NS_CBC, 'RegistrationName', $party->registrationName);
         $this->writeElement($writer, self::NS_CBC, 'CompanyID', VatNumberValidator::stripPrefix($party->companyId));
+
+        // BT-33 seller additional legal information (e.g. the trade register number). The
+        // buyer has no such term: UBL-CR-244 flags a buyer CompanyLegalForm.
+        if ($fileLegalForm && $this->filled($party->registrationNumber) !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'CompanyLegalForm', (string) $party->registrationNumber);
+        }
         $writer->endElement(); // PartyLegalEntity
 
         $writer->endElement(); // Party
@@ -726,200 +972,76 @@ class InvoiceBuilder
     }
 
     /**
-     * Build postal address XML.
+     * Build a postal address (cac:PostalAddress, or cac:Address inside a delivery location).
+     *
+     * The county and city are filed as AddressSanitizer::canonicalize() returns them:
+     * BR-RO-100/101/110/111 (and BR-RO-200/210 for a delivery) bind only to RO addresses.
      */
-    private function buildPostalAddressXml(Writer $writer, AddressData $address): void
+    private function buildPostalAddressXml(Writer $writer, AddressData $address, string $element = 'PostalAddress'): void
     {
-        $writer->startElement('{'.self::NS_CAC.'}PostalAddress');
+        ['county' => $county, 'city' => $city] = AddressSanitizer::canonicalize($address);
+
+        $writer->startElement('{'.self::NS_CAC.'}'.$element);
 
         $this->writeElement($writer, self::NS_CBC, 'StreetName', $address->street);
-
-        // Handle county/subdivision - sanitize for Romanian addresses
-        $countrySubdivision = $this->sanitizeCountyOrSector($address);
-
-        // BR-RO-100/101: For Bucharest (RO-B), city must be SECTOR1-6
-        $cityName = $this->sanitizeCityName($address, $countrySubdivision);
-        $this->writeElement($writer, self::NS_CBC, 'CityName', $cityName);
+        $this->writeElement($writer, self::NS_CBC, 'CityName', $city);
 
         if ($address->postalZone !== null && $address->postalZone !== '') {
             $this->writeElement($writer, self::NS_CBC, 'PostalZone', $address->postalZone);
         }
 
-        if ($countrySubdivision !== null) {
-            $this->writeElement($writer, self::NS_CBC, 'CountrySubentity', $countrySubdivision);
+        if ($county !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'CountrySubentity', $county);
         }
 
-        // Country
-        $countryCode = $address->countryCode ?: self::DEFAULT_COUNTRY_CODE;
         $writer->startElement('{'.self::NS_CAC.'}Country');
-        $this->writeElement($writer, self::NS_CBC, 'IdentificationCode', $countryCode);
+        $this->writeElement($writer, self::NS_CBC, 'IdentificationCode', $address->countryCode);
         $writer->endElement(); // Country
 
-        $writer->endElement(); // PostalAddress
+        $writer->endElement(); // PostalAddress or Address
     }
 
     /**
-     * Sanitize city name for UBL output.
-     *
-     * BR-RO-100/101: For Bucharest (RO-B), city must be SECTOR1-6.
+     * Build BillingReference XML (BG-3: preceding invoice reference).
      */
-    private function sanitizeCityName(AddressData $address, ?string $countrySubdivision): string
-    {
-        // Only apply sector formatting for Bucharest addresses
-        if ($countrySubdivision !== 'RO-B') {
-            return $address->city;
-        }
-
-        // Try to extract sector number from city or county
-        $sectorNumber = AddressSanitizer::extractBucharestSectorNumber($address->city)
-            ?? ($address->county !== null ? AddressSanitizer::extractBucharestSectorNumber($address->county) : null);
-
-        if ($sectorNumber !== null) {
-            return 'SECTOR'.$sectorNumber;
-        }
-
-        // If we can't determine sector, return city as-is (will fail ANAF validation)
-        // This is intentional - user needs to provide valid sector info
-        return $address->city;
-    }
-
-    /**
-     * Sanitize county or extract Bucharest sector.
-     */
-    private function sanitizeCountyOrSector(AddressData $address): ?string
-    {
-        // Check if this is a Bucharest address - all Bucharest addresses use RO-B
-        // (Bucharest sectors are NOT part of ISO 3166-2:RO, so all map to RO-B)
-        if ($address->county !== null && AddressSanitizer::isBucharest($address->county)) {
-            return 'RO-B';
-        }
-
-        // For non-Bucharest Romanian addresses, sanitize county to ISO 3166-2:RO format
-        // ANAF requires ISO codes (BR-RO-111 rule) - non-compliant values cause validation errors
-        if ($address->county !== null && $address->countryCode === self::DEFAULT_COUNTRY_CODE) {
-            $sanitized = AddressSanitizer::sanitizeCounty($address->county);
-            if ($sanitized !== null) {
-                return $sanitized;
-            }
-
-            // For Romanian addresses, fail fast if county cannot be mapped to ISO code
-            // This prevents ANAF BR-RO-111 validation errors at submission time
-            throw new ValidationException(
-                __('efactura-sdk::validation.county_invalid_iso_code', ['county' => $address->county])
-            );
-        }
-
-        // For non-Romanian addresses, return county as-is (ANAF doesn't enforce ISO codes for foreign countries)
-        return $address->county;
-    }
-
-    /**
-     * Normalize VAT number with country prefix.
-     *
-     * BT-31/BT-48 (seller/buyer VAT identifier) must carry the prefix of the
-     * state that ISSUED the registration. Two things make "prefix with the
-     * address country code unless it already starts with it" wrong:
-     *
-     *  - the prefix is not always the ISO 3166-1 country code (Greece files
-     *    under "EL", not "GR"), so an already-prefixed Greek id is not
-     *    recognised and gets prefixed again: "GR"."EL123456789" =
-     *    "GREL123456789";
-     *  - a party may hold a VAT identifier issued by a state other than the one
-     *    its address is in (a foreign VAT registration, or Northern Ireland's
-     *    "XI" on an otherwise "GB" address), which is likewise re-prefixed.
-     *
-     * Either way the result is a syntactically invalid VAT identifier, so the
-     * prefix is only added when the id does not already carry a recognised one.
-     *
-     * The mirror image of the first case is corrected rather than rejected: a caller who
-     * prefixes the id with Greece's COUNTRY code ("GR123456789") instead of its VAT prefix
-     * would otherwise be handed "ELGR123456789". Those country codes are deliberately absent
-     * from VAT_COUNTRY_PREFIXES, precisely because no VAT id legitimately carries one, and
-     * this method's job is to normalise exactly this kind of input (it already leaves malformed
-     * "RO 12345678" intact rather than doubling its prefix).
-     *
-     * PASS VAT IDENTIFIERS WITH THEIR VAT PREFIX. One input is genuinely ambiguous, and no
-     * logic here can resolve it. A French VAT is "FR" + a two-character key + 9 digits, and
-     * that key MAY BE TWO LETTERS — HMRC documents "XX123456789", and France is the only
-     * member state where this occurs. So a bare French id whose key happens to be "GR" is
-     * indistinguishable from a Greek id carrying its country code: same 11 characters, same
-     * shape, same everything.
-     *
-     *   normalizeVatNumber('GR123456789', 'RO')  Greek party, foreign address -> EL123456789
-     *   normalizeVatNumber('GR123456789', 'FR')  bare French id, key "GR"     -> EL123456789 (wrong)
-     *
-     * This resolves toward the first reading: an explicit prefix is better evidence of the
-     * issuing state than an address is, and a foreign VAT registration is far commoner than an
-     * unprefixed French id with a letter-letter key. Gating the correction on the country code
-     * would not fix the ambiguity — it would only invert which of the two we corrupt, breaking
-     * the commoner case to serve the rarer one. A prefixed "FRGR123456789" is unambiguous and
-     * passes through untouched, which is why the rule above is the actual fix.
-     */
-    private function normalizeVatNumber(string $vatNumber, ?string $countryCode): string
-    {
-        $vatNumber = strtoupper(trim($vatNumber));
-        $countryCode = strtoupper($countryCode ?? self::DEFAULT_COUNTRY_CODE);
-
-        $expectedPrefix = self::VAT_PREFIX_OVERRIDES[$countryCode] ?? $countryCode;
-
-        if ($this->hasVatCountryPrefix($vatNumber, $expectedPrefix)) {
-            return $vatNumber;
-        }
-
-        // Swap a country code that differs from its VAT prefix for the prefix the state
-        // actually files under, rather than prefixing on top of it.
-        foreach (self::VAT_PREFIX_OVERRIDES as $isoCode => $vatPrefix) {
-            $remainder = substr($vatNumber, strlen($isoCode));
-
-            if (str_starts_with($vatNumber, $isoCode) && preg_match('/^[0-9A-Z]/', $remainder) === 1) {
-                return $vatPrefix.$remainder;
-            }
-        }
-
-        return $expectedPrefix.$vatNumber;
-    }
-
-    /**
-     * Whether a VAT identifier already carries a country prefix.
-     */
-    private function hasVatCountryPrefix(string $vatNumber, string $expectedPrefix): bool
-    {
-        // Already carries the prefix this party files under. A plain
-        // str_starts_with keeps malformed-but-clearly-prefixed input intact —
-        // "RO 12345678" is left alone rather than turned into "RORO 12345678".
-        if (str_starts_with($vatNumber, $expectedPrefix)) {
-            return true;
-        }
-
-        // Carries some OTHER recognised VAT prefix. A party may hold a VAT
-        // identifier issued by a state other than the one its address is in, and
-        // an explicit prefix from the caller is better evidence of the issuing
-        // state than the address is; prefixing again would corrupt it.
-        //
-        // Requiring an alphanumeric character after the prefix keeps this branch
-        // narrow. It is not airtight, and cannot be: a French VAT is "FR" + a
-        // two-character key + 9 digits, and that key may be two LETTERS (HMRC
-        // documents "XX123456789"; France is the only member state where this
-        // happens). So a bare French id with a key of "EL" or "IT" reads as
-        // already-prefixed here and is filed without its "FR".
-        //
-        // Resolving that needs information this method does not have — see
-        // normalizeVatNumber(): pass VAT identifiers WITH their prefix, and the
-        // ambiguity disappears.
-        return preg_match('/^([A-Z]{2})[0-9A-Z]/', $vatNumber, $matches) === 1
-            && in_array($matches[1], self::VAT_COUNTRY_PREFIXES, true);
-    }
-
-    /**
-     * Build BillingReference XML for credit notes (BG-3: Preceding invoice reference).
-     */
-    private function buildBillingReferenceXml(Writer $writer, string $invoiceNumber): void
+    private function buildBillingReferenceXml(Writer $writer, PrecedingInvoiceData $precedingInvoice): void
     {
         $writer->startElement('{'.self::NS_CAC.'}BillingReference');
         $writer->startElement('{'.self::NS_CAC.'}InvoiceDocumentReference');
-        $this->writeElement($writer, self::NS_CBC, 'ID', $invoiceNumber);
+        $this->writeElement($writer, self::NS_CBC, 'ID', $precedingInvoice->number);
+
+        $issueDate = $precedingInvoice->getIssueDateAsCarbon();
+        if ($issueDate !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'IssueDate', $issueDate->format('Y-m-d'));
+        }
         $writer->endElement(); // InvoiceDocumentReference
         $writer->endElement(); // BillingReference
+    }
+
+    /**
+     * Build Delivery XML (BG-13): cbc:ActualDeliveryDate (BT-72), then
+     * cac:DeliveryLocation/cac:Address (BG-15), whose country is BT-80.
+     */
+    private function buildDeliveryXml(Writer $writer, DeliveryData $delivery): void
+    {
+        $date = $delivery->getActualDeliveryDateAsCarbon();
+        if ($date === null && $delivery->address === null) {
+            return;
+        }
+
+        $writer->startElement('{'.self::NS_CAC.'}Delivery');
+
+        if ($date !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'ActualDeliveryDate', $date->format('Y-m-d'));
+        }
+
+        if ($delivery->address !== null) {
+            $writer->startElement('{'.self::NS_CAC.'}DeliveryLocation');
+            $this->buildPostalAddressXml($writer, $delivery->address, 'Address');
+            $writer->endElement(); // DeliveryLocation
+        }
+
+        $writer->endElement(); // Delivery
     }
 
     /**
@@ -962,9 +1084,10 @@ class InvoiceBuilder
     /**
      * Build tax total XML with subtotals.
      *
-     * @param  array<int, array{taxPercent: float, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}>  $taxGroups
+     * @param  array<int, array{taxPercent: BigDecimal, taxCategoryId: TaxCategoryId, taxableAmount: BigDecimal, taxAmount: BigDecimal}>  $taxGroups
+     * @param  array<string, ExemptionReasonData>  $reasons  Exemption reasons keyed by category code
      */
-    private function buildTaxTotalXml(Writer $writer, array $taxGroups, BigDecimal $totalTaxAmount, string $currency): void
+    private function buildTaxTotalXml(Writer $writer, array $taxGroups, BigDecimal $totalTaxAmount, string $currency, array $reasons): void
     {
         $writer->startElement('{'.self::NS_CAC.'}TaxTotal');
 
@@ -996,16 +1119,27 @@ class InvoiceBuilder
                 ['currencyID' => $currency]
             );
 
+            $category = $group['taxCategoryId'];
             $writer->startElement('{'.self::NS_CAC.'}TaxCategory');
-            $this->writeElement($writer, self::NS_CBC, 'ID', $group['taxCategoryId']->value);
-            // A rate is not money: format it as the group key rounds it, so lines and group agree.
-            $this->writeElement($writer, self::NS_CBC, 'Percent', number_format($group['taxPercent'], 2, '.', ''));
+            $this->writeElement($writer, self::NS_CBC, 'ID', $category->value);
+            // A rate is not money: format it as the group key reads it, so lines and group agree.
+            $this->writeElement($writer, self::NS_CBC, 'Percent', (string) $group['taxPercent']);
 
-            if ($group['taxCategoryId'] === TaxCategoryId::NotSubject) {
-                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReasonCode', 'VATEX-EU-O');
-            } elseif ($group['taxCategoryId'] === TaxCategoryId::ReverseCharge) {
-                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReasonCode', 'VATEX-EU-AE');
-                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReason', 'Taxare inversa');
+            // BT-121 / BT-120. Z must carry neither (BR-Z-10); E carries the caller's (BR-E-10).
+            $reason = $reasons[$category->value] ?? null;
+            $text = $this->filled($reason?->text);
+            [$code, $text] = match ($category) {
+                TaxCategoryId::NotSubject => ['VATEX-EU-O', null],
+                TaxCategoryId::ReverseCharge => ['VATEX-EU-AE', $text ?? 'Taxare inversa'],
+                TaxCategoryId::Export, TaxCategoryId::IntraCommunitySupply => [self::FIXED_EXEMPTION_CODES[$category->value], $text],
+                TaxCategoryId::Exempt => [$this->filled($reason?->code), $text],
+                default => [null, null],
+            };
+            if ($code !== null) {
+                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReasonCode', $code);
+            }
+            if ($text !== null) {
+                $this->writeElement($writer, self::NS_CBC, 'TaxExemptionReason', $text);
             }
 
             $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
@@ -1031,7 +1165,7 @@ class InvoiceBuilder
      *    across the WHOLE document and assert `= 1`, and BR-S-08 would compare a
      *    RON-converted TaxableAmount against line sums in the document currency.
      *
-     * BR-DEC-RO-15 caps BT-111 at 2 decimals, which formatAmount() enforces.
+     * BR-DEC-RO-15 caps BT-111 at 2 decimals, which Amount::parse() already enforces.
      */
     private function buildTaxTotalInAccountingCurrency(Writer $writer, BigDecimal $taxAmount): void
     {
@@ -1128,13 +1262,13 @@ class InvoiceBuilder
         $this->writeElement($writer, self::NS_CBC, 'ID', (string) ($line->id ?? $lineId));
 
         // Invoiced/Credited quantity — negate for credit notes (ANAF treats CN as inherently negative)
-        $quantity = $isCreditNote ? -$line->quantity : $line->quantity;
+        $quantity = Amount::parse($line->quantity, self::QUANTITY_PRECISION, 'quantity');
         $unitCode = $line->unitCode ?: self::DEFAULT_UNIT_CODE;
         $this->writeElementWithAttributes(
             $writer,
             self::NS_CBC,
             $quantityElement,
-            $this->formatQuantity($quantity),
+            $this->formatQuantity($isCreditNote ? $quantity->negated() : $quantity),
             ['unitCode' => $unitCode]
         );
 
@@ -1167,7 +1301,7 @@ class InvoiceBuilder
         // not(cbc:Percent) on such a line and fails fatally otherwise, which
         // rejects every invoice issued by a non-VAT-payer supplier.
         if ($taxCategory !== TaxCategoryId::NotSubject) {
-            $this->writeElement($writer, self::NS_CBC, 'Percent', number_format($line->taxPercent, 2, '.', ''));
+            $this->writeElement($writer, self::NS_CBC, 'Percent', (string) Amount::parse($line->taxPercent, self::AMOUNT_PRECISION, 'taxPercent'));
         }
 
         $writer->startElement('{'.self::NS_CAC.'}TaxScheme');
@@ -1183,7 +1317,7 @@ class InvoiceBuilder
             $writer,
             self::NS_CBC,
             'PriceAmount',
-            $this->formatQuantity($line->unitPrice),
+            $this->formatQuantity(Amount::parse($line->unitPrice, self::QUANTITY_PRECISION, 'unitPrice')),
             ['currencyID' => $currency]
         );
         $writer->endElement(); // Price
@@ -1196,23 +1330,11 @@ class InvoiceBuilder
      *
      * The EN 16931 BR-DEC-* rules cap the number of decimals at 2 for amount
      * fields (line net amount, VAT amounts, document totals). Computed amounts
-     * already carry exactly 2; only the caller's BT-111 is rounded here, half-up.
+     * already carry exactly 2.
      */
     private function formatAmount(BigDecimal $amount): string
     {
-        return (string) $amount->toScale(2, RoundingMode::HalfUp);
-    }
-
-    /**
-     * Read a caller's float at the precision formatQuantity() files (QUANTITY_PRECISION).
-     *
-     * All amount arithmetic is exact decimal on these values. Float products and sums
-     * misplace half-cent ties (3 x 1.005 = 3.0149999...), which PHP 8.4+ round() no
-     * longer hides.
-     */
-    private function decimal(float $value): BigDecimal
-    {
-        return BigDecimal::of(number_format($value, self::QUANTITY_PRECISION, '.', ''));
+        return (string) $amount->toScale(self::AMOUNT_PRECISION, RoundingMode::HalfUp);
     }
 
     /**
@@ -1227,20 +1349,13 @@ class InvoiceBuilder
      *
      * Keeps up to self::QUANTITY_PRECISION decimals and trims trailing zeros
      * beyond the second, so whole values still render conventionally ("5.00")
-     * while fractional ones keep their precision ("1.375", "0.0075").
-     *
-     * number_format() is used rather than a string cast because casting relies
-     * on precision ini settings and emits scientific notation for small values
-     * ((string) 0.0000075 === "7.5E-6"), which is not a valid xsd:decimal.
+     * while fractional ones keep their precision ("1.375", "0.0075"). A decimal
+     * string never uses scientific notation, which is not a valid xsd:decimal.
      */
-    private function formatQuantity(float $value): string
+    private function formatQuantity(BigDecimal $value): string
     {
-        $formatted = number_format($value, self::QUANTITY_PRECISION, '.', '');
-
         // "1.375000" -> "1.375", "5.000000" -> "5." (the '.' stops the trim)
-        $formatted = rtrim($formatted, '0');
-
-        $parts = explode('.', $formatted, 2);
+        $parts = explode('.', rtrim((string) $value->toScale(self::QUANTITY_PRECISION), '0'), 2);
 
         // Pad back to a minimum of 2 decimals: "5." -> "5.00"
         return $parts[0].'.'.str_pad($parts[1] ?? '', 2, '0');

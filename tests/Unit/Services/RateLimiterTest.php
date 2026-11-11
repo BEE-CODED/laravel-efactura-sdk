@@ -5,11 +5,14 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use Carbon\Carbon;
 use Illuminate\Cache\RateLimiter as CacheRateLimiter;
 use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Cache\Store;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter as LaravelRateLimiter;
+use Illuminate\Support\Facades\Schema;
 
 beforeEach(function () {
     // Clear any existing rate limits before each test
@@ -78,7 +81,7 @@ describe('refused calls', function () {
         $this->travel(900)->milliseconds();
         expect(fn () => $limiter->checkCompanyLookup())->toThrow(RateLimitExceededException::class);
 
-        $this->travel(600)->milliseconds();
+        $this->travel(1200)->milliseconds();
         $limiter->checkCompanyLookup();
 
         expect(LaravelRateLimiter::attempts('efactura-sdk:second:company_lookup'))->toBe(1);
@@ -391,6 +394,14 @@ describe('checkCompanyLookup', function () {
         }
     });
 
+    it('names the 2-second window in its refusal', function () {
+        $limiter = new RateLimiter;
+        $limiter->checkCompanyLookup();
+
+        expect(fn () => $limiter->checkCompanyLookup())
+            ->toThrow(RateLimitExceededException::class, 'Company lookup rate limit exceeded (1 per 2 seconds).');
+    });
+
     it('is bypassed entirely when rate limiting is disabled', function () {
         config()->set('efactura-sdk.rate_limits.enabled', false);
         $limiter = new RateLimiter;
@@ -400,6 +411,32 @@ describe('checkCompanyLookup', function () {
         $limiter->checkCompanyLookup();
 
         expect(true)->toBeTrue(); // no exception thrown
+    });
+
+    it('keeps lookups at least a second apart on a whole-second cache store', function () {
+        // The database store expires a key at a whole second, so a 1-second window opened
+        // at x.999 would be gone at x+1.000 and let a second lookup through 2 ms later.
+        Schema::create('cache', function (Blueprint $table) {
+            $table->string('key')->primary();
+            $table->mediumText('value');
+            $table->integer('expiration');
+        });
+        LaravelRateLimiter::swap(new CacheRateLimiter(Cache::store('database')));
+        $limiter = new RateLimiter;
+        $at = fn (string $time) => Carbon::setTestNow(Carbon::parse($time));
+
+        $at('2026-11-10 10:00:00.999');
+        $limiter->checkCompanyLookup();
+
+        foreach (['2026-11-10 10:00:01.001', '2026-11-10 10:00:01.999'] as $time) {
+            $at($time);
+            expect(fn () => $limiter->checkCompanyLookup())->toThrow(RateLimitExceededException::class);
+        }
+
+        $at('2026-11-10 10:00:02.000');
+        $limiter->checkCompanyLookup();
+
+        expect(true)->toBeTrue();
     });
 });
 

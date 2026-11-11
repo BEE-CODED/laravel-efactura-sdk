@@ -464,7 +464,7 @@ describe('address sanitization', function () {
         $builder = new InvoiceBuilder;
         $supplierAddress = new AddressData(
             street: 'Str. Test',
-            city: 'Bucuresti',
+            city: 'Sector 1',
             postalZone: '010101',
             county: 'Bucuresti',
             countryCode: 'RO',
@@ -479,7 +479,12 @@ describe('address sanitization', function () {
 
         $xml = $builder->buildInvoiceXml($invoice);
 
-        expect($xml)->toContain('<cbc:CountrySubentity>RO-B</cbc:CountrySubentity>');
+        expect($xml)->toContain('<cbc:CountrySubentity>RO-B</cbc:CountrySubentity>')
+            ->and($xml)->toContain('<cbc:CityName>SECTOR1</cbc:CityName>');
+
+        // 4.0: a Bucharest address without a sector is refused rather than filed (BR-RO-100).
+        $supplier->address->city = 'Bucuresti';
+        expect(fn () => $builder->buildInvoiceXml($invoice))->toThrow(ValidationException::class, 'needs its sector');
     });
 
     it('throws exception for Romanian address with unmappable county', function () {
@@ -604,57 +609,20 @@ describe('tax grouping floating-point handling', function () {
         expect(substr_count($xml, 'TaxSubtotal'))->toBe(2);
     });
 
-    it('groups tax rates that round to same value', function () {
+    // 4.0 (X6): a rate is filed with 2 decimals, so a finer rate is refused instead of
+    // being rounded into the 19% group; the same rate given as a string still groups.
+    it('groups the same rate given as a float and a string, and refuses a finer rate', function () {
         $builder = new InvoiceBuilder;
+        $grouped = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.0),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: '19.00'),
+        ]);
+        $finer = createTestInvoiceForBuilder([
+            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.001),
+        ]);
 
-        // Create test data with tax percent that would have floating-point issues
-        // 19.001 and 19.004 should both round to 19.00 and be grouped together
-        $supplierAddress = new AddressData(
-            street: 'Str. Furnizor 1',
-            city: 'Bucuresti',
-            postalZone: '010101',
-            county: 'Sector 1',
-            countryCode: 'RO',
-        );
-
-        $supplier = new PartyData(
-            registrationName: 'Furnizor Test SRL',
-            companyId: 'RO12345678',
-            address: $supplierAddress,
-            registrationNumber: 'J40/1234/2020',
-            isVatPayer: true,
-        );
-
-        $customerAddress = new AddressData(
-            street: 'Str. Client 1',
-            city: 'Cluj-Napoca',
-            postalZone: '400001',
-            county: 'Cluj',
-            countryCode: 'RO',
-        );
-
-        $customer = new PartyData(
-            registrationName: 'Client Test SRL',
-            companyId: 'RO87654321',
-            address: $customerAddress,
-            isVatPayer: true,
-        );
-
-        $invoice = new InvoiceData(
-            invoiceNumber: 'INV-2024-001',
-            issueDate: Carbon::create(2024, 3, 15),
-            supplier: $supplier,
-            customer: $customer,
-            lines: [
-                new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.001),
-                new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.004),
-            ],
-        );
-
-        $xml = $builder->buildInvoiceXml($invoice);
-
-        // Both should be grouped into single 19% tax subtotal (2 tags = 1 element)
-        expect(substr_count($xml, 'TaxSubtotal'))->toBe(2);
+        expect(substr_count($builder->buildInvoiceXml($grouped), 'TaxSubtotal'))->toBe(2)
+            ->and(fn () => $builder->buildInvoiceXml($finer))->toThrow(ValidationException::class, 'lines.0.taxPercent');
     });
 
     it('correctly separates genuinely different tax rates', function () {
@@ -1206,17 +1174,24 @@ describe('BT-129/BT-146 quantity and unit price precision', function () {
         expect($xml)->toContain('<cbc:LineExtensionAmount currencyID="RON">-13.75</cbc:LineExtensionAmount>');
     });
 
-    it('caps precision at 6 decimals and never emits scientific notation', function () {
+    it('refuses precision beyond 6 decimals and never emits scientific notation', function () {
         $builder = new InvoiceBuilder;
-        // (string) 0.0000075 would render as "7.5E-6", which is not a valid xsd:decimal.
+        // (string) 0.000008 would render as "8.0E-6", which is not a valid xsd:decimal.
         $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Bulk', quantity: 1 / 3, unitPrice: 0.0000075, taxAmount: 0.00, taxPercent: 0),
+            new InvoiceLineData(name: 'Bulk', quantity: '0.333333', unitPrice: 0.000008, taxAmount: 0.00, taxPercent: 0),
         ]);
 
         $xml = $builder->buildInvoiceXml($invoice);
 
         expect($xml)->toContain('<cbc:InvoicedQuantity unitCode="EA">0.333333</cbc:InvoicedQuantity>');
         expect($xml)->toContain('<cbc:PriceAmount currencyID="RON">0.000008</cbc:PriceAmount>');
+
+        // 4.0 (X6): 1/3 and 0.0000075 carry more than 6 decimals, so they are refused, not rounded.
+        $invoice->lines[0]->quantity = 1 / 3;
+        expect(fn () => $builder->buildInvoiceXml($invoice))->toThrow(ValidationException::class, 'lines.0.quantity');
+        $invoice->lines[0]->quantity = 1;
+        $invoice->lines[0]->unitPrice = 0.0000075;
+        expect(fn () => $builder->buildInvoiceXml($invoice))->toThrow(ValidationException::class, 'lines.0.unitPrice');
     });
 
     it('keeps monetary amount fields at 2 decimals (BR-DEC)', function () {
@@ -1575,17 +1550,25 @@ describe('BT-111 VAT total in the RON accounting currency', function () {
         expect($children)->toBe(['TaxAmount']);
     });
 
-    // BR-DEC-RO-15 (message tag [BR-RO-Z2]): BT-111 allows at most 2 decimals.
-    it('rounds the RON tax amount to 2 decimals (BR-DEC-RO-15)', function (float $taxAmountRon, string $filed) {
+    // BR-DEC-RO-15 (message tag [BR-RO-Z2]): BT-111 allows at most 2 decimals. 4.0 (X6) refuses
+    // a finer figure instead of rounding the caller's statutory declaration.
+    it('files the RON tax amount at 2 decimals and refuses a finer one (BR-DEC-RO-15)', function (float|string $taxAmountRon, ?string $filed) {
         $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => $taxAmountRon]);
 
+        if ($filed === null) {
+            expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class, 'taxAmountRon');
+
+            return;
+        }
         $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
 
         expect(ublText($xml, "/*/cac:TaxTotal/cbc:TaxAmount[@currencyID='RON']"))->toBe($filed);
     })->with([
-        'sub-cent remainder' => [944.3049, '944.30'],
-        // Read at 6 decimals as 3.015000 and rounded half-up; the float 3.0149999... filed 3.01.
-        'computed half-cent tie' => [3 * 1.005, '3.02'],
+        'cent amount' => [944.30, '944.30'],
+        'string with trailing zeros' => ['944.3000', '944.30'],
+        'sub-cent remainder' => [944.3049, null],
+        // 3 * 1.005 is 3.0149999... in binary: beyond noise at 2 decimals, so it is refused.
+        'computed half-cent tie' => [3 * 1.005, null],
     ]);
 
     // A credit note sign-flips its line tax amounts, so BT-111 is supplied in the
@@ -1857,7 +1840,7 @@ describe('optional tax point date UBL ordering', function () {
         }
     })->with([
         'invoice with due date' => [InvoiceTypeCode::CommercialInvoice, '2024-04-15'],
-        'invoice without due date' => [InvoiceTypeCode::CommercialInvoice, null],
+        // 'invoice without due date' is gone: BR-CO-25 refuses a positive invoice without one (S9).
         'credit with due date' => [InvoiceTypeCode::CreditNote, '2024-04-15'],
         'credit without due date' => [InvoiceTypeCode::CreditNote, null],
     ]);
@@ -1891,8 +1874,7 @@ describe('RON VAT sign and zero-rounding boundary', function () {
     })->with([
         'positive to zero' => [0.01, 0.0, InvoiceTypeCode::CommercialInvoice],
         'negative to zero' => [-0.01, 0.0, InvoiceTypeCode::CommercialInvoice],
-        'positive sub-cent RON' => [0.01, 0.004, InvoiceTypeCode::CommercialInvoice],
-        'negative sub-cent RON' => [-0.01, -0.004, InvoiceTypeCode::CommercialInvoice],
+        // Sub-cent RON figures (0.004) are refused since 4.0 (X6): BT-111 carries 2 decimals.
         'credit to zero' => [0.01, 0.0, InvoiceTypeCode::CreditNote],
         'positive same sign' => [0.01, 0.02, InvoiceTypeCode::CommercialInvoice],
         'negative same sign' => [-0.01, -0.02, InvoiceTypeCode::CommercialInvoice],
@@ -1923,6 +1905,7 @@ describe('native payable rounding', function () {
             supplier: $legacy->supplier,
             customer: $legacy->customer,
             lines: $legacy->lines,
+            dueDate: $legacy->dueDate,
             payableRoundingAmount: -0.01,
         );
         $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
@@ -2004,7 +1987,7 @@ describe('explicit reverse-charge UBL', function () {
             new InvoiceLineData('AE second', $sign, 25, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
             new InvoiceLineData('Zero rated', $sign, 50, 0, taxCategoryId: TaxCategoryId::ZeroRated),
             new InvoiceLineData('Standard first', $sign, 100, $sign * 19, taxPercent: 19),
-            new InvoiceLineData('Standard second', $sign, 100, $sign * 19, taxPercent: 19.00000001, taxCategoryId: TaxCategoryId::Standard),
+            new InvoiceLineData('Standard second', $sign, 100, $sign * 19, taxPercent: '19.00', taxCategoryId: TaxCategoryId::Standard),
         ], [
             'invoiceTypeCode' => $type, 'currency' => $currency,
             'taxAmountRon' => $currency === 'RON' ? null : $sign * 190,
@@ -2067,7 +2050,7 @@ describe('explicit reverse-charge UBL', function () {
         '381' => [InvoiceTypeCode::CreditNote, 1],
     ]);
 
-    it('rejects raw nonzero AE rate and tax after construction or hydration', function (string $creation, string $field, float $value) {
+    it('rejects raw nonzero AE rate and tax after construction or hydration', function (string $creation, string $field, float $value, string $message) {
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
         ]);
@@ -2079,12 +2062,13 @@ describe('explicit reverse-charge UBL', function () {
             $invoice->lines[0]->{$field} = $value;
         }
         expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))
-            ->toThrow(ValidationException::class, 'exactly zero raw');
+            ->toThrow(ValidationException::class, $message);
     })->with(['mutated', 'hydrated'])->with([
-        'positive rate' => ['taxPercent', 19.0],
-        'subprecision rate' => ['taxPercent', 0.000001],
-        'subprecision tax' => ['taxAmount', 0.000001],
-        'negative tax' => ['taxAmount', -0.000001],
+        'positive rate' => ['taxPercent', 19.0, 'exactly zero raw'],
+        // 4.0 (X6): a rate finer than its 2 filed decimals is refused before the AE check.
+        'subprecision rate' => ['taxPercent', 0.000001, 'lines.0.taxPercent must be a finite amount'],
+        'subprecision tax' => ['taxAmount', 0.000001, 'exactly zero raw'],
+        'negative tax' => ['taxAmount', -0.000001, 'exactly zero raw'],
     ]);
 
     it('requires usable VAT identifiers and actual VAT declarations for both parties', function (string $role, string $companyId, bool $isVatPayer) {
@@ -2148,7 +2132,7 @@ describe('explicit reverse-charge UBL', function () {
         'not subject' => [false, 0.0, 0.0, TaxCategoryId::NotSubject],
     ]);
 
-    it('requires a zero RON VAT total for foreign AE-only and AE-Z invoices', function (bool $withZeroRated, float $ron) {
+    it('requires a zero RON VAT total for foreign AE-only and AE-Z invoices', function (bool $withZeroRated, float|string $ron, string $message) {
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
         ], ['currency' => 'EUR', 'taxAmountRon' => $ron]);
@@ -2156,27 +2140,39 @@ describe('explicit reverse-charge UBL', function () {
             $invoice->lines[] = new InvoiceLineData('Z', 1, 50, 0);
         }
         expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))
-            ->toThrow(ValidationException::class, 'exactly zero taxAmountRon');
-    })->with([false, true])->with([0.000001, -0.000001, 1.0, INF, NAN]);
+            ->toThrow(ValidationException::class, $message);
+    })->with([false, true])->with([
+        // 4.0 (X6): BT-111 is read at its 2 filed decimals, so finer or non-finite figures
+        // are refused as amounts; a cent figure reaches the zero-VAT rule (S12).
+        [0.000001, 'taxAmountRon must be a finite amount'],
+        [-0.000001, 'taxAmountRon must be a finite amount'],
+        [1.0, 'exactly zero taxAmountRon'],
+        ['-0.01', 'exactly zero taxAmountRon'],
+        [INF, 'taxAmountRon must be a finite amount'],
+        [NAN, 'taxAmountRon must be a finite amount'],
+    ]);
 });
 
 /**
  * Lines as a host that freezes exact decimals hands them over: floats of exact decimal
- * strings, with the raw per-line tax at 6 decimals. Alongside
- * the DTOs, returns what the same strings give in exact decimal arithmetic: each line net rounded
- * half-up once, each VAT group's raw tax summed and rounded half-up once.
+ * strings (or, with $strings, the strings themselves), with the raw per-line tax at 6
+ * decimals. Alongside the DTOs, returns what the same strings give in exact decimal
+ * arithmetic: each line net rounded half-up once, each VAT group's raw tax summed and
+ * rounded half-up once. Floats at 2^33 or more are refused at 6 decimals (X6), so large
+ * documents pass strings.
  *
  * @param  list<array{string, string, string}>  $specs  [quantity, unit price, VAT rate]
  * @return array{lines: list<InvoiceLineData>, nets: list<string>, groups: array<string, array{base: string, tax: string}>, net: string, tax: string, payable: string}
  */
-function exactDecimalCase(array $specs): array
+function exactDecimalCase(array $specs, bool $strings = false): array
 {
     $lines = $nets = $bases = $taxes = [];
     $net = BigDecimal::zero();
+    $value = fn (string $decimal): float|string => $strings ? $decimal : (float) $decimal;
     foreach ($specs as $index => [$quantity, $price, $rate]) {
         $lineNet = BigDecimal::of($quantity)->multipliedBy($price)->toScale(2, RoundingMode::HalfUp);
         $rawTax = $lineNet->multipliedBy($rate)->multipliedBy('0.01');
-        $lines[] = new InvoiceLineData('Line '.($index + 1), (float) $quantity, (float) $price, (float) (string) $rawTax, taxPercent: (float) $rate);
+        $lines[] = new InvoiceLineData('Line '.($index + 1), $value($quantity), $value($price), $value((string) $rawTax), taxPercent: $value($rate));
         $nets[] = (string) $lineNet;
         $bases[$rate] = ($bases[$rate] ?? BigDecimal::zero())->plus($lineNet);
         $taxes[$rate] = ($taxes[$rate] ?? BigDecimal::zero())->plus($rawTax);
@@ -2283,7 +2279,7 @@ describe('exact decimal amounts', function () {
     ]);
 
     it('sums large documents exactly, in the XML and in every helper', function () {
-        $case = exactDecimalCase(array_fill(0, 200, ['1', '999999999999.99', '21']));
+        $case = exactDecimalCase(array_fill(0, 200, ['1', '999999999999.99', '21']), strings: true);
         $invoice = createTestInvoiceForBuilder($case['lines']);
         $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
 
@@ -2297,14 +2293,18 @@ describe('exact decimal amounts', function () {
             ->and($invoice->getTotalIncludingVat())->toBe((float) ublText($xml, '/*/cac:LegalMonetaryTotal/cbc:PayableAmount'));
 
         // One line: 39999999999999.97 + VAT 8399999999999.99; the float sum gave 48399999999999.97.
-        $line = exactDecimalCase([['1', '39999999999999.97', '21']])['lines'][0];
+        $line = exactDecimalCase([['1', '39999999999999.97', '21']], strings: true)['lines'][0];
         expect($line->getLineTotalWithTax())->toBe((float) '48399999999999.96');
+
+        // 4.0 (X6): the same figures as floats are beyond what a double carries at 6 decimals.
+        expect(fn () => exactDecimalCase([['1', '39999999999999.97', '21']])['lines'][0]->getLineTotal())
+            ->toThrow(ValidationException::class, 'unitPrice');
     });
 
     it('files every Percent of a VAT group alike, as rates are not read as money', function () {
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData('Rate', 1, 100.00, 19.00, taxPercent: 19.0),
-            new InvoiceLineData('Noisy rate', 1, 100.00, 19.00, taxPercent: 19.0049999),
+            new InvoiceLineData('String rate', 1, 100.00, 19.00, taxPercent: '19'),
         ]);
         $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
 
@@ -2312,7 +2312,7 @@ describe('exact decimal amounts', function () {
         foreach (ublXpath($xml, '//cbc:Percent') as $node) {
             $percents[] = $node->textContent;
         }
-        // One VAT group (19.0049999 rounds to the 19% key) and two lines, all at 19.00.
+        // One VAT group and two lines, all at 19.00. A finer rate (19.0049999) is refused (X6).
         expect($percents)->toBe(['19.00', '19.00', '19.00']);
     });
 
@@ -2349,13 +2349,14 @@ describe('exact decimal amounts', function () {
         expect($mismatches)->toBe([]);
     });
 
-    it('reads inputs at the 6 decimals it files', function () {
-        $third = new InvoiceLineData('Third', 1 / 3, 30000.00, 0.0);
+    it('reads inputs at the 6 decimals it files and refuses finer ones', function () {
+        $third = new InvoiceLineData('Third', '0.333333', 30000.00, 0.0);
+        // Binary noise below 1e-9 is read at 6 decimals as 0.005000.
         $tax = new InvoiceLineData('Tax', 1, 10.00, 0.0049999999, taxPercent: 19);
         $invoice = createTestInvoiceForBuilder([$third, $tax]);
         $xml = (new InvoiceBuilder)->buildInvoiceXml($invoice);
 
-        // 0.333333 x 30000.00 = 9999.99 reconciles with the filed quantity; the float product was 10000.00.
+        // 0.333333 x 30000.00 = 9999.99 reconciles with the filed quantity.
         expect(ublText($xml, '/*/cac:InvoiceLine[1]/cbc:InvoicedQuantity'))->toBe('0.333333')
             ->and(ublText($xml, '/*/cac:InvoiceLine[1]/cbc:LineExtensionAmount'))->toBe('9999.99')
             ->and($third->getLineTotal())->toBe(9999.99)
@@ -2363,5 +2364,9 @@ describe('exact decimal amounts', function () {
             ->and($tax->getTaxAmount())->toBe(0.01)
             ->and($invoice->getTotalExcludingVat())->toBe(10009.99)
             ->and($invoice->getTotalVat())->toBe(0.01);
+
+        // 4.0 (X6): 1/3 carries more than 6 decimals, so it is refused instead of rounded.
+        $third->quantity = 1 / 3;
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class, 'lines.0.quantity');
     });
 });

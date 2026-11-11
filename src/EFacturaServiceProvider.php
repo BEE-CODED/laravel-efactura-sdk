@@ -100,6 +100,8 @@ final class EFacturaServiceProvider extends ServiceProvider
     {
         $this->loadTranslationsFrom(__DIR__.'/../resources/lang', 'efactura-sdk');
 
+        $this->defineLogChannel();
+
         if ($this->app->runningInConsole()) {
             $this->publishes([
                 __DIR__.'/../config/efactura-sdk.php' => config_path('efactura-sdk.php'),
@@ -109,5 +111,28 @@ final class EFacturaServiceProvider extends ServiceProvider
                 __DIR__.'/../resources/lang' => $this->app->langPath('vendor/efactura-sdk'),
             ], 'efactura-sdk-translations');
         }
+    }
+
+    /**
+     * Define the SDK's log channel as a stack over the host's default when the host
+     * did not define it.
+     *
+     * An undefined channel makes Laravel build a fresh emergency logger, and log an
+     * emergency entry, on every Log::channel() call. Runs at boot, so it also holds
+     * with a cached config.
+     */
+    private function defineLogChannel(): void
+    {
+        $config = $this->app->make('config');
+        $channel = $config->get('efactura-sdk.logging.channel', 'efactura-sdk');
+        $default = $config->get('logging.default');
+
+        // A stack over itself would recurse; a host whose default is this undefined name is broken anyway.
+        if (! is_string($channel) || $channel === '' || ! is_string($default) || $default === $channel
+            || $config->get("logging.channels.{$channel}") !== null) {
+            return;
+        }
+
+        $config->set("logging.channels.{$channel}", ['driver' => 'stack', 'channels' => [$default]]);
     }
 }

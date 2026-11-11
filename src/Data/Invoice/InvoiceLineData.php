@@ -6,9 +6,9 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
 use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
+use BeeCoded\EFacturaSdk\Support\Amount;
 use Brick\Math\BigDecimal;
 use Brick\Math\RoundingMode;
-use Spatie\LaravelData\Attributes\Validation\Min;
 use Spatie\LaravelData\Data;
 use Spatie\LaravelData\Support\Partials\Partial;
 use Spatie\LaravelData\Support\Transformation\TransformationContext;
@@ -21,32 +21,60 @@ use Spatie\LaravelData\Support\Transformation\TransformationContextFactory;
  *
  * Note: Quantity can be negative for credit notes/corrective invoices.
  * Tax percent must be non-negative (0% or higher).
+ *
+ * Amounts are float|string and kept exactly as given. They are read with
+ * Amount::parse() wherever they are used — quantity, unit price and tax at 6 decimals,
+ * the rate at 2 — and a value carrying more precision than that is refused, never rounded.
+ * Pass decimal strings ("1.005") when exactness matters; a float is accepted only when it
+ * differs from its decimal rendering by binary representation noise.
  */
 class InvoiceLineData extends Data
 {
+    /** Categories a caller must declare explicitly; each files rate 0 and tax 0. */
+    private const EXPLICIT_ZERO_CATEGORIES = [
+        TaxCategoryId::ReverseCharge,
+        TaxCategoryId::Exempt,
+        TaxCategoryId::Export,
+        TaxCategoryId::IntraCommunitySupply,
+    ];
+
     public function __construct(
         /** Product or service name */
         public string $name,
-        /** Quantity of items */
-        public float $quantity,
-        /** Unit price (excluding VAT) */
-        public float $unitPrice,
-        /** Pre-computed tax amount for this line. The builder sums per-line tax
-         *  amounts instead of recalculating from taxableAmount × rate.
+        /** Quantity of items (at most 6 decimals) */
+        public float|string $quantity,
+        /** Unit price excluding VAT (at most 6 decimals) */
+        public float|string $unitPrice,
+        /** Pre-computed tax amount for this line (at most 6 decimals). The builder sums
+         *  per-line tax amounts instead of recalculating from taxableAmount × rate.
          *  Sign should follow quantity (negative for negative-qty lines). */
-        public float $taxAmount,
+        public float|string $taxAmount,
         /** Line item identifier (auto-generated if not provided) */
         public string|int|null $id = null,
         /** Additional description */
         public ?string $description = null,
         /** Unit of measure code (UN/ECE rec 20, e.g., 'EA' for each, 'KGM' for kilogram) */
         public string $unitCode = 'EA',
-        /** VAT percentage (e.g., 19 for 19%). Must be non-negative. */
-        #[Min(0)]
-        public float $taxPercent = 0,
+        /** VAT percentage (e.g., 19 for 19%, at most 2 decimals). Must be non-negative. */
+        public float|string $taxPercent = 0.0,
         /** Explicit VAT category; null retains legacy supplier/rate inference. */
         public ?TaxCategoryId $taxCategoryId = null,
     ) {}
+
+    /**
+     * Explicit rules for the float|string amounts, which laravel-data cannot infer from a union.
+     *
+     * @return array<string, list<string>>
+     */
+    public static function rules(): array
+    {
+        return [
+            'quantity' => ['required', 'numeric'],
+            'unitPrice' => ['required', 'numeric'],
+            'taxAmount' => ['required', 'numeric'],
+            'taxPercent' => ['sometimes', 'numeric', 'min:0'],
+        ];
+    }
 
     /**
      * Preserve the legacy serialized shape when no category was declared.
@@ -72,26 +100,29 @@ class InvoiceLineData extends Data
     /**
      * Resolve the category identically for DTO totals and the real serializer.
      * Validate explicit declarations on consumption: hydration and subsequent
-     * public-property mutation must not bypass the zero-tax AE contract.
+     * public-property mutation must not bypass the zero-tax AE/E/G/K contract.
      *
      * @throws ValidationException
      */
     public function getTaxCategory(bool $isSupplierVatPayer): TaxCategoryId
     {
-        if ($this->taxCategoryId === TaxCategoryId::ReverseCharge) {
+        $percent = Amount::parse($this->taxPercent, 2, 'taxPercent');
+
+        if (in_array($this->taxCategoryId, self::EXPLICIT_ZERO_CATEGORIES, true)) {
+            $category = ['category' => $this->taxCategoryId->value];
             if (! $isSupplierVatPayer) {
-                throw new ValidationException(__('efactura-sdk::validation.reverse_charge_supplier_must_be_vat_payer'));
+                throw new ValidationException(__('efactura-sdk::validation.explicit_category_supplier_must_be_vat_payer', $category));
             }
-            if ($this->taxPercent !== 0.0 || $this->taxAmount !== 0.0) {
-                throw new ValidationException(__('efactura-sdk::validation.reverse_charge_tax_must_be_zero'));
+            if (! $percent->isZero() || ! Amount::parse($this->taxAmount, 6, 'taxAmount')->isZero()) {
+                throw new ValidationException(__('efactura-sdk::validation.explicit_category_tax_must_be_zero', $category));
             }
 
-            return TaxCategoryId::ReverseCharge;
+            return $this->taxCategoryId;
         }
 
         $inferred = match (true) {
             ! $isSupplierVatPayer => TaxCategoryId::NotSubject,
-            abs($this->taxPercent) < 0.01 => TaxCategoryId::ZeroRated,
+            $percent->isZero() => TaxCategoryId::ZeroRated,
             default => TaxCategoryId::Standard,
         };
         if ($this->taxCategoryId !== null && $this->taxCategoryId !== $inferred) {
@@ -101,13 +132,12 @@ class InvoiceLineData extends Data
         return $inferred;
     }
 
-    /** Category and normalized percentage jointly identify a VAT breakdown. */
+    /** Category and the rate at 2 decimals jointly identify a VAT breakdown ("S:19", "Z:0"). */
     public function getTaxGroupKey(bool $isSupplierVatPayer): string
     {
         $category = $this->getTaxCategory($isSupplierVatPayer);
-        $taxPercent = $category === TaxCategoryId::ReverseCharge ? 0.0 : round($this->taxPercent, 2);
 
-        return $category->value.':'.(string) $taxPercent;
+        return $category->value.':'.Amount::parse($this->taxPercent, 2, 'taxPercent')->strippedOfTrailingZeros();
     }
 
     /**
@@ -128,46 +158,23 @@ class InvoiceLineData extends Data
         return $this->exactTaxAmount()->toFloat();
     }
 
-    private function exactLineTotal(): BigDecimal
-    {
-        return self::decimal($this->quantity)->multipliedBy(self::decimal($this->unitPrice))->toScale(2, RoundingMode::HalfUp);
-    }
-
-    private function exactTaxAmount(): BigDecimal
-    {
-        return self::decimal($this->taxAmount)->toScale(2, RoundingMode::HalfUp);
-    }
-
-    /**
-     * Read an amount at the 6 decimals the XML files quantities and prices with.
-     *
-     * Float products and sums misplace half-cent ties (3 x 1.005 = 3.0149999...), which PHP 8.4+
-     * round() no longer hides. number_format() is ini-independent and never emits exponents.
-     */
-    private static function decimal(float $value): BigDecimal
-    {
-        return BigDecimal::of(number_format($value, 6, '.', ''));
-    }
-
-    /**
-     * Get the raw (unrounded) line extension amount.
-     *
-     * Exposed for callers that need the pre-rounding value. NOT what the invoice
-     * files: cbc:LineExtensionAmount is capped at 2 decimals, so getLineTotal()
-     * is the figure that reaches ANAF and the one the document totals are built
-     * from. Summing this across lines and rounding once at the end does NOT
-     * reproduce the filed total.
-     */
-    public function getRawLineTotal(): float
-    {
-        return $this->quantity * $this->unitPrice;
-    }
-
     /**
      * Calculate the line total including tax: getLineTotal() + getTaxAmount(), summed exactly.
      */
     public function getLineTotalWithTax(): float
     {
         return $this->exactLineTotal()->plus($this->exactTaxAmount())->toFloat();
+    }
+
+    private function exactLineTotal(): BigDecimal
+    {
+        return Amount::parse($this->quantity, 6, 'quantity')
+            ->multipliedBy(Amount::parse($this->unitPrice, 6, 'unitPrice'))
+            ->toScale(2, RoundingMode::HalfUp);
+    }
+
+    private function exactTaxAmount(): BigDecimal
+    {
+        return Amount::parse($this->taxAmount, 6, 'taxAmount')->toScale(2, RoundingMode::HalfUp);
     }
 }

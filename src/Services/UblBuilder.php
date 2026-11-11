@@ -53,4 +53,15 @@ class UblBuilder implements UblBuilderInterface
             );
         }
     }
+
+    /**
+     * Validate an invoice by building its XML and discarding it, so the checks are
+     * exactly those of generateInvoiceXml().
+     *
+     * @throws ValidationException If invoice data is invalid or XML generation fails
+     */
+    public function validateInvoice(InvoiceData $invoiceData): void
+    {
+        $this->generateInvoiceXml($invoiceData);
+    }
 }

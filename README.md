@@ -14,8 +14,8 @@ A Laravel package for integrating with Romania's ANAF e-Factura (electronic invo
 
 ## Requirements
 
-- PHP 8.4+
-- Laravel 12 (laravel/framework 12.27.1 or later) or Laravel 13, with brick/math 0.14.2–0.19
+- PHP 8.4+ with the `dom` and `zip` extensions
+- Laravel 12 (laravel/framework 12.27.1 or later) or Laravel 13, with brick/math 0.14.4–0.19
   (see [CHANGELOG.md](CHANGELOG.md))
 - Valid ANAF OAuth credentials
 
@@ -117,17 +117,18 @@ are nonzero. Required non-RON and prohibited RON accounting-VAT inputs remain un
 
 ### Optional payable rounding
 
-`InvoiceData` accepts `?float $payableRoundingAmount = null` after the existing constructor
+`InvoiceData` accepts `float|string|null $payableRoundingAmount = null` after the existing constructor
 parameters. It is a signed amount in the document currency, supplied by your accounting
 calculation; the SDK does not choose a rounding correction. No settings are required.
 
 - Omitted/null values preserve the existing XML and omit the field from serialized data.
 - Zero emits no `PayableRoundingAmount` element. A nonzero amount emits BT-114 immediately
   before `PayableAmount` (BT-115).
-- Supply a finite amount representable to cents, with absolute value below 2^46. This numeric
-  bound keeps adjacent cents distinguishable in a double. Meaningful sub-cent precision is rejected;
-  harmless binary floating-point noise is normalized. The helper and builder check the same
-  contract, including values assigned after construction or populated through Spatie hydration.
+- Supply an amount with at most 2 decimals: a string such as `'0.01'`, or a float within binary
+  noise of one, below 2^46. Anything finer, or non-finite, throws `ValidationException` naming
+  `payableRoundingAmount` wherever it is read (the helpers, `toArray()` and the builder), including
+  values assigned after construction or populated through Spatie hydration. The value itself is
+  kept as given; `toArray()` returns it unchanged.
 - `getTotalIncludingVat()` is the final payable amount: net plus VAT plus optional rounding.
   Existing payment consumers can retain their calls when using rounding.
 - `getTotalIncludingVatBeforeRounding()` returns net plus VAT (BT-112), excluding rounding.
@@ -147,8 +148,10 @@ of the optional tax applicability date; neither field is required to use the oth
 
 ### 3. Non-RON invoices must declare `taxAmountRon` (loud)
 
-`InvoiceData` gained an optional `?float $taxAmountRon` (BT-111) that is **required when
-`currency !== 'RON'`** and **rejected when it is** — otherwise `ValidationException`.
+`InvoiceData` gained an optional `$taxAmountRon` (BT-111, `float|string|null` since 4.0, at most 2
+decimals) that is **required when `currency !== 'RON'`** and **rejected when it is** — otherwise
+`ValidationException`. A document without standard-rated lines owes no VAT, so its
+`taxAmountRon` must be exactly zero.
 
 v2 emitted the document-currency amount unchanged under `currencyID="RON"`: a EUR invoice with
 190.00 EUR of VAT filed `190.00` RON instead of ~945. ANAF cannot verify a conversion, so it was
@@ -198,8 +201,9 @@ are supplied in, while the filed XML states the negation. Do not "fix" this by n
 - **Uploads no longer auto-retry** on 5xx, read timeouts, or unclassifiable transport errors.
   ANAF mints a fresh `index_incarcare` per accepted POST, so a blind retry files the invoice twice.
   **A failed upload is not proof the invoice was not filed** — remove blind retries and reconcile
-  via `getMessages()` before re-sending. Reads still retry; only pre-send errors (DNS/connect/TLS)
-  retry an upload.
+  via `getMessages()` before re-sending. Reads still retry; only pre-send errors (proxy/DNS/connect/TLS,
+  or a connect-phase timeout) retry an upload, and once retries are spent they throw
+  `RequestNotSentException` (safe to resend).
 - **Each retry consumes global rate-limit quota**, so a retrying read can throw
   `RateLimitExceededException` where v2 raised `ApiException`. It does **not** extend
   `ApiException` — catch it **first**.
@@ -256,7 +260,7 @@ return [
     'http' => [
         'timeout' => env('EFACTURA_TIMEOUT', 30),
         // Read by EFacturaClient and AnafDetailsClient alike (since v3.0.0).
-        // Governs READS only — uploads do not auto-retry, see "Migrating from v2 to v3".
+        // Bounds every retry; an upload retries only provably pre-send transport errors.
         'retry_times' => env('EFACTURA_RETRY_TIMES', 3),
         'retry_delay' => env('EFACTURA_RETRY_DELAY', 5),
     ],
@@ -290,9 +294,13 @@ Add a dedicated logging channel in `config/logging.php`:
 ],
 ```
 
+If you do not define the channel, the SDK defines it at boot as a `stack` over your default
+channel, so its entries go where your other logs go. A failing log handler never fails an ANAF
+call.
+
 ### Rate Limiting Configuration
 
-The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. Most defaults are set to **50% of ANAF's actual limits** for safety. The one exception is `company_lookup_per_second`, which defaults to **1 — 100% of ANAF's 1 request/second cap**, since that limit admits no lower positive value. `status_per_day_message_provider` is ANAF's full status limit on purpose; only status reads that opt in use it (see [Status Reads at ANAF's Own Limit](#status-reads-at-anafs-own-limit)).
+The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. Most defaults are set to **50% of ANAF's actual limits** for safety. The one exception is `company_lookup_per_second`, which defaults to **1 — 100% of ANAF's 1 request/second cap**, since that limit admits no lower positive value. `status_per_day_message_provider` is ANAF's full status limit on purpose; only status reads that opt in use it (see [Status Reads at ANAF's Own Limit](#status-reads-at-anafs-own-limit)). The company-lookup limit is counted over a 2-second window, so cache stores that expire keys at whole seconds (database, file, memcached) still keep lookups at least 1 s apart; on Redis lookups are 2 s apart. A `company_lookup_per_second` of N above 1 therefore allows N lookups per 2 s, not per second.
 
 ```env
 # Enable/disable rate limiting (default: true)
@@ -333,7 +341,7 @@ EFACTURA_RATE_LIMIT_COMPANY_LOOKUP=1
 | `/lista` (simple) | 1,500/day | 750/day | Per CUI |
 | `/lista` (paginated) | 100,000/day | 50,000/day | Per CUI |
 | `/descarcare` (download) | 10/day | 5/day | Per message ID |
-| `PlatitorTvaRest` (company lookup) | 1/second | 1/second | Per request (global, not per CUI) |
+| `PlatitorTvaRest` (company lookup) | 1/second | 1 per 2 s window | Per request (global, not per CUI) |
 
 ## Usage
 
@@ -483,6 +491,33 @@ if ($status->isReady()) {
   `stare`, but `errors` is set (HTTP 200 with `{"eroare": "..."}`; the `eroare` text becomes
   `errors` when `Errors` holds nothing usable). This is not a verdict on the document either.
 
+`$status->verdict()` (since 4.0) reads all of this as one `StatusVerdict`: `InProgress`, `Ready`,
+`Rejected`, `ReadyWithoutDownloadId`, `RejectedWithoutDownloadId`, `NotProcessed`, `AnafError` or
+`Unknown` (no status ANAF defines and no error). `Ready` and `Rejected` need a download id of 1 to
+64 digits; with any other id they are `...WithoutDownloadId`, which is no verdict on the document.
+
+```php
+use BeeCoded\EFacturaSdk\Enums\StatusVerdict;
+use BeeCoded\EFacturaSdk\Support\PollSchedule;
+
+$verdict = $status->verdict();
+
+if ($verdict === StatusVerdict::InProgress) {
+    $readAgainIn = PollSchedule::status($secondsSinceUpload);
+} elseif ($verdict === StatusVerdict::Ready || $verdict === StatusVerdict::Rejected) {
+    $download = $client->downloadDocument($status->idDescarcare);
+} elseif ($verdict !== StatusVerdict::NotProcessed) {
+    // No verdict on the document: park it for a human, do not re-upload.
+}
+```
+
+`PollSchedule::status($ageSeconds)` returns the seconds until the next status read: 60 for the first
+10 minutes after the upload, 300 until an hour, 900 until three hours, then 3600: 49 reads in the
+first day, one under the SDK's default `status_per_day_message` cap of 50, so a retry or a manual check
+that day can meet the SDK's limit (reschedule on `RateLimitExceededException`). `PollSchedule::archive($attempt, $first = 300, $max = 86400)` returns the wait after
+the `$attempt`-th failed archive download: `$first`, doubling, at most `$max`. Both are exact: a
+scheduler that runs on a fixed tick subtracts its own margin.
+
 ANAF's scalar types are not stable, so every response DTO normalises what it receives instead of
 taking it verbatim (since 4.0): numeric ids (`indexIncarcare`, `idDescarcare`, `cui`, `serial`,
 message ids) become strings, and big integers keep every digit. A `stare` that is not a string,
@@ -505,6 +540,46 @@ $download->saveTo('/path/to/invoice.zip');
 $zipContent = $download->content;
 $contentType = $download->contentType;
 ```
+
+#### Verify a Response Archive
+
+`ArchiveInspector` (since 4.0) checks a downloaded archive before you keep or trust it:
+
+```php
+use BeeCoded\EFacturaSdk\Exceptions\ArchiveLimitException;
+use BeeCoded\EFacturaSdk\Exceptions\ArchiveMismatchException;
+use BeeCoded\EFacturaSdk\Support\ArchiveInspector;
+
+try {
+    (new ArchiveInspector)->verify($download->content, $uploadedXml); // or verify($content) for limits only
+} catch (ArchiveLimitException $e) {
+    // $e->reason (ArchiveLimitReason): not a verdict on the content; download again later.
+} catch (ArchiveMismatchException $e) {
+    // Final: the archive does not hold exactly the uploaded document.
+}
+```
+
+- An uploaded XML over 10 MiB or 1 000 000 `<` can never be compared: it throws
+  `ArchiveMismatchException` (final) before the archive is looked at.
+- Limits, checked before any member is read: at most 20 MiB, a readable ZIP of 1 to 32 unencrypted members,
+  each expanding to at most 10 MiB and all together to at most 20 MiB. The reasons are
+  `ArchiveTooLarge`, `MemberTooLarge`, `Encrypted`, `TooManyMembers`, `Empty`, `Unopenable` (not a
+  ZIP) and `Io` (a local temporary-file or memory failure; the same bytes may pass next time).
+- With the uploaded XML (an accepted document), each member is read with a 10 MiB cap
+  (`UblDocumentComparator::MAX_BYTES`, 10 485 760 bytes, also the comparator's own cap, so a member
+  within the limits is never a mismatch for its size) and must be
+  either the uploaded Invoice/CreditNote, exactly once, or an xmldsig `Signature`. A member holding
+  more than 1 000 000 `<` is `MemberTooLarge`. A member with a DOCTYPE or entity declaration, an
+  empty member, one that is not XML, any other document or a second copy is a
+  mismatch. Without it (for example a rejection archive, which holds ANAF's errors) no member is
+  read.
+- The comparison is `UblDocumentComparator::assertSameDocument($candidate, $expected)`, also usable
+  on its own: the XML declaration, namespace prefixes, whitespace-only text, anything outside the
+  root and trailing decimal zeroes in UBL amounts, quantities and percents may differ, and CDATA
+  counts as text. Any other difference, or a comment or processing instruction inside the root,
+  throws `ArchiveMismatchException`.
+- The archive is written to a temporary file in `sys_get_temp_dir()`, or the directory given to
+  `new ArchiveInspector($directory)`, and removed afterwards.
 
 #### List Messages
 
@@ -596,13 +671,23 @@ maintenance page (since 4.0; it used to return that body as the PDF).
 
 #### Verify Signature
 
+Pass the invoice XML and the XML holding its signature, both from the archive `downloadDocument()`
+returns. They are posted as the multipart files `file` and `signature` to ANAF's
+`/api/validate/signature` service (`endpoints.services.verify_signature`; changed in 4.0, see the
+CHANGELOG).
+
 ```php
-$result = $client->verifySignature($signedXmlContent);
+$result = $client->verifySignature($invoiceXml, $signatureXml);
 
 if ($result->valid) {
     // Signature is valid
 }
 ```
+
+ANAF does not document this service's answer; it is read like a validation answer (`valid` from
+`valid` or `stare: ok`). An answer in another shape reads as `valid: false`, so do not treat `false`
+alone as proof of a bad signature. When nothing in the answer is read, `details` holds its first
+500 bytes (cut on a UTF-8 character boundary), so ANAF's own text is not lost.
 
 ### Automatic Token Refresh
 
@@ -636,6 +721,13 @@ calls `tokenReloader` to adopt tokens another worker already rotated. After a re
 `tokenPersister` with the new `OAuthTokensData` before releasing the lock, so no other worker can
 spend the rotated refresh token first. If `tokenPersister` throws, the exception reaches your code;
 the client keeps the new tokens and `wasTokenRefreshed()` is still true.
+
+During an upload, a `tokenPersister` exception means the document was **not** sent (the persister
+runs before the request), but `UploadOutcome::fromThrowable()` cannot tell your exception from the
+upload's and reads it as `Uncertain`. Classify it yourself: the refresh token has rotated, so the new
+pair lives only in `$client->getTokens()` and the one in your store is spent. Save `getTokens()` and
+treat the document as not sent; if you cannot store them, the company must be authorised again (the
+next refresh is refused with 400/401). A persister that never throws avoids the case.
 
 ```php
 $client = EFacturaClient::fromTokens(
@@ -759,11 +851,12 @@ use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
 use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
+use BeeCoded\EFacturaSdk\Support\DateHelper;
 
 $invoice = new InvoiceData(
     invoiceNumber: 'INV-2024-001',
-    issueDate: now(),
-    dueDate: now()->addDays(30),
+    issueDate: now(DateHelper::ANAF_TIMEZONE),   // the date in Romania, not the server's
+    dueDate: now(DateHelper::ANAF_TIMEZONE)->addDays(30),
     currency: 'RON',
     paymentIban: 'RO49AAAA1B31007593840000',
 
@@ -774,9 +867,10 @@ $invoice = new InvoiceData(
             street: 'Str. Exemplu Nr. 1',
             city: 'Bucuresti',
             postalZone: '010101',
-            county: 'Sector 1',  // Auto-sanitized to RO-B format
+            county: 'Bucuresti',  // Filed as RO-B
+            bucharestSector: 1,   // Filed as city SECTOR1 (BR-RO-100)
         ),
-        registrationNumber: 'J40/1234/2020',
+        registrationNumber: 'J40/1234/2020',  // Filed as CompanyLegalForm (BT-33)
         isVatPayer: true,
     ),
 
@@ -804,10 +898,10 @@ $invoice = new InvoiceData(
         ),
         new InvoiceLineData(
             name: 'Licenta software',
-            quantity: 1,
-            unitPrice: 500.00,
-            taxAmount: 95.00,    // Pre-computed: 1 * 500.00 * 0.19
-            taxPercent: 19,
+            quantity: '1',
+            unitPrice: '500.00',  // Decimal strings are filed exactly
+            taxAmount: '95.00',   // Pre-computed: 1 * 500.00 * 0.19
+            taxPercent: '19',
             unitCode: 'C62',     // Each
         ),
     ],
@@ -815,9 +909,42 @@ $invoice = new InvoiceData(
 
 // Generate UBL 2.1 XML
 $xml = UblBuilder::generateInvoiceXml($invoice);
+
+// Or run every check without keeping the XML (throws ValidationException)
+UblBuilder::validateInvoice($invoice);
 ```
 
-#### Explicit Reverse-Charge VAT
+**Dates.** `issueDate`, `dueDate` and the other dates are filed as calendar dates (`Y-m-d`) and
+are not converted between timezones. ANAF reads them as dates in Romania, so build them in
+`Europe/Bucharest` (`DateHelper::ANAF_TIMEZONE`): on a UTC server, `now()` between midnight and
+02:00/03:00 Bucharest time is still the previous day.
+
+`UblBuilderInterface::validateInvoice(InvoiceData)` builds the XML and discards it, so it runs
+exactly the checks `generateInvoiceXml()` runs. A class that implements `UblBuilderInterface`
+must add it (4.0).
+
+**What the builder refuses.** These documents throw `ValidationException` instead of reaching
+ANAF, which would reject them or file a wrong figure:
+
+- an invoice (not a credit note) with a positive amount due and no `dueDate` (BR-CO-25);
+- a currency code that is not three uppercase letters, or a country code that is not two (empty
+  included);
+- a required field that is empty after trimming (invoice number, issue date, names, company ids,
+  street, city, line names, the county of a Romanian address);
+- text that is not valid UTF-8 or contains a character XML 1.0 cannot carry (control characters
+  other than tab, line feed and carriage return; U+FFFE, U+FFFF). The message names the field,
+  for example `lines.0.name` or `supplier.address.street`;
+- a Romanian Bucharest address whose sector cannot be found (see Address Sanitization);
+- a non-zero `taxAmountRon` on a document without standard-rated lines;
+- a VAT breakdown outside S whose summed line tax is not exactly zero, for example three Z lines
+  of `0.004` (BR-Z-09, BR-O-09);
+- an amount with more decimals than it is filed with (see Invoice Calculations).
+
+The supplier's `registrationNumber` (for example the trade register number) is filed as
+`PartyLegalEntity/CompanyLegalForm` (BT-33, at most 1000 characters); a blank one is omitted. The
+buyer's is not filed: EN 16931 has no such term for the buyer.
+
+#### Explicit VAT Categories: Reverse Charge, Exempt, Export and Intra-Community
 
 `InvoiceLineData` accepts `?TaxCategoryId $taxCategoryId = null` after `taxPercent`.
 Omitting it or passing null preserves the existing supplier/rate inference and exact serialized
@@ -854,13 +981,75 @@ $line = new InvoiceLineData(
 - The existing document sign contract is unchanged: Invoice 380 preserves input signs,
   including negative invoices, and CreditNote 381 negates quantities and amounts once. AE tax
   remains zero. RON invoices must omit `taxAmountRon`; non-RON invoices still require it,
-  including `taxAmountRon: 0.0` for an all-AE or AE/Z invoice. A nonzero RON VAT total
-  is rejected when an AE document has no standard-rated lines.
+  including `taxAmountRon: 0.0` for any invoice without standard-rated lines. A nonzero RON VAT
+  total is rejected when a document has no standard-rated lines.
 
 The caller selects the legally applicable treatment and submission profile. Setting AE does not
 establish that an arbitrary domestic or cross-border transaction qualifies, and local SDK checks
 are not full external-profile validation. A zero rate by itself continues to infer Z for a VAT
 payer, not AE.
+
+`Exempt` (`E`), `Export` (`G`) and `IntraCommunitySupply` (`K`) are opt-in the same way: they are
+never inferred, need a VAT-registered supplier, and carry an exactly zero rate and tax. Each files
+`Percent` `0.00` and an exemption reason in its VAT breakdown. `InvoiceData::$exemptionReasons`
+takes one `ExemptionReasonData{category, ?code, ?text}` per category:
+
+| Category | Reason code (BT-121) | Reason text (BT-120, ≤ 100 characters) | Also requires |
+|---|---|---|---|
+| `AE` | always `VATEX-EU-AE` | yours, or `Taxare inversa` | supplier and customer VAT ids |
+| `E` | yours, from the VATEX list (BR-CL-22) | yours; a code or a text is required (BR-E-10) | supplier VAT id |
+| `G` | always `VATEX-EU-G` | yours, optional | supplier VAT id |
+| `K` | always `VATEX-EU-IC` | yours, optional | supplier and customer VAT ids; a `delivery` with an actual delivery date and a delivery address |
+| `O` | always `VATEX-EU-O` | none | not accepted in `exemptionReasons` |
+
+A reason for `S`, `Z` or `O`, two reasons for one category, a reason for a category no line uses,
+or a code other than the fixed one is refused. ANAF's BR-IC-11/12 would also accept an invoicing
+period or a country alone for `K`; the SDK deliberately asks for the date and a full address.
+
+```php
+use BeeCoded\EFacturaSdk\Data\Invoice\ExemptionReasonData;
+
+$invoice = new InvoiceData(
+    // ...
+    lines: [new InvoiceLineData('Servicii medicale', 1, '500.00', '0', taxPercent: '0', taxCategoryId: TaxCategoryId::Exempt)],
+    exemptionReasons: [new ExemptionReasonData(TaxCategoryId::Exempt, 'VATEX-EU-132-1C', 'Scutit conform art. 292 alin. (1) lit. b)')],
+);
+```
+
+#### Preceding Invoices, Notes, VAT Point Date Code and Delivery
+
+All are optional and appended to the constructor; when empty or `null` they are left out of
+`toArray()`/`toJson()` and of the XML.
+
+- `precedingInvoices: list<PrecedingInvoiceData{number, ?issueDate}>` — BG-3, at most 500
+  (BR-RO-A500), each with a non-blank number (BR-55) of at most 200 characters. Each is filed as a
+  `cac:BillingReference`, with `cbc:IssueDate` (BT-26) when given; a blank or unparseable issue date
+  is refused with `ValidationException`.
+  `precedingInvoiceNumber` is deprecated but still read: alone it is one reference; together with
+  `precedingInvoices` it must name that list's only entry, or the builder refuses the document.
+  `InvoiceData::getPrecedingInvoices()` returns the resolved list.
+- `notes: list<string>` — BT-22, at most 20 notes of at most 300 characters (BR-RO-L300), filed as
+  `cbc:Note` after the type code. A blank note is refused.
+- `vatPointDateCode: ?string` — BT-8, one of `'3'` (issue date), `'35'` (delivery date) or `'432'`
+  (payment date), filed as `cac:InvoicePeriod/cbc:DescriptionCode`. It cannot be combined with
+  `taxPointDate` (BR-CO-03).
+- `delivery: ?DeliveryData{actualDeliveryDate, ?address}` — BG-13, filed as `cac:Delivery` with
+  `cbc:ActualDeliveryDate` (BT-72) and `cac:DeliveryLocation/cac:Address`, whose country is BT-80.
+  A delivery address needs a street, a city and a county or region in every country; a Romanian
+  one is filed like a party address (ISO county code, `SECTORn` in Bucharest). A blank or
+  unparseable delivery date is refused with `ValidationException`, on a category K document too.
+
+```php
+use BeeCoded\EFacturaSdk\Data\Invoice\DeliveryData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PrecedingInvoiceData;
+
+$invoice = new InvoiceData(
+    // ...
+    precedingInvoices: [new PrecedingInvoiceData('INV-2024-001', '2024-03-15')],
+    notes: ['Factura emisa conform contractului 12/2024'],
+    delivery: new DeliveryData('2024-03-14', new AddressData('Hauptstr. 1', 'Berlin', '10115', 'Berlin', 'DE')),
+);
+```
 
 #### Creating a Credit Note
 
@@ -869,10 +1058,10 @@ use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 
 $creditNote = new InvoiceData(
     invoiceNumber: 'CN-2024-001',
-    issueDate: now(),
+    issueDate: now(DateHelper::ANAF_TIMEZONE),
     currency: 'RON',
     invoiceTypeCode: InvoiceTypeCode::CreditNote,
-    precedingInvoiceNumber: 'INV-2024-001',  // BT-25: reference to the original invoice
+    precedingInvoices: [new PrecedingInvoiceData('INV-2024-001', '2024-03-15')],  // BG-3: the original invoice
 
     supplier: $supplier,
     customer: $customer,
@@ -907,10 +1096,10 @@ $xml = UblBuilder::generateInvoiceXml($creditNote);
 ```php
 $creditNote = new InvoiceData(
     invoiceNumber: 'CN-2024-002',
-    issueDate: now(),
+    issueDate: now(DateHelper::ANAF_TIMEZONE),
     currency: 'RON',
     invoiceTypeCode: InvoiceTypeCode::CreditNote,
-    precedingInvoiceNumber: 'INV-2024-050',
+    precedingInvoices: [new PrecedingInvoiceData('INV-2024-050')],
 
     supplier: $supplier,
     customer: $customer,
@@ -965,13 +1154,27 @@ $invoice->getTotalIncludingVatBeforeRounding(); // Net plus VAT, before payable 
 $invoice->getTotalIncludingVat();               // Amount payable, including optional rounding
 ```
 
-**Money is exact decimal.** The SDK reads `quantity`, `unitPrice`, `taxAmount` and `taxAmountRon`
-at 6 decimals (the precision it files quantities and prices with), then computes every amount
-in decimal arithmetic: each line net is rounded half-up once, and each
-VAT group's tax sum is rounded half-up once. So `3 × 1.005` files `3.02`, and per-line taxes of
-`1285.8489 + 130.7061` file a group VAT of `1416.56`; float arithmetic gave `3.01` and `1416.55`
-on PHP 8.4+. The helpers above return the same amounts as floats. An input with more than 6
-decimals is read at 6: a quantity of `1/3` files as `0.333333`, so `× 30000.00` files `9999.99`.
+**Money is exact decimal, and nothing is rounded silently.** Amount properties are typed
+`float|string` and keep the caller's value as given (also in `toArray()`). Wherever an amount is
+used it is read as an exact decimal at the precision it is filed with: `quantity`, `unitPrice` and
+`taxAmount` at 6 decimals, `taxPercent`, `taxAmountRon` and `payableRoundingAmount` at 2. Every
+amount is then computed in decimal arithmetic: each line net is rounded half-up once, and each VAT
+group's tax sum is rounded half-up once. So `3 × 1.005` files `3.02`, and per-line taxes of
+`1285.8489 + 130.7061` file a group VAT of `1416.56`; float arithmetic gave `3.01` and `1416.55` on
+PHP 8.4+. The helpers above return the same amounts as floats.
+
+- Pass decimal strings (`'1.005'`, `'12345678901.234567'`) when you hold exact figures: they are
+  filed verbatim, with at most that many decimals (trailing zeros are fine).
+- A float is accepted when it differs from its rounded rendering only by binary noise (`0.1 + 0.2`
+  reads as `0.30`), and only below 2^46 for 2-decimal fields and 2^33 for 6-decimal fields, where a
+  double still separates adjacent steps.
+- Anything else — more decimals (`1/3` as a quantity, `19.001` as a rate, `944.3049` as
+  `taxAmountRon`), `INF`, `NAN`, a non-numeric string, or a float past those bounds, such as a large
+  accumulated float sum — throws `ValidationException` naming the field (`lines.0.quantity`,
+  `taxAmountRon`). Round in your own ledger first, or pass a string.
+- `::validateAndCreate()` checks the amounts as `numeric` (`taxPercent` also `min:0`); the precision
+  is checked when the amount is used.
+
 See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 #### Why `taxAmount` is Required (Breaking Change in v2.0)
@@ -1037,6 +1240,15 @@ Romanian addresses are automatically sanitized to ISO 3166-2:RO format:
 'Brașov' -> 'RO-BV'
 'Constanța' -> 'RO-CT'
 ```
+
+- Only addresses with `countryCode: 'RO'` are rewritten (BR-RO-100/101/110/111 apply only to RO).
+  A foreign county such as Barcelona's `B` or an Italian `Sector 3` is filed as given.
+- In Bucharest (`RO-B`) the city is filed as `SECTOR1`…`SECTOR6` (BR-RO-100/101). The sector comes
+  from `AddressData::$bucharestSector` (1–6) when set, else from a sector named in the city or the
+  county (`Sector 2`, `S.2`, `Sectorul 2`). A Bucharest address without one throws
+  `ValidationException`; so does a `bucharestSector` outside 1–6 or on a non-Bucharest address.
+- `AddressSanitizer::canonicalize(AddressData $address)` returns `['county' => ?string, 'city' =>
+  string]` exactly as the builder files them, so you can show or compare the filed values.
 
 ### Company Lookup
 
@@ -1118,6 +1330,14 @@ $isValid = AnafDetails::isValidVatCode('RO12345678'); // false — checksum fail
 > distinguish outcomes. ANAF returns this case as **HTTP 404** with a `{found, notFound}`
 > body — the SDK treats that documented "none found" response as a not-found result, not an error.
 
+> **Strict lookups (4.0):** `new AnafDetailsClient(strict: true, tries: 1, timeoutSeconds: 5)`
+> returns a company only when ANAF's answer confirms the request (each requested CUI answered
+> once, today's date echoed, a name, a known registration state, valid inactivity dates). Any
+> other answer is a failure with `$result->failureKind === CompanyLookupFailureKind::InvalidResponse`;
+> transport and ANAF errors have `CompanyLookupFailureKind::Transport`. `failureKind` is `null`
+> on success and when the SDK refused the input before sending. Each CUI is sent once, with any
+> `RO` prefix removed.
+
 > **Detecting radiated (struck-off) companies:** ANAF reports trade-registry strike-off
 > in `date_generale.stare_inregistrare` ("RADIERE din data ..."), which the SDK maps to
 > `registrationStatus`, flips `isDeregistered` to `true`, and makes `isActive()` return
@@ -1128,6 +1348,7 @@ $isValid = AnafDetails::isValidVatCode('RO12345678'); // false — checksum fail
 > enforces this and throws `BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException`
 > (HTTP 429, with `->retryAfterSeconds`) when exceeded. This is independent of the
 > per-request **payload** cap of 100 CUIs. Disable via `efactura-sdk.rate_limits.enabled = false`.
+> An HTTP 429 from ANAF throws the same exception with `->fromProvider === true`.
 
 ### Validators
 
@@ -1147,6 +1368,11 @@ VatNumberValidator::isValidFormat('12345678'); // true
 
 VatNumberValidator::normalize('12345678');  // 'RO12345678' (format-checked only, no checksum)
 VatNumberValidator::stripPrefix('RO14399840'); // '14399840'
+
+// The VAT identifier exactly as the builder files it (BT-31/BT-48), for any country
+VatNumberValidator::withCountryPrefix('123456789', 'DE');   // 'DE123456789'
+VatNumberValidator::withCountryPrefix('GR123456789', 'RO'); // 'EL123456789' (Greece files under EL)
+VatNumberValidator::withCountryPrefix('XI123456789', 'GB'); // 'XI123456789' (kept)
 ```
 
 #### CNP Validation
@@ -1232,6 +1458,7 @@ PaginatedMessagesParamsData::fromDateRange(cif: '12345678', startDate: $from, en
 | `OAuthTokensData::__construct` | `$expiresAt` |
 | `EFacturaClient::__construct` | `$expiresAt` |
 | `InvoiceData::__construct` | `$issueDate`, `$dueDate`, `$taxPointDate` |
+| `PrecedingInvoiceData::__construct`, `DeliveryData::__construct` | `$issueDate`, `$actualDeliveryDate` |
 | `PaginatedMessagesParamsData::fromDateRange` | `$startDate`, `$endDate` |
 | `DateHelper::formatForAnaf`, `toTimestamp`, `getDayRange`, `daysBetween` | date arguments |
 
@@ -1293,33 +1520,45 @@ $type->isInvoice();     // true for 380, 384, 389, 751
 ## Exception Handling
 
 ```php
-use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
-use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
+use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
-use BeeCoded\EFacturaSdk\Exceptions\XmlParsingException;
+use BeeCoded\EFacturaSdk\Exceptions\RequestNotSentException;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 
 try {
     $result = $client->uploadDocument($xml);
 } catch (AuthenticationException $e) {
-    // OAuth token invalid or expired (and refresh failed)
-    // User needs to re-authenticate
+    // getCode(): 400/401 = ANAF refused the grant or token -> reconnect the company.
+    // 0 = OAuth server unreachable, refresh-lock timeout or lock store failure, or missing OAuth
+    // configuration -> retry later / fix the configuration. Another code = the OAuth server's HTTP status.
+    // "Token refresh previously failed": this client is spent; create a new one.
 } catch (RateLimitExceededException $e) {
-    // Rate limit exceeded
+    // The SDK's own limit: nothing was sent.
     $retryAfter = $e->retryAfterSeconds;  // Seconds until limit resets
     $scope = $e->scope;                   // ?RateLimitScope, e.g. RateLimitScope::Global
-    // Queue for later or wait
 } catch (ValidationException $e) {
-    // Input validation failed (empty XML, invalid parameters)
-    $message = $e->getMessage();
+    // Refused locally (empty XML, invalid parameters): nothing was sent.
+} catch (RequestNotSentException $e) {
+    // No attempt of the call reached ANAF (DNS, connect, TLS, connect-phase timeout, or the cache
+    // store behind the SDK's rate limiter failed; $e->getPrevious() is the cause): safe to resend.
 } catch (ApiException $e) {
-    // API call failed
+    // 429: ANAF's own rate limit, not filed (it is an ApiException, not RateLimitExceededException).
+    // Other 4xx except 408: ANAF refused the upload, not filed; $e->getMessage() is its reason.
+    // 408, 500 (no response), 502 (ANAF 5xx) or a 2xx we could not read: POSSIBLY FILED.
+    // Reconcile with getMessages() before resending.
     $statusCode = $e->statusCode;
     $details = $e->details;
-} catch (XmlParsingException $e) {
-    // Failed to parse XML response from ANAF
 }
 ```
+
+`UploadOutcome::fromResponse()` / `UploadOutcome::fromThrowable()` apply exactly these rules and
+return an `UploadOutcomeKind` (`Accepted`, `Refused`, `NotSent`, `Uncertain`) with a reason, the
+index and ANAF's text. The invoice builder throws `ValidationException` too (see "What the builder
+refuses"); `fromThrowable()` reads it as `Refused` / `LocalRefusal`, because nothing was sent.
+`XmlParsingException` reaches you only from direct `XmlParser` calls; no client method lets it through.
+`ArchiveInspector` throws `ArchiveLimitException` (retryable) or `ArchiveMismatchException` (final),
+both `ArchiveException`s (see "Verify a Response Archive").
 
 ## Testing
 

@@ -7,6 +7,8 @@ namespace BeeCoded\EFacturaSdk\Services\ApiClients;
 use BeeCoded\EFacturaSdk\Contracts\AnafDetailsClientInterface;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyData;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFacturaSdk\Enums\CompanyLookupFailureKind;
+use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
@@ -35,8 +37,25 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
     private readonly RateLimiter $rateLimiter;
 
-    public function __construct()
-    {
+    /**
+     * @param  bool  $strict  Fail closed unless ANAF's answer confirms the request: every requested
+     *                        CUI answered exactly once (found or notFound, both lists, CUIs as
+     *                        integers), today's date echoed, a non-empty name, a known registration
+     *                        state, a boolean statusInactivi, dataRadiere present and valid dates.
+     *                        A 404 counts only as not-found evidence. Anything else is a failure
+     *                        with failureKind InvalidResponse, never a found company.
+     * @param  int|null  $tries  HTTP attempts per lookup (default: efactura-sdk.http.retry_times)
+     * @param  int|float|null  $timeoutSeconds  Request timeout (default: efactura-sdk.http.timeout)
+     */
+    public function __construct(
+        private readonly bool $strict = false,
+        private readonly ?int $tries = null,
+        private readonly int|float|null $timeoutSeconds = null,
+    ) {
+        if (($tries !== null && $tries < 1) || ($timeoutSeconds !== null && $timeoutSeconds <= 0)) {
+            throw new \InvalidArgumentException('A company lookup needs at least one try and a positive timeout.');
+        }
+
         parent::__construct();
         $this->rateLimiter = app(RateLimiter::class);
     }
@@ -76,7 +95,15 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
      */
     protected function getMaxTryCount(): int
     {
-        return (int) (config('efactura-sdk.http.retry_times') ?? self::MAX_TRY_COUNT);
+        return $this->tries ?? (int) (config('efactura-sdk.http.retry_times') ?? self::MAX_TRY_COUNT);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    protected function getRequestTimeout(): float|int
+    {
+        return $this->timeoutSeconds ?? static::getTimeoutDuration();
     }
 
     /**
@@ -86,8 +113,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
      * unit of its own. This bucket is less forgiving than the e-Factura ones: it
      * is 100% of ANAF's cap rather than the usual 50% margin (a margin is
      * unrepresentable as an integer over a 1-second window -- see RateLimiter),
-     * and the window is one SECOND. With retry_delay=0 an ANAF 5xx storm fires
-     * every attempt inside that same second, so counting the retries as a single
+     * and the window is two seconds. With retry_delay=0 an ANAF 5xx storm fires
+     * every attempt inside that same window, so counting the retries as a single
      * lookup puts the SDK over a hard cap it believes it is respecting.
      *
      * @throws RateLimitExceededException When the retry would exceed the 1 req/sec cap
@@ -158,10 +185,14 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
                 continue;
             }
 
-            $validatedPayload[] = [
-                'cui' => $cuiNumber,
-                'data' => $requestDate,
-            ];
+            // Each CUI once (RO prefix already stripped): ANAF answers per entry, and the
+            // strict check needs every requested CUI answered exactly once.
+            if (! in_array($cuiNumber, array_column($validatedPayload, 'cui'), true)) {
+                $validatedPayload[] = [
+                    'cui' => $cuiNumber,
+                    'data' => $requestDate,
+                ];
+            }
         }
 
         // Check if we have any valid CUIs to query
@@ -213,13 +244,14 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             if (! is_array($data)) {
                 return CompanyLookupResultData::failure(
                     'Invalid or malformed JSON response from ANAF API.',
-                    $invalidCodes
+                    $invalidCodes,
+                    CompanyLookupFailureKind::InvalidResponse
                 );
             }
 
             $this->logger->info('ANAF API successful response for batch request');
 
-            return $this->transformResponse($data, $invalidCodes);
+            return $this->resultFrom($data, array_column($validatedPayload, 'cui'), $requestDate, $invalidCodes, false);
         } catch (RateLimitExceededException $e) {
             // onRetryAttempt() consumes the lookup bucket from INSIDE this try block,
             // so unlike the pre-flight check above, a breach raised mid-retry would be
@@ -227,6 +259,18 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             // Rethrow so a rate limit always surfaces as one, wherever it is tripped.
             throw $e;
         } catch (ApiException $e) {
+            // ANAF's own overload refusal: a rate limit, not a lookup failure. ANAF sends no
+            // usable Retry-After here, so 2 s is the SDK's estimate (one lookup window).
+            if ($e->statusCode === 429) {
+                throw new RateLimitExceededException(
+                    'ANAF refused the company lookup (rate limit).',
+                    retryAfterSeconds: 2,
+                    previous: $e,
+                    scope: RateLimitScope::CompanyLookup,
+                    fromProvider: true,
+                );
+            }
+
             // ANAF returns HTTP 404 with a {found, notFound} body when NONE of the
             // queried CUIs exist. That is a documented "not found" response, not an
             // error — parse the preserved body and surface the notFound CUIs.
@@ -236,7 +280,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
                     && (isset($decoded['found']) || isset($decoded['notFound']) || isset($decoded['notfound']))) {
                     $this->logger->info('ANAF API 404 with not-found body for batch request');
 
-                    return $this->transformResponse($decoded, $invalidCodes);
+                    return $this->resultFrom($decoded, array_column($validatedPayload, 'cui'), $requestDate, $invalidCodes, true);
                 }
             }
 
@@ -251,22 +295,135 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
                 str_contains(strtolower($e->getMessage()), 'connection')) {
                 return CompanyLookupResultData::failure(
                     'Network error: Could not connect to ANAF service.',
-                    $invalidCodes
+                    $invalidCodes,
+                    CompanyLookupFailureKind::Transport
                 );
             }
 
             return CompanyLookupResultData::failure(
                 'An error occurred while contacting the ANAF service: '.$e->getMessage(),
-                $invalidCodes
+                $invalidCodes,
+                CompanyLookupFailureKind::Transport
             );
         } catch (\Exception $e) {
             $this->logger->error('Unexpected error in ANAF Details lookup: '.$e->getMessage());
 
             return CompanyLookupResultData::failure(
                 'An unexpected error occurred while contacting the ANAF service.',
-                $invalidCodes
+                $invalidCodes,
+                CompanyLookupFailureKind::Transport
             );
         }
+    }
+
+    /**
+     * Turn a decoded {found, notFound} answer into a result, checking the evidence first
+     * in strict mode. A strict failure is returned, not thrown, so no catch-all can
+     * relabel it as a transport failure.
+     *
+     * @param  array<mixed>  $body
+     * @param  list<int>  $cuis  The CUIs sent, each once
+     * @param  array<string>  $invalidCodes
+     */
+    private function resultFrom(array $body, array $cuis, string $date, array $invalidCodes, bool $notFoundStatus): CompanyLookupResultData
+    {
+        if (! $this->strict) {
+            return $this->transformResponse($body, $invalidCodes);
+        }
+
+        $result = $this->confirmsRequest($body, $cuis, $date, $notFoundStatus)
+            ? $this->transformResponse($body, $invalidCodes)
+            : null;
+
+        // Every confirmed company must also parse; a skipped entry would read as absent.
+        if ($result === null || ! $result->success || count($result->companies) !== count($body['found'])) {
+            $this->logger->warning('ANAF lookup answer does not confirm the requested companies', ['cuis' => $cuis]);
+
+            return CompanyLookupResultData::failure(
+                'ANAF response does not confirm the requested companies.',
+                $invalidCodes,
+                CompanyLookupFailureKind::InvalidResponse
+            );
+        }
+
+        return $result;
+    }
+
+    /**
+     * Whether an answer is evidence for exactly the request: see the $strict option.
+     *
+     * @param  array<mixed>  $body
+     * @param  list<int>  $cuis
+     */
+    private function confirmsRequest(array $body, array $cuis, string $date, bool $notFoundStatus): bool
+    {
+        $found = $body['found'] ?? null;
+        $answered = $body['notFound'] ?? null;
+
+        if (array_key_exists('notfound', $body) || ! is_array($found) || ! array_is_list($found)
+            || ! is_array($answered) || ! array_is_list($answered) || ($notFoundStatus && $found !== [])) {
+            return false;
+        }
+
+        foreach ($found as $entry) {
+            $general = is_array($entry) ? ($entry['date_generale'] ?? null) : null;
+            $inactive = is_array($entry) ? ($entry['stare_inactiv'] ?? null) : null;
+
+            if (! is_array($general) || ! is_array($inactive)
+                || ($general['data'] ?? null) !== $date
+                || ! is_string($general['denumire'] ?? null) || trim($general['denumire']) === ''
+                || ! is_string($general['stare_inregistrare'] ?? null) || ! self::isKnownRegistrationState($general['stare_inregistrare'])
+                || ! is_bool($inactive['statusInactivi'] ?? null) || ! array_key_exists('dataRadiere', $inactive)) {
+                return false;
+            }
+
+            foreach (['dataInactivare', 'dataReactivare', 'dataPublicare', 'dataRadiere'] as $field) {
+                $value = $inactive[$field] ?? null;
+
+                if ($value !== null && $value !== '' && (! is_string($value) || ! self::isValidDate($value))) {
+                    return false;
+                }
+            }
+
+            $answered[] = $general['cui'] ?? null;
+        }
+
+        foreach ($answered as $cui) {
+            if (! is_int($cui)) {
+                return false;
+            }
+        }
+
+        sort($answered);
+        sort($cuis);
+
+        return $answered === $cuis;
+    }
+
+    /**
+     * A registration state ANAF is known to send. Activity itself is decided from
+     * statusInactivi, dataRadiere and the RADIERE/RADIAT prefix by the caller.
+     */
+    private static function isKnownRegistrationState(string $state): bool
+    {
+        if (preg_match('/\A(?:INREGISTRAT|ÎNREGISTRAT|RADIERE|RADIAT|TRANSFER\((?:SOSIRE|PLECARE)\))(?: din data (\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2}))?\z/ui', trim($state), $matches) !== 1) {
+            return false;
+        }
+
+        return ! isset($matches[1]) || self::isValidDate($matches[1]);
+    }
+
+    private static function isValidDate(string $date): bool
+    {
+        foreach (['Y-m-d', 'd.m.Y'] as $format) {
+            $parsed = \DateTimeImmutable::createFromFormat('!'.$format, $date);
+
+            if ($parsed !== false && $parsed->format($format) === $date) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -369,7 +526,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             if (! isset($response['found']) && ! isset($response['notFound']) && ! isset($response['notfound'])) {
                 return CompanyLookupResultData::failure(
                     'Unexpected response structure from ANAF API: '.json_encode($response),
-                    $invalidCodes
+                    $invalidCodes,
+                    CompanyLookupFailureKind::InvalidResponse
                 );
             }
         }

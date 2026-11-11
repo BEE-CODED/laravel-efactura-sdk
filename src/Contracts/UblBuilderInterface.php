@@ -24,4 +24,13 @@ interface UblBuilderInterface
      * @throws ValidationException If invoice data is invalid
      */
     public function generateInvoiceXml(InvoiceData $invoiceData): string;
+
+    /**
+     * Run every check generateInvoiceXml() runs, without keeping the XML.
+     *
+     * @param  InvoiceData  $invoiceData  The invoice data to check
+     *
+     * @throws ValidationException If invoice data is invalid
+     */
+    public function validateInvoice(InvoiceData $invoiceData): void;
 }

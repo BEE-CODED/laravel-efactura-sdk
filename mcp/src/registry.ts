@@ -18,6 +18,11 @@ export const VALID_ENUMS = [
   "UploadStatusValue",
   "RegistrationStatus",
   "RateLimitScope",
+  "UploadOutcomeKind",
+  "UploadOutcomeReason",
+  "CompanyLookupFailureKind",
+  "StatusVerdict",
+  "ArchiveLimitReason",
 ] as const;
 
 export const VALID_DTOS = [
@@ -41,4 +46,5 @@ export const VALID_TOPICS = [
 export const VALID_SERVICES = [
   "EFacturaClient", "AnafAuthenticator", "UblBuilder",
   "InvoiceBuilder", "AnafDetailsClient",
+  "ArchiveInspector", "PollSchedule", "UploadOutcome",
 ] as const;

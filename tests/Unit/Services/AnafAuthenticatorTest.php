@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Services\AnafAuthenticator;
@@ -89,6 +90,26 @@ describe('AnafAuthenticator', function () {
                 ]
             );
         })->throws(AuthenticationException::class, 'Missing required OAuth token endpoint');
+    });
+
+    describe('missing configuration', function () {
+        // Code 0, like a transport failure: a host that keys a "re-authorise" cooldown on
+        // 400/401 must not block every company for a deployment mistake.
+        it('is reported with code 0, not as a refused grant', function (string $key, ?string $value) {
+            $config = config('efactura-sdk');
+            $config['oauth'] = ['client_id' => 'id', 'client_secret' => 'secret', 'redirect_uri' => 'https://example.com/callback'];
+            data_set($config, $key, $value);
+            config()->set('efactura-sdk', $config);
+
+            expect(fn () => app(AnafAuthenticatorInterface::class))
+                ->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe(0));
+        })->with([
+            'client id' => ['oauth.client_id', null],
+            'client secret' => ['oauth.client_secret', ''],
+            'redirect uri' => ['oauth.redirect_uri', null],
+            'authorize endpoint' => ['endpoints.oauth.authorize', ''],
+            'token endpoint' => ['endpoints.oauth.token', null],
+        ]);
     });
 
     describe('timeout config', function () {

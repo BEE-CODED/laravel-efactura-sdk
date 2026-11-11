@@ -18,7 +18,9 @@ use Illuminate\Support\Facades\Log;
  *
  * Defaults are set to 50% of ANAF's actual limits for safety, with one exception:
  * company_lookup_per_second is 1, which is 100% of ANAF's 1 req/sec cap. A 50%
- * margin is unrepresentable as an integer limit over a 1-second window.
+ * margin is unrepresentable as an integer limit over a 1-second window. That one
+ * lookup is counted over a 2-second window, so stores that expire keys at whole
+ * seconds (database, file, memcached) still keep lookups at least 1 s apart.
  * status_per_day_message_provider (default 100) is ANAF's full status limit on purpose:
  * it applies only to status reads that opt in with $useProviderLimit.
  *
@@ -55,7 +57,8 @@ class RateLimiter
     {
         $this->minuteStore = new RateLimitStore('minute', 60);
         $this->dailyStore = new RateLimitStore('daily', 86400); // 24 hours
-        $this->secondStore = new RateLimitStore('second', 1);
+        // shortcut: a 2 s window holds 1/s on whole-second stores but halves Redis throughput; pick the window per store if that matters.
+        $this->secondStore = new RateLimitStore('second', 2);
 
         // Load from config with conservative defaults (50% of ANAF limits,
         // except company_lookup_per_second - see the class docblock)
@@ -142,12 +145,16 @@ class RateLimiter
 
         // Warn about drivers that don't persist across requests/processes
         if (in_array($cacheDriver, ['null', 'array'], true)) {
-            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->warning(
-                "EFactura SDK rate limiting may not work correctly with '{$cacheDriver}' cache driver. ".
-                'Rate limits will not persist across requests. '.
-                'Consider using redis, memcached, or database cache driver for production.',
-                ['cache_driver' => $cacheDriver]
-            );
+            try {
+                Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->warning(
+                    "EFactura SDK rate limiting may not work correctly with '{$cacheDriver}' cache driver. ".
+                    'Rate limits will not persist across requests. '.
+                    'Consider using redis, memcached, or database cache driver for production.',
+                    ['cache_driver' => $cacheDriver]
+                );
+            } catch (\Throwable) {
+                // A failing log handler must never stop the client from being built.
+            }
         }
     }
 
@@ -184,11 +191,14 @@ class RateLimiter
     }
 
     /**
-     * Check and record a company-lookup API call (atomic, 1/second).
+     * Check and record a company-lookup API call (atomic, at most 1/second).
      *
      * ANAF limits the public company-details endpoint (PlatitorTvaRest) to
      * 1 request/second. Unlike the per-CUI/per-message limits, this is a
      * single global bucket — the limit is per request, not per CUI.
+     *
+     * Counted over a 2-second window: a key that a whole-second store expires at
+     * x+1 would let a lookup at x.999 be followed by another at x+1.001.
      *
      * @throws RateLimitExceededException
      */
@@ -202,9 +212,9 @@ class RateLimiter
 
         if (! $this->secondStore->attemptOrFail($key, $this->companyLookupPerSecond)) {
             throw new RateLimitExceededException(
-                "Company lookup rate limit exceeded ({$this->companyLookupPerSecond}/second). Please wait before retrying.",
+                "Company lookup rate limit exceeded ({$this->companyLookupPerSecond} per 2 seconds). Please wait before retrying.",
                 remaining: 0,
-                // A freshly-tripped 1s window can report availableIn=0; clamp to 1
+                // A freshly-tripped window can report availableIn=0; clamp to 1
                 // so retryAfterSeconds is never the misleading 0.
                 retryAfterSeconds: max($this->secondStore->availableIn($key), 1),
                 scope: RateLimitScope::CompanyLookup,

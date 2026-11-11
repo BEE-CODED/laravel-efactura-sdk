@@ -211,6 +211,13 @@ Tax Category identifiers for VAT classification in UBL invoice line items and ta
 | \`Standard\` | \`'S'\` | Standard rated VAT (e.g. 19% in Romania) |
 | \`ZeroRated\` | \`'Z'\` | Zero-rated VAT (0%) |
 | \`ReverseCharge\` | \`'AE'\` | Reverse charge: supplier charges zero VAT |
+| \`Exempt\` | \`'E'\` | Exempt from VAT; needs an exemption reason code or text (BR-E-10). New in 4.0 |
+| \`Export\` | \`'G'\` | Free export item, VAT not charged (\`VATEX-EU-G\`). New in 4.0 |
+| \`IntraCommunitySupply\` | \`'K'\` | Intra-community supply (\`VATEX-EU-IC\`); needs both VAT ids and a delivery with date and address. New in 4.0 |
+
+\`AE\`, \`E\`, \`G\` and \`K\` are opt-in only: they are never inferred, need a VAT-registered supplier,
+and carry an exactly zero rate and tax. Their reasons go in \`InvoiceData::$exemptionReasons\`
+(see the InvoiceLineData DTO docs). A \`match\` over this enum needs arms for the new cases.
 
 ## Optional explicit category
 
@@ -221,8 +228,8 @@ line's \`taxPercent\`, preserving legacy constructors and serialized keys/order:
 | Condition | Resulting category |
 |---|---|
 | \`$invoice->supplier->isVatPayer === false\` | \`NotSubject\` (\`'O'\`) — regardless of \`taxPercent\` |
-| Supplier is a VAT payer and \`taxPercent\` is ~0 (\`abs(taxPercent) < 0.01\`) | \`ZeroRated\` (\`'Z'\`) |
-| Supplier is a VAT payer and \`taxPercent >= 0.01\` | \`Standard\` (\`'S'\`) |
+| Supplier is a VAT payer and \`taxPercent\` is zero (read at 2 decimals; a finer rate is refused) | \`ZeroRated\` (\`'Z'\`) |
+| Supplier is a VAT payer and \`taxPercent\` is non-zero | \`Standard\` (\`'S'\`) |
 
 Explicit S/Z/O values must agree with that inference; incompatible values throw rather than
 override it. O cannot coexist with any other category in one invoice.
@@ -239,16 +246,17 @@ each transformation, so serializing null does not hide a later assigned category
 property back to null omits it again.
 
 The resolved value is written to \`ClassifiedTaxCategory/ID\` on each line and to its matching
-\`TaxSubtotal\`. Grouping and invoice VAT totals use resolved category plus normalized rate:
+\`TaxSubtotal\`. Grouping and invoice VAT totals use resolved category plus the rate at 2 decimals:
 valid AE/0, Z/0 and S lines remain distinct. AE lines and subtotals emit \`Percent\` = \`0.00\`;
 the zero-tax AE subtotal includes \`TaxExemptionReasonCode\` = \`VATEX-EU-AE\` and
-\`TaxExemptionReason\` = \`Taxare inversa\`. Local checks are not full external-profile validation.
+\`TaxExemptionReason\` = \`Taxare inversa\` (or the caller's text). Local checks are not full
+external-profile validation.
 
 The category does not alter document signs or accounting-currency requirements: Invoice 380
 keeps input signs (including negative invoices), CreditNote 381 negates quantities and amounts
-once, RON invoices reject \`taxAmountRon\`, and non-RON invoices require it. An all-AE non-RON
-invoice therefore supplies \`taxAmountRon: 0.0\`. The same zero requirement applies to AE/Z
-documents: a nonzero RON total is rejected when AE is present without standard-rated lines.
+once, RON invoices reject \`taxAmountRon\`, and non-RON invoices require it. A non-RON invoice
+without standard-rated lines (AE, Z, O, E, G or K only) supplies \`taxAmountRon: 0.0\`; a nonzero
+RON total is rejected.
 
 ## Category \`O\` suppresses the line VAT rate (v3.0.0)
 
@@ -365,6 +373,96 @@ try {
     }
 }
 \`\`\`
+`,
+
+  UploadOutcomeKind: `# UploadOutcomeKind
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\UploadOutcomeKind\` (since 4.0)
+
+What one upload attempt means for the document; see \`UploadOutcome\` (\`BeeCoded\\EFacturaSdk\\Support\\UploadOutcome\`).
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`Accepted\` | \`'accepted'\` | ANAF returned an upload index: filed |
+| \`Refused\` | \`'refused'\` | Not filed: ANAF refused it, or the SDK refused it locally |
+| \`NotSent\` | \`'not_sent'\` | Provably never reached ANAF: safe to send again |
+| \`Uncertain\` | \`'uncertain'\` | Possibly filed: reconcile before resending |
+`,
+
+  UploadOutcomeReason: `# UploadOutcomeReason
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\UploadOutcomeReason\` (since 4.0)
+
+Why an upload attempt was \`Refused\` or \`NotSent\` (\`UploadOutcome::$reason\`; \`null\` for \`Accepted\` and \`Uncertain\`).
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`Rejected\` | \`'rejected'\` | ANAF answered 4xx (not 408/429) |
+| \`FailedWithoutIndex\` | \`'failed_without_index'\` | ANAF reported \`ExecutionStatus\` 1 without an index |
+| \`LocalRefusal\` | \`'local_refusal'\` | The SDK's \`ValidationException\` |
+| \`Transport\` | \`'transport'\` | \`RequestNotSentException\` |
+| \`RateLimited\` | \`'rate_limited'\` | The SDK's \`RateLimitExceededException\`, or ANAF's 429 |
+| \`GrantRefused\` | \`'grant_refused'\` | \`AuthenticationException\` 400/401: reconnect the company |
+| \`Transient\` | \`'transient'\` | Any other \`AuthenticationException\` code |
+`,
+
+  CompanyLookupFailureKind: `# CompanyLookupFailureKind
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\CompanyLookupFailureKind\` (since 4.0)
+
+Why a sent company lookup failed (\`CompanyLookupResultData::$failureKind\`; \`null\` on success and for input refused before sending).
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`InvalidResponse\` | \`'invalid_response'\` | ANAF answered, but the answer is unreadable or does not confirm the request |
+| \`Transport\` | \`'transport'\` | No usable answer: transport failure, ANAF error status or an unexpected exception |
+`,
+
+  StatusVerdict: `# StatusVerdict
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\StatusVerdict\` (since 4.0)
+
+What one status answer means for the uploaded document: \`StatusResponseData::verdict()\`. A download id that is not 1 to 64 digits counts as none.
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`InProgress\` | \`'in_progress'\` | \`in prelucrare\`: read again later (\`PollSchedule::status()\`) |
+| \`Ready\` | \`'ready'\` | \`ok\` with a download id: accepted; download the archive |
+| \`Rejected\` | \`'rejected'\` | \`nok\` with a download id: rejected on its merits; the archive holds the errors |
+| \`ReadyWithoutDownloadId\` | \`'ready_without_download_id'\` | \`ok\` without a usable download id: no verdict to act on |
+| \`RejectedWithoutDownloadId\` | \`'rejected_without_download_id'\` | \`nok\` without a usable download id: not a verdict on the document |
+| \`NotProcessed\` | \`'not_processed'\` | \`XML cu erori nepreluat de sistem\`: final, no archive |
+| \`AnafError\` | \`'anaf_error'\` | ANAF answered with an error instead of a status (\`hasAnafError()\`) |
+| \`Unknown\` | \`'unknown'\` | No status ANAF defines and no error |
+
+Only \`Ready\`, \`Rejected\` and \`NotProcessed\` are verdicts on the document; park the \`...WithoutDownloadId\`, \`AnafError\` and \`Unknown\` answers for a human and do not re-upload.
+`,
+
+  ArchiveLimitReason: `# ArchiveLimitReason
+
+Namespace: \`BeeCoded\\EFacturaSdk\\Enums\\ArchiveLimitReason\` (since 4.0)
+
+Why \`ArchiveInspector::verify()\` could not inspect a response archive (\`ArchiveLimitException::$reason\`). None is a verdict on the content: download the archive again later.
+
+## Cases
+
+| Case | Backed value | Description |
+|---|---|---|
+| \`ArchiveTooLarge\` | \`'archive_too_large'\` | Over 20 MiB, or the members expand to over 20 MiB together |
+| \`MemberTooLarge\` | \`'member_too_large'\` | A member expands to over 10 MiB, or (with the upload) holds over 1 000 000 \`<\` |
+| \`Encrypted\` | \`'encrypted'\` | A member is encrypted |
+| \`TooManyMembers\` | \`'too_many_members'\` | More than 32 members |
+| \`Empty\` | \`'empty'\` | A ZIP with no members |
+| \`Unopenable\` | \`'unopenable'\` | Not a readable ZIP (including an empty body) |
+| \`Io\` | \`'io'\` | A local failure: temporary file, ZipArchive \`ER_OPEN\`/\`ER_READ\`/\`ER_TMPOPEN\`/\`ER_MEMORY\`. The same bytes may pass next time |
 `,
 
   RegistrationStatus: `# RegistrationStatus

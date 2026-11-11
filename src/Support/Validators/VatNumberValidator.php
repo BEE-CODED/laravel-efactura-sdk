@@ -30,6 +30,28 @@ final class VatNumberValidator
     private const CUI_CONTROL_KEY = '753217532';
 
     /**
+     * VAT identifier prefixes that differ from the party's ISO 3166-1 alpha-2 country code:
+     * Greece registers VAT under "EL" (Elláda) while its country code is "GR".
+     *
+     * @var array<string, string>
+     */
+    private const VAT_PREFIX_OVERRIDES = [
+        'GR' => 'EL',
+    ];
+
+    /**
+     * Recognised VAT identifier prefixes: the EU-27 prefixes ("EL" for Greece), plus "GB" and
+     * Northern Ireland's "XI", which appears on otherwise-"GB" addresses.
+     *
+     * @var list<string>
+     */
+    private const VAT_COUNTRY_PREFIXES = [
+        'AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'EL', 'ES', 'FI', 'FR',
+        'GB', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PL', 'PT',
+        'RO', 'SE', 'SI', 'SK', 'XI',
+    ];
+
+    /**
      * Check if a VAT code is valid (format and checksum).
      *
      * This validates:
@@ -186,6 +208,85 @@ final class VatNumberValidator
         }
 
         return self::RO_PREFIX.$vatCode;
+    }
+
+    /**
+     * Prefix a VAT identifier with the VAT prefix of the state that issued it (BT-31/BT-48).
+     *
+     * Two things make "prefix with the address country code unless it already starts with
+     * it" wrong:
+     *
+     *  - the prefix is not always the ISO 3166-1 country code (Greece files under "EL", not
+     *    "GR"), so an already-prefixed Greek id would get prefixed again: "GREL123456789";
+     *  - a party may hold a VAT identifier issued by a state other than the one its address
+     *    is in (a foreign VAT registration, or Northern Ireland's "XI" on an otherwise "GB"
+     *    address), which would likewise be re-prefixed.
+     *
+     * Either way the result is a syntactically invalid VAT identifier, so the prefix is only
+     * added when the id does not already carry a recognised one.
+     *
+     * The mirror image of the first case is corrected rather than rejected: a caller who
+     * prefixes the id with Greece's COUNTRY code ("GR123456789") instead of its VAT prefix
+     * would otherwise be handed "ELGR123456789". Those country codes are deliberately absent
+     * from VAT_COUNTRY_PREFIXES, precisely because no VAT id legitimately carries one.
+     *
+     * PASS VAT IDENTIFIERS WITH THEIR VAT PREFIX. One input is genuinely ambiguous, and no
+     * logic here can resolve it. A French VAT is "FR" + a two-character key + 9 digits, and
+     * that key MAY BE TWO LETTERS — HMRC documents "XX123456789", and France is the only
+     * member state where this occurs. So a bare French id whose key happens to be "GR" is
+     * indistinguishable from a Greek id carrying its country code:
+     *
+     *   withCountryPrefix('GR123456789', 'RO')  Greek party, foreign address -> EL123456789
+     *   withCountryPrefix('GR123456789', 'FR')  bare French id, key "GR"     -> EL123456789 (wrong)
+     *
+     * This resolves toward the first reading: an explicit prefix is better evidence of the
+     * issuing state than an address is, and a foreign VAT registration is far commoner than an
+     * unprefixed French id with a letter-letter key. A prefixed "FRGR123456789" is unambiguous
+     * and passes through untouched. Malformed-but-prefixed input such as "RO 12345678" is left
+     * intact rather than doubled.
+     *
+     * @param  string  $id  The VAT identifier, with or without its prefix
+     * @param  string|null  $country  The party's ISO 3166-1 alpha-2 country code (null = RO)
+     * @return string The identifier carrying a VAT prefix, uppercased and trimmed
+     */
+    public static function withCountryPrefix(string $id, ?string $country): string
+    {
+        $id = strtoupper(trim($id));
+        $country = strtoupper($country ?? self::RO_PREFIX);
+        $expectedPrefix = self::VAT_PREFIX_OVERRIDES[$country] ?? $country;
+
+        if (self::hasVatCountryPrefix($id, $expectedPrefix)) {
+            return $id;
+        }
+
+        // Swap a country code that differs from its VAT prefix for the prefix the state
+        // actually files under, rather than prefixing on top of it.
+        foreach (self::VAT_PREFIX_OVERRIDES as $isoCode => $vatPrefix) {
+            $remainder = substr($id, strlen($isoCode));
+
+            if (str_starts_with($id, $isoCode) && preg_match('/^[0-9A-Z]/', $remainder) === 1) {
+                return $vatPrefix.$remainder;
+            }
+        }
+
+        return $expectedPrefix.$id;
+    }
+
+    /**
+     * Whether a VAT identifier already carries a country prefix.
+     *
+     * Requiring an alphanumeric character after a recognised prefix keeps this narrow. It is
+     * not airtight, and cannot be: a bare French id with a key of "EL" or "IT" reads as
+     * already-prefixed and is filed without its "FR" — see withCountryPrefix().
+     */
+    private static function hasVatCountryPrefix(string $id, string $expectedPrefix): bool
+    {
+        if (str_starts_with($id, $expectedPrefix)) {
+            return true;
+        }
+
+        return preg_match('/^([A-Z]{2})[0-9A-Z]/', $id, $matches) === 1
+            && in_array($matches[1], self::VAT_COUNTRY_PREFIXES, true);
     }
 
     /**

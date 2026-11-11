@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Facade;
  * Facade for UBL 2.1 invoice XML generation.
  *
  * @method static string generateInvoiceXml(InvoiceData $invoiceData) Generate UBL 2.1 compliant XML from invoice data
+ * @method static void validateInvoice(InvoiceData $invoiceData) Run every generateInvoiceXml() check without keeping the XML
  *
  * @see \BeeCoded\EFacturaSdk\Services\UblBuilder
  * @see InvoiceBuilder

@@ -189,6 +189,8 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
      *
      * @param  array<string, mixed>  $config
      *
+     * Code 0, not 401: a deployment mistake is not a refused grant, and re-authorising cannot fix it.
+     *
      * @throws AuthenticationException When required configuration is missing
      */
     private function validateConfig(array $config): void
@@ -198,20 +200,23 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         foreach ($requiredOauthKeys as $key) {
             if (empty($config['oauth'][$key])) {
                 throw new AuthenticationException(
-                    "Missing required OAuth configuration: {$key}. Please check your efactura-sdk.php config."
+                    "Missing required OAuth configuration: {$key}. Please check your efactura-sdk.php config.",
+                    0
                 );
             }
         }
 
         if (empty($config['endpoints']['oauth']['authorize'])) {
             throw new AuthenticationException(
-                'Missing required OAuth authorize endpoint. Please check your efactura-sdk.php config.'
+                'Missing required OAuth authorize endpoint. Please check your efactura-sdk.php config.',
+                0
             );
         }
 
         if (empty($config['endpoints']['oauth']['token'])) {
             throw new AuthenticationException(
-                'Missing required OAuth token endpoint. Please check your efactura-sdk.php config.'
+                'Missing required OAuth token endpoint. Please check your efactura-sdk.php config.',
+                0
             );
         }
     }
@@ -257,7 +262,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
             return $response;
         } catch (\Throwable $e) {
-            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
+            $this->logError(
                 'ANAF OAuth token request failed',
                 [
                     'error' => $e->getMessage(),
@@ -291,7 +296,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         if ($response->failed()) {
             $errorMessage = $this->extractErrorMessage($data, $response->status());
 
-            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
+            $this->logError(
                 $errorPrefix,
                 [
                     'status' => $response->status(),
@@ -305,7 +310,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         // Check for non-JSON response on successful HTTP status
         // (e.g., HTML maintenance page returned with 200 OK)
         if ($data === null) {
-            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
+            $this->logError(
                 $errorPrefix.': Non-JSON response from OAuth server',
                 [
                     'status' => $response->status(),
@@ -321,7 +326,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
         // Validate required token fields
         if (! is_string($data['access_token'] ?? null) || $data['access_token'] === '') {
-            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
+            $this->logError(
                 $errorPrefix.': Missing access token in response'
             );
 
@@ -332,7 +337,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         }
 
         if (! is_string($data['refresh_token'] ?? null) || $data['refresh_token'] === '') {
-            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error(
+            $this->logError(
                 $errorPrefix.': Missing refresh token in response'
             );
 
@@ -343,6 +348,20 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         }
 
         return OAuthTokensData::fromAnafResponse($data);
+    }
+
+    /**
+     * A failing log handler must never replace the AuthenticationException that follows it.
+     *
+     * @param  array<string, mixed>  $context
+     */
+    private function logError(string $message, array $context = []): void
+    {
+        try {
+            Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->error($message, $context);
+        } catch (\Throwable) {
+            // Swallowed on purpose: logging is never part of the call's outcome.
+        }
     }
 
     /**

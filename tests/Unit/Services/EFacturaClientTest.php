@@ -389,7 +389,7 @@ describe('EFacturaClient', function () {
                 expiresAt: Carbon::now()->addHour(),
             );
 
-            $client->verifySignature('<xml/>');
+            $client->verifySignature('<xml/>', '<ds:Signature/>');
         })->throws(ValidationException::class, 'Missing configuration');
     });
 
@@ -1392,13 +1392,10 @@ describe('EFacturaClient', function () {
             expect($result->errors)->toBeNull();
         });
 
-        it('reports Messages from verifySignature too', function () {
-            Http::fake([
-                '*' => Http::response([
-                    'stare' => 'nok',
-                    'Messages' => [['message' => 'E: semnatura invalida']],
-                ], 200),
-            ]);
+        // ANAF documents no answer for the signature service: these bodies are made up to
+        // pin the SDK's reading, not ANAF's shape.
+        it('keeps the raw text of a verifySignature answer in an unknown shape', function (string $body, ?string $details) {
+            Http::fake(['*' => Http::response($body, 200, ['Content-Type' => 'application/json'])]);
 
             $client = new EFacturaClient(
                 vatNumber: '12345678',
@@ -1406,8 +1403,27 @@ describe('EFacturaClient', function () {
                 refreshToken: 'refresh',
                 expiresAt: Carbon::now()->addHour(),
             );
+            $result = $client->verifySignature('<Invoice/>', '<ds:Signature/>');
 
-            expect($client->verifySignature('<Invoice/>')->errors)->toBe(['E: semnatura invalida']);
+            expect([$result->valid, $result->details, $result->info, $result->errors])->toBe([false, $details, null, null]);
+        })->with([
+            'an unknown key' => ['{"rezultat":"Semnatura nu a putut fi validata"}', '{"rezultat":"Semnatura nu a putut fi validata"}'],
+            // Cut at 500 bytes, never inside a UTF-8 character: "ș" is two bytes at 499-500.
+            'a long answer' => [$long = '{"r":"'.str_repeat('a', 493).'ș'.str_repeat('b', 100).'"}', substr($long, 0, 499)],
+        ]);
+
+        it('reads a verifySignature answer in a validare shape with the validare parser', function () {
+            Http::fake(['*' => Http::response(['Messages' => [['message' => 'E: semnatura invalida']]], 200)]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+            $result = $client->verifySignature('<Invoice/>', '<ds:Signature/>');
+
+            expect([$result->valid, $result->details, $result->errors])->toBe([false, null, ['E: semnatura invalida']]);
         });
 
         it('reports Messages in the convertXmlToPdf error branch', function () {
@@ -1458,9 +1474,12 @@ describe('EFacturaClient', function () {
                 // Try to make an authenticated request which triggers token refresh
                 // This should timeout quickly because the lock is held and wait time is 1 second
                 $client->getStatusMessage('12345');
+                $this->fail('A held refresh lock must time out with AuthenticationException.');
             } catch (AuthenticationException $e) {
-                expect($e->getMessage())->toContain('Token refresh lock timeout');
-                expect($e->getPrevious())->toBeInstanceOf(LockTimeoutException::class);
+                expect($e->getMessage())->toContain('Token refresh lock timeout')
+                    ->and($e->getCode())->toBe(0)
+                    ->and($e->getPrevious())->toBeInstanceOf(LockTimeoutException::class);
+                Http::assertNothingSent();
             } finally {
                 // Always release the lock
                 $lock->release();
@@ -2026,6 +2045,26 @@ describe('EFacturaClient', function () {
             // Verify authenticator was only called once (not on second attempt)
             $this->authenticator->shouldHaveReceived('refreshAccessToken')->once();
         });
+
+        it('keeps the original error code on the fail-fast exception', function (int $code) {
+            $this->authenticator->shouldReceive('refreshAccessToken')
+                ->once()
+                ->andThrow(new AuthenticationException('Refresh failed', $code));
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok"/>', 200)]);
+
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'expired-token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->subMinutes(5),
+            );
+
+            foreach (['12345', '67890'] as $uploadId) {
+                expect(fn () => $client->getStatusMessage($uploadId))
+                    ->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe($code));
+            }
+            Http::assertNothingSent();
+        })->with(['transport or configuration (0)' => [0], 'grant refused (400)' => [400]]);
 
         it('does not set failure flag when token is valid', function () {
             $validTime = Carbon::now()->addHour();

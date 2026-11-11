@@ -22,6 +22,7 @@ use BeeCoded\EFacturaSdk\Enums\StandardType;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
+use BeeCoded\EFacturaSdk\Exceptions\RequestNotSentException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use BeeCoded\EFacturaSdk\Support\AnafValue;
@@ -29,10 +30,10 @@ use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Closure;
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Psr\Log\LoggerInterface;
 
@@ -121,13 +122,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     private bool $tokenRefreshed = false;
 
     /**
-     * Whether a token refresh attempt has failed.
+     * The failure of a token refresh attempt, if one failed.
      *
-     * Once set to true, subsequent API calls will fail fast instead of
+     * Once set, subsequent API calls will fail fast instead of
      * repeatedly attempting to refresh an invalid token. This prevents
      * cascading failures in long-running processes.
      */
-    private bool $tokenRefreshFailed = false;
+    private ?AuthenticationException $tokenRefreshFailure = null;
 
     /**
      * The authenticator for token refresh (resolved lazily).
@@ -160,7 +161,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * Armed by meterCall() and replayed by onRetryAttempt() so that each extra HTTP
      * request a retry makes is metered against the same buckets as the first.
      *
-     * @var (Closure(): void)|null
+     * @var (Closure(bool): void)|null
      */
     private ?Closure $retryQuotaConsumer = null;
 
@@ -346,7 +347,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             return;
         }
 
-        ($this->retryQuotaConsumer)();
+        ($this->retryQuotaConsumer)($this->attemptDelivered);
     }
 
     /**
@@ -367,20 +368,35 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *                                        has no room (RateLimiter::ensureAvailable())
      *
      * @throws RateLimitExceededException When a cap is already exhausted
+     * @throws RequestNotSentException When the limiter's cache store fails
      */
     private function meterCall(?Closure $perEndpoint = null, ?Closure $peek = null): void
     {
-        $meter = function () use ($perEndpoint, $peek): void {
-            if ($peek !== null) {
-                $peek();
-            }
+        $meter = function (bool $afterDelivery = false) use ($perEndpoint, $peek): void {
+            try {
+                if ($peek !== null) {
+                    $peek();
+                }
 
-            $this->rateLimiter->checkGlobal();
+                $this->rateLimiter->checkGlobal();
 
-            // shortcut: a concurrent call can take the bucket's last unit between the peek
-            // and here, spending this call's global unit; closing it needs a lock across buckets.
-            if ($perEndpoint !== null) {
-                $perEndpoint();
+                // shortcut: a concurrent call can take the bucket's last unit between the peek
+                // and here, spending this call's global unit; closing it needs a lock across buckets.
+                if ($perEndpoint !== null) {
+                    $perEndpoint();
+                }
+            } catch (RateLimitExceededException|\LogicException $e) {
+                // The limiter's own refusal, or a programming error: not a transport failure.
+                throw $e;
+            } catch (\Exception $e) {
+                // The limiter's cache store failed. Metering runs before the request (or retry)
+                // it counts, so that request was never sent; but an earlier attempt of a read
+                // may have reached ANAF, and then the call was sent (uploads never get here).
+                if ($afterDelivery) {
+                    throw $e;
+                }
+
+                throw new RequestNotSentException('Rate limit metering failed before the request was sent: '.$e->getMessage(), $e);
             }
         };
 
@@ -679,10 +695,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *
      * @throws RateLimitExceededException When rate limit is exceeded
      */
-    public function verifySignature(string $xml): ValidationResultData
+    public function verifySignature(string $xml, string $signature): ValidationResultData
     {
         // Validate first - fail fast without consuming rate limit quota
         $this->validateXmlContent($xml);
+        $this->validateXmlContent($signature);
 
         // Metered globally only - see validateXml().
         $this->meterCall();
@@ -692,9 +709,26 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.verify_signature');
         }
 
-        $response = $this->authenticatedXmlRequestToUrl($verifyUrl, 'POST', $xml);
+        // ANAF reads two multipart files: "file" (the invoice XML) and "signature" (the XML
+        // holding its signature), both from the descarcare archive.
+        $boundary = bin2hex(random_bytes(16));
+        $body = '';
+        foreach (['file' => $xml, 'signature' => $signature] as $name => $content) {
+            $body .= "--{$boundary}\r\nContent-Disposition: form-data; name=\"{$name}\"; filename=\"{$name}.xml\"\r\n"
+                ."Content-Type: application/xml\r\n\r\n{$content}\r\n";
+        }
+        $body .= "--{$boundary}--\r\n";
 
-        return $this->parseValidationResponse($response);
+        $response = $this->authenticatedXmlRequestToUrl($verifyUrl, 'POST', $body, contentType: "multipart/form-data; boundary={$boundary}");
+
+        $result = $this->parseValidationResponse($response);
+
+        // ANAF documents no answer for this service: keep its text when the validare parser read nothing.
+        if (! $result->valid && $result->details === null && $result->info === null && $result->errors === null) {
+            $result->details = mb_strcut($response->body(), 0, 500, 'UTF-8');
+        }
+
+        return $result;
     }
 
     /**
@@ -798,8 +832,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * ANAF uses rotating refresh tokens - once used, old tokens are invalidated.
      *
      * The lock ensures only one process refreshes the token at a time. A process that
-     * cannot get the lock within the wait time throws AuthenticationException (code 0)
-     * instead of using its old token.
+     * cannot get the lock within the wait time, or whose lock store fails, throws
+     * AuthenticationException (code 0) instead of using its old token.
      *
      * @throws AuthenticationException When token refresh fails
      */
@@ -807,9 +841,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     {
         // Fail fast if a previous refresh attempt failed - prevents cascading failures
         // in long-running processes. Create a new client instance with fresh credentials.
-        if ($this->tokenRefreshFailed) {
+        // Keeps the original code (0 = transport/configuration, 400/401 = grant refused).
+        if ($this->tokenRefreshFailure !== null) {
             throw new AuthenticationException(
-                'Token refresh previously failed. Create a new client instance with valid credentials.'
+                'Token refresh previously failed. Create a new client instance with valid credentials.',
+                $this->tokenRefreshFailure->getCode(),
+                $this->tokenRefreshFailure
             );
         }
 
@@ -820,28 +857,37 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         // Use distributed lock to prevent concurrent token refresh attempts
         // This is critical because ANAF invalidates refresh tokens after use
         $lockKey = "efactura:token_refresh:{$this->vatNumber}";
-        // The lock must outlive the refresh request: one that expires mid-request
-        // lets another worker spend the same rotating refresh token.
-        $lock = Cache::lock($lockKey, (int) ceil(static::getTimeoutDuration()) + self::TOKEN_REFRESH_LOCK_MARGIN_SECONDS);
 
+        // Acquired outside the try/finally below: a lock we never got is not released.
         try {
-            try {
-                $lock->block($this->getLockWaitSeconds());
-            } catch (LockTimeoutException $e) {
-                // Only our own lock wait: a persister's LockTimeoutException must reach
-                // the caller as itself. Another process is likely refreshing - fail fast
-                // rather than use a stale token (ANAF rotates refresh tokens).
-                $this->logger->error('Could not acquire token refresh lock, token may be stale', [
-                    'vatNumber' => $this->vatNumber,
-                ]);
+            // The lock must outlive the refresh request: one that expires mid-request
+            // lets another worker spend the same rotating refresh token.
+            $lock = Cache::lock($lockKey, (int) ceil(static::getTimeoutDuration()) + self::TOKEN_REFRESH_LOCK_MARGIN_SECONDS);
+            $lock->block($this->getLockWaitSeconds());
+        } catch (LockTimeoutException $e) {
+            // Only our own lock wait: a persister's LockTimeoutException must reach
+            // the caller as itself. Another process is likely refreshing - fail fast
+            // rather than use a stale token (ANAF rotates refresh tokens).
+            $this->logger->error('Could not acquire token refresh lock, token may be stale', [
+                'vatNumber' => $this->vatNumber,
+            ]);
 
-                throw new AuthenticationException(
-                    'Token refresh lock timeout. Another process may be refreshing the token. Please retry.',
-                    0,
-                    $e
-                );
+            throw new AuthenticationException(
+                'Token refresh lock timeout. Another process may be refreshing the token. Please retry.',
+                0,
+                $e
+            );
+        } catch (\Exception $e) {
+            // The lock's cache store failed (Redis down, ...). Nothing was sent. A store can
+            // fail after taking the lock, so let go of it if we hold it.
+            if (isset($lock)) {
+                $this->releaseQuietly($lock);
             }
 
+            throw new AuthenticationException('Token refresh lock unavailable: '.$e->getMessage(), 0, $e);
+        }
+
+        try {
             // Re-read the persisted tokens now that we hold the lock. Whoever held it
             // before us may have refreshed and rotated them, which would leave our
             // in-memory refreshToken already spent. Without this the re-check below
@@ -861,8 +907,18 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
             return $this->accessToken;
         } finally {
-            // Safe to call - Laravel's lock tracks ownership and won't release others' locks
+            // Laravel's lock tracks ownership and won't release others' locks. A failing store
+            // must not replace the refresh's own outcome; the lock then expires on its TTL.
+            $this->releaseQuietly($lock);
+        }
+    }
+
+    private function releaseQuietly(Lock $lock): void
+    {
+        try {
             $lock->release();
+        } catch (\Exception) {
+            // Swallowed on purpose: see the callers.
         }
     }
 
@@ -878,7 +934,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * side: the caller persists only after the call returns (see the class
      * docblock's `wasTokenRefreshed()` pattern), so between our refresh and their
      * write the store still holds the pair we just spent. Adopting it there would
-     * re-spend a dead refresh token, fail, and latch $tokenRefreshFailed -- killing
+     * re-spend a dead refresh token, fail, and latch $tokenRefreshFailure -- killing
      * every later call on this client. Comparing expiry keeps both cases right:
      * a worker that rotated after us has a strictly later expiry and still wins.
      *
@@ -991,7 +1047,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         } catch (AuthenticationException $e) {
             // Mark refresh as failed to prevent cascading failures on subsequent calls
             // The client must be recreated with fresh credentials to recover
-            $this->tokenRefreshFailed = true;
+            $this->tokenRefreshFailure = $e;
 
             $this->logger->error('Failed to refresh ANAF access token', [
                 'vatNumber' => $this->vatNumber,
@@ -1004,15 +1060,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     /**
      * Make an authenticated request to the API.
      *
-     * @param  array<string, mixed>  $data
-     *
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
      */
     private function authenticatedRequest(
         string $route,
         string $method,
-        array $data = [],
         bool $expectBinary = false
     ): Response {
         $token = $this->getValidAccessToken();
@@ -1027,7 +1080,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         }
 
         try {
-            return $this->call($route, $method, $data, $headers);
+            return $this->call($route, $method, [], $headers);
         } catch (ApiException $e) {
             // The only 401 gate. call() throws on every non-2xx, so a 401 arrives here
             // as an ApiException and never as a returned Response.
@@ -1053,7 +1106,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         string $route,
         string $method,
         string $xmlBody,
-        bool $expectBinary = false,
         bool $idempotent = true
     ): Response {
         $token = $this->getValidAccessToken();
@@ -1062,10 +1114,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             'Authorization' => 'Bearer '.$token,
             'Content-Type' => 'application/xml',
         ];
-
-        if ($expectBinary) {
-            $headers['Accept'] = 'application/octet-stream, application/zip, application/json';
-        }
 
         try {
             return $this->callRaw($route, $method, $xmlBody, 'application/xml', $headers, $idempotent);
@@ -1093,19 +1141,21 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         string $fullUrl,
         string $method,
         string $xmlBody,
-        bool $expectBinary = false
+        bool $expectBinary = false,
+        string $contentType = 'text/plain'
     ): Response {
         $token = $this->getValidAccessToken();
 
         $headers = [
             'Authorization' => 'Bearer '.$token,
-            'Content-Type' => 'text/plain',
+            'Content-Type' => $contentType,
             'Accept' => $expectBinary ? 'application/pdf, application/json' : 'application/json',
         ];
 
         try {
-            // Use full URL directly instead of base URL + route
-            return $this->requestToFullUrl($fullUrl, $method, $xmlBody, 'text/plain', $headers);
+            // An absolute URL passes through getRequestUrl(). Idempotent: these services are
+            // stateless functions of the posted XML, so a retry cannot file anything.
+            return $this->callRaw($fullUrl, $method, $xmlBody, $contentType, $headers);
         } catch (ApiException $e) {
             // The only 401 gate - see authenticatedRequest().
             if ($e->statusCode === 401) {
@@ -1118,101 +1168,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             }
             throw $e;
         }
-    }
-
-    /**
-     * Make a raw request to a full URL (bypassing base URL).
-     *
-     * Retries unconditionally, unlike call()/callRaw(): the only callers are the
-     * validate, verify-signature and transform services, which are pure
-     * stateless functions of the posted XML. Nothing is filed, so re-sending
-     * cannot duplicate anything.
-     *
-     * @param  array<string, string>  $headers
-     *
-     * @throws ApiException
-     */
-    private function requestToFullUrl(
-        string $fullUrl,
-        string $method,
-        string $body,
-        string $contentType,
-        array $headers,
-        int $tryCount = 0
-    ): Response {
-        $tryCount++;
-        $startTime = Carbon::now();
-        $context = fn () => [
-            'url' => $fullUrl,
-            'bodyLength' => strlen($body),
-            'contentType' => $contentType,
-            'duration' => $this->lastRequestDurationMilliseconds,
-            'tryCount' => $tryCount,
-        ];
-
-        try {
-            $request = Http::timeout(static::getTimeoutDuration());
-            $request->withHeaders($headers);
-
-            $response = $request->withBody($body, $contentType)->$method($fullUrl);
-
-            $endTime = Carbon::now();
-            $timeDiff = $startTime->diffInMilliseconds($endTime);
-            $this->lastRequestDurationMilliseconds = $timeDiff;
-
-            $this->logger->debug(
-                sprintf(
-                    '%s %s. Response %s. Duration: %d ms.',
-                    strtoupper($method),
-                    $fullUrl,
-                    $response->status(),
-                    $timeDiff
-                ),
-                $context()
-            );
-        } catch (\Exception $exception) {
-            // Calculate duration for failed requests so logging is accurate
-            $this->lastRequestDurationMilliseconds = $startTime->diffInMilliseconds(Carbon::now());
-
-            $this->logger->error(
-                "Exception before response was received: {$exception->getMessage()}.",
-                $context()
-            );
-
-            if ($tryCount < $this->getMaxTryCount()) {
-                sleep($this->getRetryDelay());
-                $this->onRetryAttempt();
-
-                return $this->requestToFullUrl($fullUrl, $method, $body, $contentType, $headers, $tryCount);
-            }
-
-            throw new ApiException(
-                $exception->getMessage(),
-                500,
-                null,
-                $exception,
-                $context()
-            );
-        }
-
-        if (! $response->successful()) {
-            if ($tryCount < $this->getMaxTryCount() && $this->isRetryable($response)) {
-                sleep($this->getRetryDelay());
-                $this->onRetryAttempt();
-
-                return $this->requestToFullUrl($fullUrl, $method, $body, $contentType, $headers, $tryCount);
-            }
-
-            throw new ApiException(
-                $this->extractErrorMessage($response),
-                $response->status() >= 500 ? 502 : $response->status(),
-                $response->body(),
-                null,
-                $context()
-            );
-        }
-
-        return $response;
     }
 
     /**

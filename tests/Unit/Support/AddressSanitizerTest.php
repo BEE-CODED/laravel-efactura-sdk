@@ -2,7 +2,34 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
+use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Support\AddressSanitizer;
+
+describe('canonicalize', function () {
+    it('returns the county and city a UBL address files', function (array $address, array $expected) {
+        expect(AddressSanitizer::canonicalize(new AddressData('Str. 1', ...$address)))->toBe($expected);
+    })->with([
+        'RO county name' => [['city' => 'Cluj-Napoca', 'county' => 'Cluj'], ['county' => 'RO-CJ', 'city' => 'Cluj-Napoca']],
+        'explicit sector wins' => [['city' => 'Bucuresti', 'county' => 'Municipiul Bucuresti', 'bucharestSector' => 5], ['county' => 'RO-B', 'city' => 'SECTOR5']],
+        'sector in the city' => [['city' => 'Sectorul 2', 'county' => 'B'], ['county' => 'RO-B', 'city' => 'SECTOR2']],
+        'sector in the county' => [['city' => 'Bucuresti', 'county' => 'Sector 6'], ['county' => 'RO-B', 'city' => 'SECTOR6']],
+        'foreign B kept' => [['city' => 'Barcelona', 'county' => 'B', 'countryCode' => 'ES'], ['county' => 'B', 'city' => 'Barcelona']],
+        'foreign sector kept' => [['city' => 'Chisinau', 'county' => 'Sect. 4', 'countryCode' => 'MD'], ['county' => 'Sect. 4', 'city' => 'Chisinau']],
+        'foreign without county' => [['city' => 'Berlin', 'countryCode' => 'DE'], ['county' => null, 'city' => 'Berlin']],
+    ]);
+
+    it('refuses what ANAF would reject or what contradicts itself', function (array $address, string $message) {
+        expect(fn () => AddressSanitizer::canonicalize(new AddressData('Str. 1', ...$address)))
+            ->toThrow(ValidationException::class, $message);
+    })->with([
+        'Bucharest without a sector' => [['city' => 'Bucuresti', 'county' => 'Bucuresti'], 'needs its sector'],
+        'unknown RO county' => [['city' => 'X', 'county' => 'Atlantis'], 'could not be mapped'],
+        'sector out of range' => [['city' => 'Bucuresti', 'county' => 'B', 'bucharestSector' => 7], 'bucharestSector must be 1 to 6'],
+        'sector outside Bucharest' => [['city' => 'Cluj-Napoca', 'county' => 'Cluj', 'bucharestSector' => 1], 'bucharestSector must be 1 to 6'],
+        'sector on a foreign address' => [['city' => 'Paris', 'county' => 'B', 'countryCode' => 'FR', 'bucharestSector' => 1], 'bucharestSector must be 1 to 6'],
+    ]);
+});
 
 describe('normalizeDiacritics', function () {
     it('converts lowercase Romanian diacritics', function () {

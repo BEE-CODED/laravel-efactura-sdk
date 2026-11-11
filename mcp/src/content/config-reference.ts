@@ -98,7 +98,9 @@ A **read** is retried when the transport fails outright or ANAF answers with sta
 
 > **Uploads are NOT covered by this key (since v3.0.0).** \`uploadDocument()\` / \`uploadB2CDocument()\`
 > are non-idempotent and auto-retry only on transport errors that provably happened *before* the
-> request left the machine (cURL errno 5, 6, 7, 35). A 5xx, a read timeout, or an unclassifiable
+> request left the machine (cURL errno 5, 6, 7, 35, or a connect-phase timeout: errno 28 with
+> \`pretransfer_time\` 0 and \`request_size\` 0); once spent, these throw \`RequestNotSentException\`.
+> A 5xx, a read timeout, or an unclassifiable
 > transport error raises \`ApiException\` on the **first** attempt, no matter what \`retry_times\` says
 > — ANAF issues a fresh \`index_incarcare\` per accepted POST, so a blind retry files the invoice
 > twice. See the \`migration-v2-v3\` topic.
@@ -146,6 +148,9 @@ The Laravel logging channel to use for SDK log messages. Add a matching channel 
 ],
 \`\`\`
 
+If the channel is not defined, the SDK defines it at boot as a \`stack\` over your
+\`logging.default\` channel (since 4.0). A failing log handler never fails an ANAF call.
+
 ### \`logging.debug\`
 
 | | |
@@ -189,7 +194,7 @@ Additional ANAF web service endpoints:
 |---|---|---|
 | \`validate\` | \`https://webservicesp.anaf.ro/prod/FCTEL/rest/validare\` | Validate UBL XML before upload |
 | \`transform\` | \`https://webservicesp.anaf.ro/prod/FCTEL/rest/transformare\` | Convert XML to PDF |
-| \`verify_signature\` | \`https://webservicesp.anaf.ro/prod/FCTEL/rest/verificare-semnatura\` | Verify digital signatures |
+| \`verify_signature\` | \`https://webservicesp.anaf.ro/api/validate/signature\` | Verify the signature on a downloaded invoice (multipart \`file\` + \`signature\`; 4.0, was \`/prod/FCTEL/rest/verificare-semnatura\`) |
 
 ### \`endpoints.company_lookup\`
 
@@ -309,7 +314,7 @@ Maximum invoice XML downloads per message ID per day.
 | **ANAF official limit** | 1/second |
 | **Valid range** | 1 – 1 (the default already matches ANAF's cap) |
 
-Maximum company-lookup (\`PlatitorTvaRest\`) requests per second, enforced by \`AnafDetailsClient\`. Unlike the other rate limits, the default is **100% of ANAF's limit**, not 50% — ANAF's cap is already 1/second and there is no lower positive integer. The bucket is a **single global one**: the limit is per request, not per CUI, so a 100-CUI batch consumes exactly one unit. Exceeding it throws \`RateLimitExceededException\`.
+Maximum company-lookup (\`PlatitorTvaRest\`) requests per second, enforced by \`AnafDetailsClient\`. Unlike the other rate limits, the default is **100% of ANAF's limit**, not 50% — ANAF's cap is already 1/second and there is no lower positive integer. The bucket is a **single global one**: the limit is per request, not per CUI, so a 100-CUI batch consumes exactly one unit. Exceeding it throws \`RateLimitExceededException\`. Counted over a 2-second window (since 4.0), so stores that expire keys at whole seconds still keep lookups at least 1 s apart; \`retryAfterSeconds\` is 1–2. A value N above 1 allows N lookups per 2 s, not per second.
 
 ---
 

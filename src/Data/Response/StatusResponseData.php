@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Response;
 
+use BeeCoded\EFacturaSdk\Enums\StatusVerdict;
 use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
 use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Spatie\LaravelData\Data;
@@ -128,5 +129,24 @@ class StatusResponseData extends Data
     public function hasAnafError(): bool
     {
         return $this->stare === null && ! empty($this->errors);
+    }
+
+    /**
+     * What this answer means for the document. Ready and Rejected require a download id
+     * of 1 to 64 digits; with any other id (or none) they are ...WithoutDownloadId, which
+     * is no verdict on the document.
+     */
+    public function verdict(): StatusVerdict
+    {
+        $downloadId = $this->idDescarcare !== null && preg_match('/\A[0-9]{1,64}\z/', $this->idDescarcare) === 1;
+
+        return match (true) {
+            $this->isNotProcessed() => StatusVerdict::NotProcessed,
+            $this->isInProgress() => StatusVerdict::InProgress,
+            $this->isReady() => $downloadId ? StatusVerdict::Ready : StatusVerdict::ReadyWithoutDownloadId,
+            $this->isFailed() => $downloadId ? StatusVerdict::Rejected : StatusVerdict::RejectedWithoutDownloadId,
+            $this->hasAnafError() => StatusVerdict::AnafError,
+            default => StatusVerdict::Unknown,
+        };
     }
 }

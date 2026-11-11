@@ -13,6 +13,10 @@ use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
  * (skip that message, carry on) from a global one (stop the batch). The SDK's
  * RateLimiter always sets it; it is null only when other code throws this
  * exception without one.
+ *
+ * $fromProvider is true when ANAF itself refused the call (an HTTP 429 on the
+ * company lookup) rather than the SDK's own limiter: the request reached ANAF,
+ * and retryAfterSeconds is the SDK's estimate, not a value ANAF sent.
  */
 class RateLimitExceededException extends EFacturaException
 {
@@ -26,6 +30,7 @@ class RateLimitExceededException extends EFacturaException
         ?\Throwable $previous = null,
         array $context = [],
         public readonly ?RateLimitScope $scope = null,
+        public readonly bool $fromProvider = false,
     ) {
         parent::__construct($message, 429, $previous, $context);
     }

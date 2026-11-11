@@ -3,9 +3,12 @@
 declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
+use BeeCoded\EFacturaSdk\Data\Invoice\DeliveryData;
+use BeeCoded\EFacturaSdk\Data\Invoice\ExemptionReasonData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceData;
 use BeeCoded\EFacturaSdk\Data\Invoice\InvoiceLineData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PartyData;
+use BeeCoded\EFacturaSdk\Data\Invoice\PrecedingInvoiceData;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use BeeCoded\EFacturaSdk\Enums\TaxCategoryId;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
@@ -288,10 +291,10 @@ describe('getTotalVat', function () {
         expect($invoice->getTotalVat())->toBe(19.00);
     });
 
-    it('sums lines with floating-point precision differences in tax rate', function () {
+    it('groups the same rate given as a float and as a string', function () {
         $lines = [
             new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.0),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.001),
+            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: '19.00'),
         ];
         $invoice = createTestInvoice($lines);
 
@@ -299,27 +302,14 @@ describe('getTotalVat', function () {
         expect($invoice->getTotalVat())->toBe(38.00);
     });
 
-    it('sums lines with rates that round to same 2-decimal value', function () {
-        $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.001),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.004),
-        ];
-        $invoice = createTestInvoice($lines);
+    // X6: a rate is filed with 2 decimals, so a finer rate is refused instead of being rounded.
+    it('refuses a rate finer than 2 decimals', function (float|string $rate) {
+        $invoice = createTestInvoice([
+            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: $rate),
+        ]);
 
-        // 19.00 + 19.00 = 38.00
-        expect($invoice->getTotalVat())->toBe(38.00);
-    });
-
-    it('keeps different tax amounts separate when rates round to different values', function () {
-        $lines = [
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.004),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.01, taxPercent: 19.006),
-        ];
-        $invoice = createTestInvoice($lines);
-
-        // 19.00 + 19.01 = 38.01
-        expect($invoice->getTotalVat())->toBe(38.01);
-    });
+        expect(fn () => $invoice->getTotalVat())->toThrow(ValidationException::class, 'taxPercent');
+    })->with([19.001, 19.004, '19.006']);
 
     // The filed XML rounds VAT once PER TAX-RATE GROUP (each cac:TaxSubtotal
     // carries its own cbc:TaxAmount) and the document total BT-110 is the sum of
@@ -702,30 +692,62 @@ describe('InvoiceData optional payable rounding compatibility', function () {
                     expect($invoice->toArray())->toBe($legacy->toArray())
                         ->and($invoice->toJson())->toBe($legacy->toJson());
                 } else {
-                    expect($invoice->toArray()['payableRoundingAmount'])->toBe(round($rounding, 2))
+                    // X6: the caller's value is serialized as given, never normalised.
+                    expect($invoice->toArray()['payableRoundingAmount'])->toBe($rounding)
                         ->and(array_keys($invoice->toArray()))->toBe([...array_keys($legacy->toArray()), 'payableRoundingAmount']);
                 }
                 expect(InvoiceData::from(json_decode($invoice->toJson(), true, flags: JSON_THROW_ON_ERROR))->toArray())->toBe($invoice->toArray());
             }
         }
-        expect(array_keys(InvoiceData::getValidationRules([])))->not->toContain('payableRoundingAmount');
+        // X6 replaces the inferred rules with explicit numeric ones.
+        $rules = InvoiceData::getValidationRules([...$legacy->toArray(), 'taxAmountRon' => null, 'payableRoundingAmount' => '0.01']);
+        expect($rules['taxAmountRon'])->toBe(['nullable', 'numeric'])
+            ->and($rules['payableRoundingAmount'])->toBe(['nullable', 'numeric']);
     });
 
-    it('rejects invalid rounding across construction hydration and mutation consumers', function (float $rounding) {
+    it('rejects invalid rounding on every consuming path, never at construction', function (float|string $rounding) {
         $legacy = createTestInvoice();
         $payload = [...$legacy->toArray(), 'payableRoundingAmount' => $rounding];
-        expect(fn () => new InvoiceData(
+        $direct = new InvoiceData(
             invoiceNumber: $legacy->invoiceNumber, issueDate: $legacy->issueDate,
             supplier: $legacy->supplier, customer: $legacy->customer, lines: $legacy->lines,
             payableRoundingAmount: $rounding,
-        ))->toThrow(ValidationException::class);
-        expect(fn () => InvoiceData::from($payload))->toThrow(ValidationException::class);
-        expect(fn () => InvoiceData::validateAndCreate($payload))->toThrow(ValidationException::class);
+        );
         $legacy->payableRoundingAmount = $rounding;
-        expect($legacy->getTotalIncludingVatBeforeRounding())->toBe(238.0);
-        expect(fn () => $legacy->getTotalIncludingVat())->toThrow(ValidationException::class);
-        expect(fn () => $legacy->toArray())->toThrow(ValidationException::class);
-    })->with([0.001, -0.015, 0.01000001, INF, -INF, NAN, PHP_FLOAT_MAX, 1e16]);
+        foreach ([$direct, InvoiceData::from($payload), $legacy] as $invoice) {
+            expect($invoice->getTotalIncludingVatBeforeRounding())->toBe(238.0);
+            expect(fn () => $invoice->getPayableRoundingAmount())->toThrow(ValidationException::class, 'payableRoundingAmount');
+            expect(fn () => $invoice->getTotalIncludingVat())->toThrow(ValidationException::class, 'payableRoundingAmount');
+            expect(fn () => $invoice->toArray())->toThrow(ValidationException::class, 'payableRoundingAmount');
+        }
+    })->with([0.001, -0.015, 0.01000001, INF, -INF, NAN, PHP_FLOAT_MAX, 1e16, '0.001', 'abc']);
+
+    it('validates and creates invoices from int, float, numeric-string and omitted amounts', function (mixed $ron, mixed $rounding, float $payable) {
+        $payload = createTestInvoice(overrides: ['currency' => 'EUR'])->toArray();
+        unset($payload['taxAmountRon'], $payload['payableRoundingAmount']);
+        if ($ron !== null) {
+            $payload['taxAmountRon'] = $ron;
+        }
+        if ($rounding !== null) {
+            $payload['payableRoundingAmount'] = $rounding;
+        }
+        $invoice = InvoiceData::validateAndCreate($payload);
+
+        expect($invoice->getTotalIncludingVat())->toBe($payable)
+            ->and(InvoiceData::validateAndCreate($invoice->toArray())->toArray())->toBe($invoice->toArray());
+    })->with([
+        'omitted nullable amounts' => [null, null, 238.0],
+        'int' => [190, 1, 239.0],
+        'float' => [189.5, 0.1 + 0.2, 238.3],
+        'numeric string' => ['189.50', '-0.04', 237.96],
+    ]);
+
+    it('refuses a negative percent at the data validation gate', function () {
+        $payload = createTestInvoice()->toArray();
+        $payload['lines'][0]['taxPercent'] = '-1';
+
+        expect(fn () => InvoiceData::validateAndCreate($payload))->toThrow(Illuminate\Validation\ValidationException::class);
+    });
 
     it('preserves legacy validation rules and outcomes for omitted input', function () {
         $payload = createTestInvoice()->toArray();
@@ -759,8 +781,8 @@ describe('InvoiceData optional payable rounding compatibility', function () {
         }
         $legacy = ['invoice' => $legacyFields];
         expect($invoice->transform($caller))->toBe($legacy);
-        $invoice->payableRoundingAmount = 0.1 + 0.2;
-        expect($invoice->transform($caller))->toBe(['invoice' => [...$legacyFields, 'payable_rounding_amount' => 0.3]]);
+        $invoice->payableRoundingAmount = '0.30';
+        expect($invoice->transform($caller))->toBe(['invoice' => [...$legacyFields, 'payable_rounding_amount' => '0.30']]);
         $invoice->payableRoundingAmount = null;
         expect($invoice->transform($caller))->toBe($legacy)
             ->and($useFactory ? $factory->get($invoice)->toArray() : $context->toArray())->toBe($before)
@@ -777,7 +799,7 @@ describe('explicit VAT categories in invoice totals', function () {
             new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
             new InvoiceLineData('Z', 1, 50, 0),
             new InvoiceLineData('S first', 1, 0.03, 0.005, taxPercent: 19),
-            new InvoiceLineData('S second', 1, 0.03, 0.005, taxPercent: 19.00000001),
+            new InvoiceLineData('S second', 1, 0.03, 0.005, taxPercent: '19.00'),
         ]);
         $array = $invoice->toArray();
         expect($array['lines'][0]['taxCategoryId'])->toBe('AE')
@@ -802,4 +824,42 @@ describe('explicit VAT categories in invoice totals', function () {
         expect(fn () => $invoice->getTotalVat())->toThrow(ValidationException::class, 'exactly zero raw');
         expect(fn () => $invoice->getTotalIncludingVat())->toThrow(ValidationException::class, 'exactly zero raw');
     })->with(['hydrated', 'mutated']);
+});
+
+describe('4.0 references, notes, delivery and exemption reasons', function () {
+    it('leaves empty new keys out and round-trips every new key through from(toArray())', function () {
+        $legacy = createTestInvoice();
+        $full = new InvoiceData(
+            $legacy->invoiceNumber, $legacy->issueDate, $legacy->supplier, $legacy->customer, $legacy->lines,
+            precedingInvoices: [new PrecedingInvoiceData('F-1', CarbonImmutable::create(2026, 10, 1)), new PrecedingInvoiceData('F-2')],
+            notes: ['Prima nota', 'A doua nota'],
+            vatPointDateCode: '432',
+            delivery: new DeliveryData(Carbon::create(2026, 11, 5), new AddressData('Str. 1', 'Bucuresti', county: 'B', bucharestSector: 3)),
+            exemptionReasons: [new ExemptionReasonData(TaxCategoryId::Exempt, 'VATEX-EU-132', 'Scutit')],
+        );
+        $array = $full->toArray();
+
+        expect(array_keys($legacy->toArray()))->not->toContain('precedingInvoices', 'notes', 'vatPointDateCode', 'delivery', 'exemptionReasons')
+            ->and(array_keys($legacy->toArray()['supplier']['address']))->not->toContain('bucharestSector')
+            ->and(array_slice(array_keys($array), -5))->toBe(['precedingInvoices', 'notes', 'vatPointDateCode', 'delivery', 'exemptionReasons'])
+            ->and($array['delivery']['address']['bucharestSector'])->toBe(3)
+            ->and($array['exemptionReasons'][0])->toBe(['category' => 'E', 'code' => 'VATEX-EU-132', 'text' => 'Scutit'])
+            ->and(InvoiceData::from($array)->toArray())->toBe($array)
+            ->and(InvoiceData::validateAndCreate($array)->toArray())->toBe($array)
+            ->and(InvoiceData::from(json_decode($full->toJson(), true, flags: JSON_THROW_ON_ERROR))->toArray())->toBe($array)
+            ->and((new DeliveryData(Carbon::create(2026, 11, 5)))->toArray())->toHaveKeys(['actualDeliveryDate'])
+            ->and(array_keys((new DeliveryData(Carbon::create(2026, 11, 5)))->toArray()))->toBe(['actualDeliveryDate']);
+    });
+
+    it('resolves the deprecated precedingInvoiceNumber alias at consumption', function () {
+        $alias = createTestInvoice();
+        $alias->precedingInvoiceNumber = 'F-1';
+
+        expect(array_map(fn (PrecedingInvoiceData $reference) => $reference->number, $alias->getPrecedingInvoices()))->toBe(['F-1'])
+            ->and($alias->toArray()['precedingInvoiceNumber'])->toBe('F-1')
+            ->and(InvoiceData::from($alias->toArray())->getPrecedingInvoices()[0]->number)->toBe('F-1');
+
+        $alias->precedingInvoices = [new PrecedingInvoiceData('F-2')];
+        expect(fn () => $alias->getPrecedingInvoices())->toThrow(ValidationException::class, 'deprecated');
+    });
 });

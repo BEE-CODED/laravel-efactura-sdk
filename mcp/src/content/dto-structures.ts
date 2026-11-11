@@ -18,10 +18,34 @@ Complete invoice data for e-Factura submission. Extends \`Spatie\\LaravelData\\D
 | \`$currency\` | \`string\` | no | \`'RON'\` | Currency code (ISO 4217) |
 | \`$paymentIban\` | \`?string\` | no | \`null\` | IBAN for payment |
 | \`$invoiceTypeCode\` | \`?InvoiceTypeCode\` | no | \`null\` | Type of invoice — resolved via \`getInvoiceTypeCode()\` which defaults to \`CommercialInvoice\` |
-| \`$precedingInvoiceNumber\` | \`?string\` | no | \`null\` | Preceding invoice number for credit notes (BT-25, used in BillingReference element) |
-| \`$taxAmountRon\` | \`?float\` | conditional | \`null\` | Total VAT expressed in RON (BT-111). **Required when \`$currency\` is not \`'RON'\`, and rejected when it is.** See below |
+| \`$precedingInvoiceNumber\` | \`?string\` | no | \`null\` | **Deprecated (4.0)** alias of a single \`$precedingInvoices\` entry (BT-25). Alone it is one reference; with \`$precedingInvoices\` it must name its only entry |
+| \`$taxAmountRon\` | \`float\|string\|null\` | conditional | \`null\` | Total VAT expressed in RON (BT-111, at most 2 decimals). **Required when \`$currency\` is not \`'RON'\`, and rejected when it is.** Exactly zero when no line is standard-rated. See below |
 | \`$taxPointDate\` | \`CarbonInterface\|string\|null\` | no | \`null\` | Optional VAT applicability date (BT-7); existing argument position is unchanged |
-| \`$payableRoundingAmount\` | \`?float\` | no | \`null\` | Signed payable rounding in document currency (BT-114), appended after existing parameters |
+| \`$payableRoundingAmount\` | \`float\|string\|null\` | no | \`null\` | Signed payable rounding in document currency (BT-114, at most 2 decimals), appended after existing parameters |
+| \`$precedingInvoices\` | \`list<PrecedingInvoiceData>\` | no | \`[]\` | BG-3 references \`{string $number, Carbon\|string\|null $issueDate}\`: at most 500, non-blank numbers of at most 200 characters; \`issueDate\` files BT-26; a blank or unparseable \`issueDate\` is refused with \`ValidationException\` (\`preceding_invoice_issue_date_invalid\`) |
+| \`$notes\` | \`list<string>\` | no | \`[]\` | Invoice notes (BT-22): at most 20, each non-blank and at most 300 characters |
+| \`$vatPointDateCode\` | \`?string\` | no | \`null\` | VAT point date code (BT-8): \`'3'\`, \`'35'\` or \`'432'\`; never together with \`$taxPointDate\` (BR-CO-03) |
+| \`$delivery\` | \`?DeliveryData\` | no | \`null\` | \`{Carbon\|string\|null $actualDeliveryDate, ?AddressData $address}\` (BG-13). The address needs street, city and county in every country. Required, with both, for VAT category K. A blank or unparseable \`actualDeliveryDate\` (BT-72) is refused with \`ValidationException\` (\`actual_delivery_date_invalid\`) |
+| \`$exemptionReasons\` | \`list<ExemptionReasonData>\` | no | \`[]\` | \`{TaxCategoryId $category, ?string $code, ?string $text}\`, one per category E, G, K or AE — see InvoiceLineData |
+
+The five 4.0 additions are appended to the constructor and left out of \`toArray()\`/\`toJson()\`
+when empty or \`null\`, so existing payloads and XML are unchanged. \`getPrecedingInvoices()\`
+returns the references the builder files, resolving the deprecated alias.
+
+Amounts (\`$taxAmountRon\`, \`$payableRoundingAmount\` and the line amounts) are \`float|string\`, kept
+as given and read as exact decimals where used: a value with more decimals than it is filed with,
+a non-finite float or a float past 2^46 (2 decimals) / 2^33 (6 decimals) throws
+\`ValidationException\` naming the field. Pass decimal strings for exact or large figures. Explicit
+rules: \`taxAmountRon\` and \`payableRoundingAmount\` are \`nullable|numeric\`.
+
+Build \`issueDate\` (and the other dates) in \`Europe/Bucharest\` (\`DateHelper::ANAF_TIMEZONE\`): they
+are filed as calendar dates, and \`now()\` on a UTC server is still the previous day between midnight
+and 02:00/03:00 Bucharest time.
+
+The builder refuses an Invoice (not a credit note) with a positive amount due and no \`$dueDate\`
+(BR-CO-25), currency codes that are not three uppercase letters, blank required fields, and text
+that is not valid UTF-8 or contains characters XML 1.0 cannot carry (the message names the field,
+e.g. \`lines.0.name\`).
 
 ## Optional VAT applicability date
 
@@ -135,17 +159,18 @@ Returns the existing \`getTotalExcludingVat() + getTotalVat()\` calculation, rou
 
 ## Optional payable rounding
 
-\`InvoiceData\` accepts \`?float $payableRoundingAmount = null\` after the existing constructor
+\`InvoiceData\` accepts \`float|string|null $payableRoundingAmount = null\` after the existing constructor
 parameters. It is a signed amount in the document currency, supplied by your accounting
 calculation; the SDK does not choose a rounding correction. No settings are required.
 
 - Omitted/null values preserve the existing XML and omit the field from serialized data.
 - Zero emits no \`PayableRoundingAmount\` element. A nonzero amount emits BT-114 immediately
   before \`PayableAmount\` (BT-115).
-- Supply a finite amount representable to cents, with absolute value below 2^46. This numeric
-  bound keeps adjacent cents distinguishable in a double. Meaningful sub-cent precision is rejected;
-  harmless binary floating-point noise is normalized. The helper and builder check the same
-  contract, including values assigned after construction or populated through Spatie hydration.
+- Supply an amount with at most 2 decimals: a string such as \`'0.01'\`, or a float within binary
+  noise of one, below 2^46. Anything finer, or non-finite, throws \`ValidationException\` naming
+  \`payableRoundingAmount\` where it is read (\`getPayableRoundingAmount()\`, \`getTotalIncludingVat()\`,
+  \`toArray()\`, the builder), including values assigned after construction or populated through
+  Spatie hydration. Construction does not check it, and \`toArray()\` returns the value as given.
 - \`getTotalIncludingVat()\` is the final payable amount: net plus VAT plus optional rounding.
   Existing payment consumers can retain their calls when using rounding.
 - \`getTotalIncludingVatBeforeRounding()\` returns net plus VAT (BT-112), excluding rounding.
@@ -165,7 +190,7 @@ of the optional tax applicability date; neither field is required to use the oth
 
 ## Usage Notes
 
-- **Credit notes:** Set \`$invoiceTypeCode = InvoiceTypeCode::CreditNote\` and provide \`$precedingInvoiceNumber\` (the original invoice number being credited). The builder uses \`precedingInvoiceNumber\` to populate the UBL \`BillingReference\` element (BT-25).
+- **Credit notes:** Set \`$invoiceTypeCode = InvoiceTypeCode::CreditNote\` and provide \`$precedingInvoices\` (the original invoices being credited). Each becomes a UBL \`BillingReference\` (BT-25, BT-26). The deprecated \`$precedingInvoiceNumber\` still works for a single reference.
 - If \`$invoiceTypeCode\` is \`null\` (omitted), the builder treats the document as a standard commercial invoice (code \`380\`).
 - \`$currency\` defaults to \`'RON'\`. For EUR invoices pass \`'EUR'\` — and you must then also pass \`$taxAmountRon\` (see above), or \`buildInvoiceXml()\` throws a \`ValidationException\`.
 
@@ -194,7 +219,7 @@ $creditNote = new InvoiceData(
     customer: $customerParty,
     lines: [$creditLine],
     invoiceTypeCode: InvoiceTypeCode::CreditNote,
-    precedingInvoiceNumber: 'INV-2024-001',
+    precedingInvoices: [new PrecedingInvoiceData('INV-2024-001', '2024-01-15')],
 );
 \`\`\`
 `,
@@ -210,18 +235,21 @@ Invoice line item data. Extends \`Spatie\\LaravelData\\Data\`.
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | \`$name\` | \`string\` | yes | — | Product or service name |
-| \`$quantity\` | \`float\` | yes | — | Quantity of items. Can be negative for credit notes/corrective invoices. Filed with **2–6 decimals** — see Precision below. |
-| \`$unitPrice\` | \`float\` | yes | — | Unit price (excluding VAT). Filed with **2–6 decimals** — see Precision below. |
-| \`$taxAmount\` | \`float\` | yes | — | **Pre-computed tax amount for this line** (v2.0 breaking change — now required, no default) |
+| \`$quantity\` | \`float\|string\` | yes | — | Quantity of items. Can be negative for credit notes/corrective invoices. At most **6 decimals** — see Precision below. |
+| \`$unitPrice\` | \`float\|string\` | yes | — | Unit price (excluding VAT). At most **6 decimals** — see Precision below. |
+| \`$taxAmount\` | \`float\|string\` | yes | — | **Pre-computed tax amount for this line**, at most 6 decimals (v2.0 breaking change — now required, no default) |
 | \`$id\` | \`string\|int\|null\` | no | \`null\` | Line item identifier (auto-generated by builder if null) |
 | \`$description\` | \`?string\` | no | \`null\` | Additional description |
 | \`$unitCode\` | \`string\` | no | \`'EA'\` | Unit of measure code (UN/ECE rec 20, e.g. \`'EA'\` = each, \`'KGM'\` = kilogram) |
-| \`$taxPercent\` | \`float\` | no | \`0\` | VAT percentage (e.g. \`19\` for 19%). Must be non-negative (\`#[Min(0)]\` validation). |
-| \`$taxCategoryId\` | \`?TaxCategoryId\` | no | \`null\` | Optional explicit category, appended after \`$taxPercent\`; \`ReverseCharge\` is \`AE\`. Null preserves supplier/rate inference. |
+| \`$taxPercent\` | \`float\|string\` | no | \`0.0\` | VAT percentage (e.g. \`19\` for 19%), at most 2 decimals. Must be non-negative. |
+| \`$taxCategoryId\` | \`?TaxCategoryId\` | no | \`null\` | Optional explicit category, appended after \`$taxPercent\`; \`ReverseCharge\` (AE), \`Exempt\` (E), \`Export\` (G) and \`IntraCommunitySupply\` (K) are opt-in only. Null preserves supplier/rate inference. |
 
 ## Validation
 
-- \`$taxPercent\` has a \`#[Min(0)]\` attribute from \`Spatie\\LaravelData\\Attributes\\Validation\\Min\`. Tax percent must be zero or positive.
+- Explicit \`rules()\`: \`taxPercent\` \`sometimes|numeric|min:0\`; \`quantity\`, \`unitPrice\`, \`taxAmount\`
+  \`required|numeric\` (a property with a default is skipped when absent from the payload). The
+  precision is checked where the amount is used: more decimals than filed, \`INF\`/\`NAN\`, or a float
+  past 2^33 (6 decimals) / 2^46 (2 decimals) throws \`ValidationException\` naming the field.
 - The builder rejects explicit \`Standard\` (S), \`ZeroRated\` (Z) or \`NotSubject\` (O) unless it
   agrees with the existing supplier/rate-derived category. O cannot coexist with other categories.
 - \`TaxCategoryId::ReverseCharge\` (AE) requires raw \`taxPercent === 0.0\` and raw
@@ -252,8 +280,25 @@ not constitute full external-profile validation.
 For AE the existing signs and currency contract remain: Invoice 380 preserves input signs,
 including negative 380, while CreditNote 381 negates quantities and amounts once. AE tax stays
 zero. RON invoices must omit \`taxAmountRon\`; non-RON invoices require it, including
-\`taxAmountRon: 0.0\` for an all-AE or AE/Z invoice. When AE is present without standard-rated
-lines, a nonzero RON VAT total is rejected.
+\`taxAmountRon: 0.0\` for any invoice without standard-rated lines; a nonzero RON VAT total is
+then rejected.
+
+## Exempt (E), export (G) and intra-community (K) categories
+
+\`TaxCategoryId::Exempt\`, \`Export\` and \`IntraCommunitySupply\` work like AE: opt-in, a
+VAT-registered supplier, exactly zero rate and tax, \`Percent\` \`0.00\`. Each VAT breakdown carries
+an exemption reason, set through \`InvoiceData::$exemptionReasons\` (one \`ExemptionReasonData\` per
+category):
+
+| Category | Code (BT-121) | Text (BT-120, ≤ 100) | Also requires |
+|---|---|---|---|
+| AE | always \`VATEX-EU-AE\` | yours, or \`Taxare inversa\` | both VAT ids |
+| E | yours, VATEX list (BR-CL-22) | yours; code or text required (BR-E-10) | supplier VAT id |
+| G | always \`VATEX-EU-G\` | optional | supplier VAT id |
+| K | always \`VATEX-EU-IC\` | optional | both VAT ids, \`InvoiceData::$delivery\` with a date and an address |
+
+A reason for S/Z/O, a duplicate, a reason without matching lines, or a different code for AE/G/K
+is refused. Every VAT breakdown outside S must sum to exactly zero tax (BR-Z/O/E/G/IC-09).
 
 ## Precision of \`$quantity\` and \`$unitPrice\` (changed in v3.0.0)
 
@@ -276,13 +321,15 @@ fine-grained quantities (grams billed in KGM, fractional hours). Whole and 2-dec
 exactly as before, so most invoices are byte-identical.
 
 Amount fields — \`cbc:LineExtensionAmount\`, all VAT amounts, and the document totals — remain at
-exactly 2 decimals. Beyond 6 decimals the value is truncated by rounding, which also keeps binary
-floating-point noise out of the XML (a quantity of \`1/3\` files as \`0.333333\`, not seventeen digits).
+exactly 2 decimals. Since 4.0 a value with more than 6 decimals is **refused**, not rounded: a
+quantity of \`1/3\` throws \`ValidationException\` naming \`lines.0.quantity\`; pass \`'0.333333'\`.
+A float within binary noise of its 6-decimal rendering is accepted (\`0.1 + 0.2\` reads as \`0.3\`).
 
 Money is exact decimal. \`quantity\`, \`unitPrice\` and \`taxAmount\` are read at those 6 decimals and
 multiplied and summed as decimals; each line net and each VAT group's tax is rounded half-up once.
 \`3 × 1.005\` files \`3.02\` (float arithmetic gave \`3.01\` on PHP 8.4+), and the line net always
-reconciles with the filed quantity and price: \`1/3 × 30000.00\` files \`0.333333\` and \`9999.99\`.
+reconciles with the filed quantity and price: \`'0.333333' × 30000.00\` files \`9999.99\`. Decimal
+strings are filed verbatim, so \`'12345678901.234567'\` keeps all 17 significant digits.
 
 ## Public Methods
 
@@ -294,11 +341,8 @@ half-up to 2 decimals.
 Returns \`taxAmount\` read at 6 decimals and rounded half-up to 2 decimals. This is the pre-computed
 value passed at construction.
 
-### \`getRawLineTotal(): float\`
-Returns unrounded \`quantity * unitPrice\`. **Not** what the invoice files — \`cbc:LineExtensionAmount\`
-is capped at 2 decimals, so \`getLineTotal()\` is the figure that reaches ANAF and the one the
-document totals are built from. Summing this across lines and rounding once at the end does not
-reproduce the filed total.
+\`getRawLineTotal()\` was removed in 4.0: it returned a float product the invoice never files.
+Use \`getLineTotal()\`.
 
 ### \`getLineTotalWithTax(): float\`
 Returns \`getLineTotal() + getTaxAmount()\`, summed exactly.
@@ -351,7 +395,7 @@ Party information (supplier or customer) for an invoice. Extends \`Spatie\\Larav
 | \`$companyId\` | \`string\` | yes | — | CIF/CUI number without RO prefix (e.g. \`'49296198'\`). The builder adds \`RO\` prefix automatically for VAT payers. |
 | \`$address\` | \`AddressData\` | yes | — | Address of the party (Invoice\\AddressData) |
 | \`$isVatPayer\` | \`bool\|string\` | **yes** | — | Whether the party is registered for VAT. **No default (since v3.0.0)**. Typed as a union so a mis-positioned string is rejected rather than silently coerced — the property itself is \`bool\`. See below |
-| \`$registrationNumber\` | \`?string\` | no | \`null\` | ONRC trade register identifier (e.g. \`'J40/1234/2020'\`) |
+| \`$registrationNumber\` | \`?string\` | no | \`null\` | ONRC trade register identifier (e.g. \`'J40/1234/2020'\`). The **supplier's** is filed as \`PartyLegalEntity/CompanyLegalForm\` (BT-33, at most 1000 characters, omitted when blank); the customer's is not filed |
 
 ## Critical Notes
 
@@ -376,7 +420,7 @@ $supplier = new PartyData(
     companyId: '49296198',           // no RO prefix
     address: new AddressData(
         street: 'Str. Exemplu 1',
-        city: 'Bucuresti',
+        city: 'Sector 1',                // Bucharest needs its sector: filed as SECTOR1
         county: 'RO-B',
         postalZone: '010101',
     ),
@@ -447,12 +491,19 @@ Note: This class shares the simple name \`AddressData\` with \`BeeCoded\\EFactur
 | \`$city\` | \`string\` | yes | — | City name |
 | \`$postalZone\` | \`?string\` | no | \`null\` | Postal/ZIP code |
 | \`$county\` | \`?string\` | no | \`null\` | County/region code. **Required for Romanian addresses** (ISO 3166-2:RO codes, e.g. \`'RO-B'\` for Bucharest, \`'RO-CJ'\` for Cluj). |
-| \`$countryCode\` | \`string\` | no | \`'RO'\` | ISO 3166-1 alpha-2 country code |
+| \`$countryCode\` | \`string\` | no | \`'RO'\` | ISO 3166-1 alpha-2 country code: two uppercase letters, never empty |
+| \`$bucharestSector\` | \`?int\` | no | \`null\` | Bucharest sector 1–6, only on an RO address whose county is Bucharest; filed as city \`SECTORn\`. Omitted from \`toArray()\` when \`null\` |
 
 ## Critical Notes
 
 - **\`$county\` is required for Romanian addresses.** ANAF validation rejects invoices with \`countryCode = 'RO'\` and a missing county. Use ISO 3166-2:RO sub-region codes (format \`RO-XX\`).
 - \`$countryCode\` defaults to \`'RO'\`. For foreign parties, set this to their country code (e.g. \`'DE'\`, \`'FR'\`).
+- Only RO addresses are rewritten: the county to its ISO code and, in Bucharest, the city to
+  \`SECTOR1\`…\`SECTOR6\`, taken from \`$bucharestSector\` or a sector named in the city or county. A
+  Bucharest address without a sector throws \`ValidationException\` (BR-RO-100/101). Foreign
+  counties and cities (Barcelona's \`B\`, an Italian \`Sector 3\`) are filed as given.
+  \`AddressSanitizer::canonicalize($address)\` returns \`['county' => ..., 'city' => ...]\` exactly as filed.
+- As a delivery address (\`InvoiceData::$delivery\`), street, city and county are required for every country.
 
 ## ISO 3166-2:RO county codes (common examples)
 
@@ -779,6 +830,9 @@ Returns \`true\` when \`$stare === UploadStatusValue::InProgress\` (still being 
 
 ### \`hasAnafError(): bool\`
 Returns \`true\` when there is no recognisable \`$stare\` but \`$errors\` is non-empty: the HTTP 200 \`{"eroare": "..."}\` shape, or an XML \`<header>\` with only \`<Errors/>\`. This is **not** a verdict on the document (the upload may have been filed); park it for a human instead of completing it, failing it or polling forever. \`isReady()\`, \`isFailed()\` and \`isInProgress()\` are all \`false\` here.
+
+### \`verdict(): StatusVerdict\` (since 4.0)
+Reads the answer as one \`StatusVerdict\`: \`InProgress\`, \`Ready\` (\`ok\` with a download id), \`Rejected\` (\`nok\` with a download id), \`ReadyWithoutDownloadId\`, \`RejectedWithoutDownloadId\`, \`NotProcessed\`, \`AnafError\` (\`hasAnafError()\`) or \`Unknown\` (no status ANAF defines and no error). A download id that is not 1 to 64 digits counts as none.
 
 ## Usage Notes
 
@@ -1155,13 +1209,14 @@ Result wrapper for company lookup operations. Contains found companies, not-foun
 | \`$notFound\` | \`int[]\` | no | \`[]\` | Array of CUI integers that were not found in ANAF |
 | \`$invalidCodes\` | \`string[]\` | no | \`[]\` | Array of VAT codes that failed validation |
 | \`$error\` | \`?string\` | no | \`null\` | Error message if the lookup failed |
+| \`$failureKind\` | \`?CompanyLookupFailureKind\` | no | \`null\` | Why a sent lookup failed (\`Transport\`, \`InvalidResponse\`); null on success and for input refused before sending (since 4.0) |
 
 ## Static Factory Methods
 
 ### \`success(array $companies, array $notFound = [], array $invalidCodes = []): self\`
 Creates a successful result.
 
-### \`failure(string $error, array $invalidCodes = []): self\`
+### \`failure(string $error, array $invalidCodes = [], ?CompanyLookupFailureKind $failureKind = null): self\`
 Creates a failed result with an error message.
 
 ## Public Methods

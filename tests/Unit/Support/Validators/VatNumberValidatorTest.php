@@ -4,6 +4,22 @@ declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 
+describe('withCountryPrefix', function () {
+    it('prefixes a VAT identifier exactly as the builder files BT-31/BT-48', function (string $id, ?string $country, string $expected) {
+        expect(VatNumberValidator::withCountryPrefix($id, $country))->toBe($expected);
+    })->with([
+        'bare RO CUI' => ['12345678', 'RO', 'RO12345678'],
+        'null country means RO' => ['12345678', null, 'RO12345678'],
+        'already prefixed, lowercase and padded' => [' ro87654321 ', 'RO', 'RO87654321'],
+        'separator kept, not doubled' => ['RO 12345678', 'RO', 'RO 12345678'],
+        'Greek id with its VAT prefix' => ['EL123456789', 'GR', 'EL123456789'],
+        'Greek id with its country code' => ['GR123456789', 'RO', 'EL123456789'],
+        'Northern Ireland on a GB address' => ['XI123456789', 'GB', 'XI123456789'],
+        'foreign registration kept' => ['DE123456789', 'RO', 'DE123456789'],
+        'bare German id' => ['123456789', 'DE', 'DE123456789'],
+    ]);
+});
+
 describe('isValid', function () {
     it('validates CUI with correct checksum', function () {
         // Known valid Romanian CUIs

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
+use BeeCoded\EFacturaSdk\Enums\CompanyLookupFailureKind;
 use Spatie\LaravelData\Data;
 
 /**
@@ -20,6 +21,8 @@ class CompanyLookupResultData extends Data
      * @param  array<int>  $notFound  Array of CUIs that were not found
      * @param  array<string>  $invalidCodes  Array of VAT codes that failed validation
      * @param  string|null  $error  Error message if lookup failed
+     * @param  CompanyLookupFailureKind|null  $failureKind  Why a sent lookup failed; null on success and
+     *                                                      on an input the SDK refused before sending
      */
     public function __construct(
         public bool $success,
@@ -27,6 +30,7 @@ class CompanyLookupResultData extends Data
         public array $notFound = [],
         public array $invalidCodes = [],
         public ?string $error = null,
+        public ?CompanyLookupFailureKind $failureKind = null,
     ) {}
 
     /**
@@ -54,12 +58,13 @@ class CompanyLookupResultData extends Data
      *
      * @param  array<string>  $invalidCodes
      */
-    public static function failure(string $error, array $invalidCodes = []): self
+    public static function failure(string $error, array $invalidCodes = [], ?CompanyLookupFailureKind $failureKind = null): self
     {
         return new self(
             success: false,
             error: $error,
             invalidCodes: $invalidCodes,
+            failureKind: $failureKind,
         );
     }
 
