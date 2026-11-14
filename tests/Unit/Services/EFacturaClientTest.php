@@ -899,7 +899,7 @@ describe('EFacturaClient', function () {
     });
 
     describe('authentication error context preservation', function () {
-        it('preserves API exception context when converting to AuthenticationException', function () {
+        it('preserves API exception context when converting to AuthenticationException', function (Closure $request) {
             // Create a mock that throws ApiException with context on 401
             Http::fake([
                 '*' => Http::response(['error' => 'Unauthorized'], 401),
@@ -915,15 +915,20 @@ describe('EFacturaClient', function () {
             );
 
             try {
-                $client->getStatusMessage('12345');
+                $request($client);
                 $this->fail('Expected AuthenticationException');
             } catch (AuthenticationException $e) {
                 // The previous exception should be the ApiException
-                expect($e->getPrevious())->toBeInstanceOf(ApiException::class);
-                // The message should indicate auth failure
-                expect($e->getMessage())->toContain('Authentication failed');
+                expect($e->getPrevious())->toBeInstanceOf(ApiException::class)
+                    // The message should indicate auth failure
+                    ->and($e->getMessage())->toContain('Authentication failed')
+                    ->and($e->getCode())->toBe(401);
             }
-        });
+        })->with([
+            'status (call)' => [fn (EFacturaClient $client) => $client->getStatusMessage('12345')],
+            'upload (callRaw)' => [fn (EFacturaClient $client) => $client->uploadDocument('<Invoice/>')],
+            'validate (callRaw to a URL)' => [fn (EFacturaClient $client) => $client->validateXml('<Invoice/>', DocumentStandardType::FACT1)],
+        ]);
     });
 
     describe('UploadOptionsData integration', function () {

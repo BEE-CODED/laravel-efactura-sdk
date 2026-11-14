@@ -33,7 +33,7 @@ the section named after it.
 - `UblBuilderInterface` has a new method, `validateInvoice(InvoiceData): void`; a class that
   implements the interface must add it ("Added: validate without generating").
 - The builder refuses documents ANAF rejects or would file wrongly: a positive invoice without a due
-  date (BR-CO-25), a Bucharest address without a sector, a non-zero `taxAmountRon` without
+  date, or with a blank one (BR-CO-25), a Bucharest address without a sector, a non-zero `taxAmountRon` without
   standard-rated lines, a non-zero VAT amount in a Z/O/E/G/K breakdown, malformed currency or
   country codes, text XML cannot carry, and required fields that are blank after trimming
   ("Breaking (4.0): the builder refuses documents ANAF rejects").
@@ -83,6 +83,9 @@ the section named after it.
 - `verifySignature(string $xml, string $signature)` takes the invoice and its signature file and
   posts both to ANAF's documented signature service; `EFacturaClientInterface` changed with it
   ("Breaking (4.0): `verifySignature()` follows ANAF's signature service").
+- `DateHelper::formatForAnaf()` reads a Unix timestamp as a Bucharest date, not a UTC one: an
+  instant between midnight and 02:00/03:00 Bucharest time now gives that day, not the one before
+  ("Fixed: a timestamp is formatted on ANAF's calendar").
 
 ### Breaking (4.0): amounts are exact or refused
 
@@ -121,8 +124,12 @@ the section named after it.
 Each of these used to produce XML that ANAF rejected, or filed a wrong figure. They now throw
 `ValidationException` (also through `validateInvoice()`):
 
-- An Invoice (380, 384, 389, 751) with a positive amount due and no `dueDate` (BR-CO-25, fatal
-  in ANAF's ro16931-ubl 1.0.9 bundle). Credit notes are not checked, as ANAF does not check them.
+- An Invoice (380, 384, 389, 751) with a positive amount due and no `dueDate` or a blank one
+  (BR-CO-25, fatal in ANAF's ro16931-ubl 1.0.9 bundle). Credit notes are not checked, as ANAF does
+  not check them.
+- A blank `dueDate` on any other document, which used to be filed as the current date;
+  `getDueDateAsCarbon()` now throws `InvalidArgumentException` for it, like
+  `getTaxPointDateAsCarbon()`.
 - A Romanian address whose county is Bucharest but whose sector cannot be found in
   `bucharestSector`, the city or the county (BR-RO-100/101). The city used to be filed as given,
   which ANAF rejects.
@@ -585,6 +592,12 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   `AuthenticationException` with the HTTP status as its code (for example 200). It used to carry
   the class default 401, which read as ANAF refusing the grant. A non-2xx answer still carries its
   status, a transport failure 0.
+
+### Fixed: a timestamp is formatted on ANAF's calendar
+
+- `DateHelper::formatForAnaf(int)` read a seconds or milliseconds timestamp as a UTC date (Carbon
+  3), so an instant between midnight and 02:00/03:00 Bucharest time gave the previous day. It is
+  now read in `Europe/Bucharest`, the calendar the class uses for every date it picks.
 
 ### Added: `tokenPersister`
 

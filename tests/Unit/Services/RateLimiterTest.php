@@ -55,16 +55,14 @@ describe('checkGlobal', function () {
     })->throws(RateLimitExceededException::class, 'Global rate limit exceeded');
 
     it('does not check when rate limiting is disabled', function () {
-        config(['efactura-sdk.rate_limits.enabled' => false, 'efactura.rate_limits.global_per_minute' => 1]);
+        config(['efactura-sdk.rate_limits.enabled' => false, 'efactura-sdk.rate_limits.global_per_minute' => 1]);
         $limiter = new RateLimiter;
 
-        // Should not throw even if we exceed limit
+        // Neither refused past the limit nor counted
         $limiter->checkGlobal();
         $limiter->checkGlobal();
 
-        config(['efactura-sdk.rate_limits.enabled' => true]);
-
-        expect(true)->toBeTrue(); // If we reach here, test passes
+        expect(LaravelRateLimiter::attempts('efactura-sdk:minute:global'))->toBe(0);
     });
 });
 
@@ -154,6 +152,18 @@ describe('checkRaspUpload', function () {
         $limiter->checkRaspUpload('22222222');
 
         expect(true)->toBeTrue();
+    });
+
+    it('neither refuses nor counts a full per-CUI limit when disabled', function () {
+        config(['efactura-sdk.rate_limits.enabled' => false, 'efactura-sdk.rate_limits.rasp_upload_per_day_cui' => 1]);
+        $key = 'efactura-sdk:daily:rasp_upload:12345678';
+        LaravelRateLimiter::increment($key, 86400); // the bucket is full
+        $limiter = new RateLimiter;
+
+        $limiter->checkRaspUpload('12345678');
+        $limiter->ensureAvailable(RateLimitScope::RaspUpload, '12345678');
+
+        expect(LaravelRateLimiter::attempts($key))->toBe(1);
     });
 });
 

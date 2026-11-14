@@ -42,6 +42,13 @@ describe('formatForAnaf', function () {
         expect(DateHelper::formatForAnaf($timestamp))->toBe('2024-03-15');
     });
 
+    it('reads a timestamp on ANAF\'s calendar, not the UTC day', function (int $factor) {
+        // 01:30 Bucharest is 23:30 UTC the day before.
+        $timestamp = Carbon::create(2024, 3, 15, 1, 30, 0, DateHelper::ANAF_TIMEZONE)->getTimestamp() * $factor;
+
+        expect(DateHelper::formatForAnaf($timestamp))->toBe('2024-03-15');
+    })->with(['seconds' => 1, 'milliseconds' => 1000]);
+
     it('throws exception for invalid date string', function () {
         DateHelper::formatForAnaf('not-a-date');
     })->throws(InvalidArgumentException::class, 'Invalid date provided');

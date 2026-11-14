@@ -398,8 +398,9 @@ class InvoiceBuilder
         $this->validateNotesAndDelivery($input);
         $this->validateTaxAccountingCurrency($input, in_array(TaxCategoryId::Standard, $categories, true));
 
-        // BR-CO-25 (fatal on the Invoice root only): a positive amount due needs BT-9.
-        if (! $input->getInvoiceTypeCode()->isCreditNote() && $input->dueDate === null && $input->getTotalIncludingVat() > 0) {
+        // BR-CO-25 (fatal on the Invoice root only): a positive amount due needs BT-9; a blank one is none.
+        $dueDateMissing = $input->dueDate === null || (is_string($input->dueDate) && trim($input->dueDate) === '');
+        if (! $input->getInvoiceTypeCode()->isCreditNote() && $dueDateMissing && $input->getTotalIncludingVat() > 0) {
             throw new ValidationException(__('efactura-sdk::validation.due_date_required_for_positive_payable'));
         }
     }

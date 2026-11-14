@@ -310,7 +310,7 @@ class InvoiceData extends Data
      * Get the due date as a Carbon instance (or null if not set).
      * Returns a copy to prevent mutation of the original date.
      *
-     * @throws \InvalidArgumentException If the date string cannot be parsed
+     * @throws \InvalidArgumentException If the date string is blank or cannot be parsed
      */
     public function getDueDateAsCarbon(): ?Carbon
     {
@@ -323,6 +323,10 @@ class InvoiceData extends Data
         }
 
         try {
+            if (trim($this->dueDate) === '') {
+                throw new \InvalidArgumentException('A due date cannot be empty.');
+            }
+
             return Carbon::parse($this->dueDate);
         } catch (\Exception $e) {
             throw new \InvalidArgumentException(

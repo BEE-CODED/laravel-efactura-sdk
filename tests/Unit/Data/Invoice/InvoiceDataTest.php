@@ -154,6 +154,10 @@ describe('getDueDateAsCarbon', function () {
 
         $invoice->getDueDateAsCarbon();
     })->throws(InvalidArgumentException::class, 'Invalid due date format');
+
+    it('rejects a blank dueDate instead of reading it as now', function (string $blank) {
+        createTestInvoice([], ['dueDate' => $blank])->getDueDateAsCarbon();
+    })->with(['', '   '])->throws(InvalidArgumentException::class, 'Invalid due date format');
 });
 
 describe('getIssueDateAsCarbon exception handling', function () {

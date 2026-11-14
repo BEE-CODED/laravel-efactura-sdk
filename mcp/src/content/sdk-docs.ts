@@ -294,7 +294,8 @@ runs all of these checks without keeping the XML.
 ### Issue Date, Due Date and Currency
 - \`issueDate\` required; build it in \`Europe/Bucharest\` (\`DateHelper::ANAF_TIMEZONE\`), as dates are
   filed as calendar dates
-- An Invoice (not a credit note) with a positive amount due needs a \`dueDate\` (BR-CO-25)
+- An Invoice (not a credit note) with a positive amount due needs a \`dueDate\` (BR-CO-25); a blank
+  \`dueDate\` counts as none, and is refused on every other document instead of being filed as today
 - \`currency\` must be three uppercase letters (BR-CL-04)
 
 ### Party Validation (Supplier and Customer)

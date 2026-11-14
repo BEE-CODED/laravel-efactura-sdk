@@ -125,10 +125,19 @@ describe('X6 exact amounts on the builder path', function () {
 });
 
 describe('S9 BR-CO-25 due date for a positive amount due', function () {
-    it('refuses an invoice with a positive payable and no due date', function (InvoiceTypeCode $type) {
-        expect(fn () => rbXml(rbInvoice(['dueDate' => null, 'invoiceTypeCode' => $type])))
+    it('refuses an invoice with a positive payable and no due date', function (InvoiceTypeCode $type, ?string $dueDate) {
+        expect(fn () => rbXml(rbInvoice(['dueDate' => $dueDate, 'invoiceTypeCode' => $type])))
             ->toThrow(ValidationException::class, 'BR-CO-25');
-    })->with([InvoiceTypeCode::CommercialInvoice, InvoiceTypeCode::CorrectedInvoice]);
+    })->with([InvoiceTypeCode::CommercialInvoice, InvoiceTypeCode::CorrectedInvoice])
+        ->with(['missing' => null, 'empty' => '', 'blank' => '  ']);
+
+    it('refuses a blank due date where BR-CO-25 does not apply, never filing today', function (array $overrides, string $dueDate) {
+        expect(fn () => rbXml(rbInvoice(['dueDate' => $dueDate, ...$overrides])))
+            ->toThrow(InvalidArgumentException::class, 'Invalid due date format');
+    })->with([
+        'credit note' => [['invoiceTypeCode' => InvoiceTypeCode::CreditNote]],
+        'zero payable' => [['lines' => [rbLine(['unitPrice' => 0, 'taxAmount' => 0])]]],
+    ])->with(['empty' => '', 'blank' => ' ']);
 
     it('leaves credit notes and non-positive invoices alone', function (array $overrides) {
         expect(rbXml(rbInvoice(['dueDate' => null, ...$overrides])))->toContain('<cbc:PayableAmount');

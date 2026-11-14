@@ -926,7 +926,9 @@ must add it (4.0).
 **What the builder refuses.** These documents throw `ValidationException` instead of reaching
 ANAF, which would reject them or file a wrong figure:
 
-- an invoice (not a credit note) with a positive amount due and no `dueDate` (BR-CO-25);
+- an invoice (not a credit note) with a positive amount due and no `dueDate` (a blank string counts
+  as none) (BR-CO-25); a blank `dueDate` on any other document throws `InvalidArgumentException`
+  instead of being filed as today;
 - a currency code that is not three uppercase letters, or a country code that is not two (empty
   included);
 - a required field that is empty after trimming (invoice number, issue date, names, company ids,
@@ -1393,6 +1395,7 @@ use BeeCoded\EFacturaSdk\Support\DateHelper;
 // Format for ANAF API
 DateHelper::formatForAnaf(now());           // '2024-01-15'
 DateHelper::formatForAnaf('2024-01-15');    // '2024-01-15'
+DateHelper::formatForAnaf(1710459000);      // '2024-03-15': a Unix timestamp (s or ms) is read as a Bucharest date
 
 // Timestamps in milliseconds (for paginated messages)
 DateHelper::toTimestamp(now());             // 1705312800000

@@ -364,9 +364,12 @@ describe('AnafAuthenticator', function () {
 
             try {
                 $auth->exchangeCodeForToken('code');
+                $this->fail('Expected AuthenticationException');
             } catch (AuthenticationException $e) {
-                expect($e->getMessage())->toContain('invalid_client');
-                expect($e->getMessage())->toContain('Client authentication failed');
+                expect($e->getMessage())->toContain('invalid_client')
+                    ->and($e->getMessage())->toContain('Client authentication failed')
+                    // Kept on purpose: invalid_client refuses the app itself, so retrying cannot help.
+                    ->and($e->getCode())->toBe(401);
             }
         });
 
@@ -381,6 +384,7 @@ describe('AnafAuthenticator', function () {
 
             try {
                 $auth->exchangeCodeForToken('code');
+                $this->fail('Expected AuthenticationException');
             } catch (AuthenticationException $e) {
                 expect($e->getMessage())->toContain('Cod de autorizare invalid');
             }
@@ -397,6 +401,7 @@ describe('AnafAuthenticator', function () {
 
             try {
                 $auth->exchangeCodeForToken('code');
+                $this->fail('Expected AuthenticationException');
             } catch (AuthenticationException $e) {
                 expect($e->getMessage())->toContain('Operatiune esuata');
             }
@@ -411,6 +416,7 @@ describe('AnafAuthenticator', function () {
 
             try {
                 $auth->exchangeCodeForToken('code');
+                $this->fail('Expected AuthenticationException');
             } catch (AuthenticationException $e) {
                 expect($e->getMessage())->toContain('HTTP 500');
             }

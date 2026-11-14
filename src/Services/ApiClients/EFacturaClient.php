@@ -551,9 +551,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * error code.
      *
      * Nothing inside this SDK misclassifies it: the only statusCode consumers are
-     * the `=== 401` checks in authenticatedRequest()/authenticatedXmlRequest()/
-     * authenticatedXmlRequestToUrl() -- and this throws from downloadDocument(),
-     * outside those try/catch blocks anyway -- plus AnafDetailsClient's `=== 404`,
+     * the `=== 401` check in authenticationFailure(), used by authenticatedRequest()/
+     * authenticatedXmlRequest()/authenticatedXmlRequestToUrl() -- and this throws from
+     * downloadDocument(), outside those try/catch blocks anyway -- plus AnafDetailsClient's `=== 404`,
      * which is a different client on a different call stack. There is no `>= 400`
      * or `>= 500` classification of an ApiException anywhere in the SDK.
      *
@@ -1082,17 +1082,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         try {
             return $this->call($route, $method, [], $headers);
         } catch (ApiException $e) {
-            // The only 401 gate. call() throws on every non-2xx, so a 401 arrives here
-            // as an ApiException and never as a returned Response.
-            if ($e->statusCode === 401) {
-                throw new AuthenticationException(
-                    'Authentication failed. Token may be invalid or revoked.',
-                    401,
-                    $e,
-                    $e->context
-                );
-            }
-            throw $e;
+            throw $this->authenticationFailure($e);
         }
     }
 
@@ -1118,16 +1108,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         try {
             return $this->callRaw($route, $method, $xmlBody, 'application/xml', $headers, $idempotent);
         } catch (ApiException $e) {
-            // The only 401 gate - see authenticatedRequest().
-            if ($e->statusCode === 401) {
-                throw new AuthenticationException(
-                    'Authentication failed. Token may be invalid or revoked.',
-                    401,
-                    $e,
-                    $e->context
-                );
-            }
-            throw $e;
+            throw $this->authenticationFailure($e);
         }
     }
 
@@ -1157,17 +1138,20 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             // stateless functions of the posted XML, so a retry cannot file anything.
             return $this->callRaw($fullUrl, $method, $xmlBody, $contentType, $headers);
         } catch (ApiException $e) {
-            // The only 401 gate - see authenticatedRequest().
-            if ($e->statusCode === 401) {
-                throw new AuthenticationException(
-                    'Authentication failed. Token may be invalid or revoked.',
-                    401,
-                    $e,
-                    $e->context
-                );
-            }
-            throw $e;
+            throw $this->authenticationFailure($e);
         }
+    }
+
+    /**
+     * The only 401 gate: call()/callRaw() throw on every non-2xx, so ANAF refusing the token
+     * arrives as an ApiException 401 and never as a returned Response. Every other
+     * ApiException (RequestNotSentException included) passes through unchanged.
+     */
+    private function authenticationFailure(ApiException $e): ApiException|AuthenticationException
+    {
+        return $e->statusCode === 401
+            ? new AuthenticationException('Authentication failed. Token may be invalid or revoked.', 401, $e, $e->context)
+            : $e;
     }
 
     /**

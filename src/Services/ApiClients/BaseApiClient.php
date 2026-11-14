@@ -245,69 +245,7 @@ abstract class BaseApiClient implements HasLogger
         bool $idempotent = true,
         int $tryCount = 0
     ): Response {
-        $tryCount++;
-        if ($tryCount === 1) {
-            $this->attemptDelivered = false;
-        }
-        $startTime = Carbon::now();
-        $context = fn () => [
-            'route' => $route,
-            'data' => $data,
-            'duration' => $this->lastRequestDurationMilliseconds,
-            'tryCount' => $tryCount,
-        ];
-
-        try {
-            $response = $this->request(
-                $route,
-                $data,
-                $method,
-                empty($customHeaders) ? $this->getHeaders() : $customHeaders,
-                $context
-            );
-        } catch (Exception $exception) {
-            // Calculate duration for failed requests so logging is accurate
-            $this->lastRequestDurationMilliseconds = $startTime->diffInMilliseconds(Carbon::now());
-
-            $this->logger->error(
-                "Exception before response was received: {$exception->getMessage()}.",
-                $context()
-            );
-
-            $this->attemptDelivered = $this->attemptDelivered || ! $this->wasNotSent($exception);
-
-            if ($tryCount < $this->getMaxTryCount() && $this->isRetryableException($exception, $idempotent)) {
-                sleep($this->getRetryDelay());
-                $this->onRetryAttempt();
-
-                return $this->call($route, $method, $data, $customHeaders, $idempotent, $tryCount);
-            }
-
-            throw $this->transportFailure($exception, $context());
-        }
-
-        if (! $response->successful()) {
-            $this->attemptDelivered = true;
-
-            // A response means the request was delivered and ANAF acted on it, so a
-            // non-idempotent call must never be re-sent -- even on a 5xx.
-            if ($tryCount < $this->getMaxTryCount() && $idempotent && $this->isRetryable($response)) {
-                sleep($this->getRetryDelay());
-                $this->onRetryAttempt();
-
-                return $this->call($route, $method, $data, $customHeaders, $idempotent, $tryCount);
-            }
-
-            throw new ApiException(
-                $this->extractErrorMessage($response),
-                $response->status() >= 500 ? 502 : $response->status(),
-                $response->body(),
-                null,
-                $context()
-            );
-        }
-
-        return $response;
+        return $this->attempt($route, $method, $data, null, $customHeaders, $idempotent, $tryCount, ['data' => $data]);
     }
 
     /**
@@ -330,6 +268,31 @@ abstract class BaseApiClient implements HasLogger
         bool $idempotent = true,
         int $tryCount = 0
     ): Response {
+        return $this->attempt($route, $method, $body, $contentType, $customHeaders, $idempotent, $tryCount, [
+            'bodyLength' => strlen($body),
+            'contentType' => $contentType,
+        ]);
+    }
+
+    /**
+     * The one retry loop and "was it sent" reading behind call() and callRaw().
+     *
+     * @param  array<string, mixed>|string  $data
+     * @param  array<string, string>  $customHeaders
+     * @param  array<string, mixed>  $describe  How the log context describes the body
+     *
+     * @throws ApiException
+     */
+    private function attempt(
+        string $route,
+        string $method,
+        array|string $data,
+        ?string $contentType,
+        array $customHeaders,
+        bool $idempotent,
+        int $tryCount,
+        array $describe
+    ): Response {
         $tryCount++;
         if ($tryCount === 1) {
             $this->attemptDelivered = false;
@@ -337,8 +300,7 @@ abstract class BaseApiClient implements HasLogger
         $startTime = Carbon::now();
         $context = fn () => [
             'route' => $route,
-            'bodyLength' => strlen($body),
-            'contentType' => $contentType,
+            ...$describe,
             'duration' => $this->lastRequestDurationMilliseconds,
             'tryCount' => $tryCount,
         ];
@@ -346,7 +308,7 @@ abstract class BaseApiClient implements HasLogger
         try {
             $response = $this->request(
                 $route,
-                $body,
+                $data,
                 $method,
                 empty($customHeaders) ? $this->getHeaders() : $customHeaders,
                 $context,
@@ -367,7 +329,7 @@ abstract class BaseApiClient implements HasLogger
                 sleep($this->getRetryDelay());
                 $this->onRetryAttempt();
 
-                return $this->callRaw($route, $method, $body, $contentType, $customHeaders, $idempotent, $tryCount);
+                return $this->attempt($route, $method, $data, $contentType, $customHeaders, $idempotent, $tryCount, $describe);
             }
 
             throw $this->transportFailure($exception, $context());
@@ -382,7 +344,7 @@ abstract class BaseApiClient implements HasLogger
                 sleep($this->getRetryDelay());
                 $this->onRetryAttempt();
 
-                return $this->callRaw($route, $method, $body, $contentType, $customHeaders, $idempotent, $tryCount);
+                return $this->attempt($route, $method, $data, $contentType, $customHeaders, $idempotent, $tryCount, $describe);
             }
 
             throw new ApiException(

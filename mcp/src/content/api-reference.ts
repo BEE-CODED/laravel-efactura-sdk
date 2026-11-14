@@ -387,7 +387,7 @@ Validates the \`InvoiceData\` DTO and generates a CIUS-RO compliant UBL 2.1 XML 
 | \`invoiceNumber\` | Required (blank after trimming is refused), must contain at least one digit, max 200 chars |
 | \`issueDate\` | Required |
 | \`currency\` | Three uppercase letters (BR-CL-04); empty is refused |
-| \`dueDate\` | Required on an Invoice (not a credit note) whose amount due is positive (BR-CO-25) |
+| \`dueDate\` | Required on an Invoice (not a credit note) whose amount due is positive (BR-CO-25); a blank string counts as none and is refused on every document |
 | \`lines\` | At least one line item required |
 | any string | Valid UTF-8 and XML 1.0 characters only (no control characters other than tab, LF, CR; no U+FFFE/U+FFFF); the message names the field, e.g. \`lines.0.name\` |
 | \`notes\` | At most 20, each non-blank and at most 300 chars (BR-RO-L300) |

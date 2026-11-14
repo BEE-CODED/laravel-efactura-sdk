@@ -51,7 +51,7 @@ final class DateHelper
     /**
      * Format a date for ANAF API (YYYY-MM-DD format).
      *
-     * @param  CarbonInterface|string|int  $date  The date to format (any Carbon date, string, or Unix timestamp in seconds)
+     * @param  CarbonInterface|string|int  $date  Any Carbon date, a string, or a Unix timestamp in seconds or milliseconds (read as a Europe/Bucharest date)
      * @return string The formatted date string
      *
      * @throws InvalidArgumentException If the date is invalid
@@ -213,7 +213,7 @@ final class DateHelper
      * Any CarbonInterface implementation is accepted; immutable dates from
      * Date::use(CarbonImmutable::class) are converted via Carbon::instance().
      *
-     * @param  CarbonInterface|string|int  $date  The date to convert
+     * @param  CarbonInterface|string|int  $date  The date to convert; a Unix timestamp (seconds or milliseconds) is read in Europe/Bucharest
      * @return Carbon The Carbon instance
      *
      * @throws InvalidArgumentException If the date is invalid
@@ -229,14 +229,12 @@ final class DateHelper
         }
 
         if (is_int($date)) {
-            // Assume Unix timestamp in seconds if less than year 10000 in milliseconds
-            // This handles both second and millisecond timestamps
+            // A Unix timestamp has no timezone: read it on ANAF's calendar (seconds, or milliseconds above 9999999999).
             if ($date > 9999999999) {
-                // Milliseconds - convert to seconds
-                return Carbon::createFromTimestampMs($date);
+                return Carbon::createFromTimestampMs($date, self::ANAF_TIMEZONE);
             }
 
-            return Carbon::createFromTimestamp($date);
+            return Carbon::createFromTimestamp($date, self::ANAF_TIMEZONE);
         }
 
         // String date

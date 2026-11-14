@@ -42,8 +42,8 @@ Build \`issueDate\` (and the other dates) in \`Europe/Bucharest\` (\`DateHelper:
 are filed as calendar dates, and \`now()\` on a UTC server is still the previous day between midnight
 and 02:00/03:00 Bucharest time.
 
-The builder refuses an Invoice (not a credit note) with a positive amount due and no \`$dueDate\`
-(BR-CO-25), currency codes that are not three uppercase letters, blank required fields, and text
+The builder refuses an Invoice (not a credit note) with a positive amount due and no (or a blank)
+\`$dueDate\` (BR-CO-25), currency codes that are not three uppercase letters, blank required fields, and text
 that is not valid UTF-8 or contains characters XML 1.0 cannot carry (the message names the field,
 e.g. \`lines.0.name\`).
 
@@ -119,7 +119,7 @@ concrete \`Carbon\`, so reading an invoice never gives you a \`CarbonImmutable\`
 Returns the issue date as a Carbon instance. Returns a copy to prevent mutation. Throws \`\\InvalidArgumentException\` if the date string cannot be parsed.
 
 ### \`getDueDateAsCarbon(): ?Carbon\`
-Returns the due date as a Carbon instance, or null if not set. Returns a copy. Throws \`\\InvalidArgumentException\` on unparseable string.
+Returns the due date as a Carbon instance, or null if not set. Returns a copy. Throws \`\\InvalidArgumentException\` on a blank or unparseable string.
 
 ### \`getInvoiceTypeCode(): InvoiceTypeCode\`
 Returns \`$invoiceTypeCode ?? InvoiceTypeCode::CommercialInvoice\`. Use this accessor rather than the raw property.

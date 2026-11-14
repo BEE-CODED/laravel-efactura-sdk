@@ -177,6 +177,21 @@ describe('a failure before the request left this machine', function () {
     ]);
 });
 
+describe('an error answer after the retries', function () {
+    it('reports a server error as 502 and passes a client error through, on both transport paths', function (Closure $call, int $answer, int $statusCode, int $sent) {
+        Http::fake(['*' => Http::response(['eroare' => 'x'], $answer)]);
+
+        expect(fn () => $call(transportClient()))
+            ->toThrow(fn (ApiException $e) => expect($e)->not->toBeInstanceOf(AuthenticationException::class)
+                ->and($e->statusCode)->toBe($statusCode));
+        Http::assertSentCount($sent);
+    })->with([
+        'status (call), retried' => [fn (EFacturaClient $c) => $c->getStatusMessage('12345'), 503, 502, 3],
+        'upload (callRaw), sent once' => [fn (EFacturaClient $c) => $c->uploadDocument('<Invoice/>'), 503, 502, 1],
+        'validate (callRaw to a URL)' => [fn (EFacturaClient $c) => $c->validateXml('<Invoice/>', DocumentStandardType::FACT1), 404, 404, 1],
+    ]);
+});
+
 describe('the ANAF service endpoints', function () {
     it('keeps an absolute URL as the request URL', function () {
         expect(transportClient()->getRequestUrl('https://webservicesp.anaf.ro/prod/FCTEL/rest/validare/FACT1'))
