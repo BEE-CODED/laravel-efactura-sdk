@@ -134,9 +134,9 @@ final class ArchiveInspector
             if (! is_string($content) || $content === '' || strlen($content) !== $size || preg_match('/<!\s*(DOCTYPE|ENTITY)/i', $content) === 1) {
                 throw new ArchiveMismatchException('Unverifiable ANAF archive member.');
             }
-            // A small member can still parse into millions of nodes.
+            // A small member can still parse into millions of nodes; final, like an upload too large to compare (verify() start).
             if (substr_count($content, '<') > UblDocumentComparator::MAX_MARKUP) {
-                throw new ArchiveLimitException(ArchiveLimitReason::MemberTooLarge, 'ANAF archive member holds too much markup.');
+                throw new ArchiveMismatchException('ANAF archive member holds too much markup.');
             }
 
             $document = new DOMDocument;

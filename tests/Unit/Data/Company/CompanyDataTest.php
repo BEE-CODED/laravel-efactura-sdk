@@ -179,6 +179,21 @@ describe('CompanyData', function () {
             expect($company->isRegistered())->toBeFalse();
         });
 
+        it('reads the status date in both forms ANAF may send, and only a real date', function (string $status, ?string $expected) {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test', 'stare_inregistrare' => $status],
+                'stare_inactiv' => ['dataRadiere' => ''],
+            ]);
+
+            expect($company->registrationStatusDate?->format('Y-m-d'))->toBe($expected)
+                ->and($company->deregistrationDate?->format('Y-m-d'))->toBe($expected)
+                ->and($company->isDeregistered)->toBeTrue();
+        })->with([
+            'ISO' => ['RADIERE din data 2024-03-29', '2024-03-29'],
+            'dotted' => ['RADIERE din data 29.03.2024', '2024-03-29'],
+            'not a date' => ['RADIERE din data 31.02.2024', null],
+        ]);
+
         it('parses INREGISTRAT status as registered and active', function () {
             $company = CompanyData::fromAnafResponse([
                 'date_generale' => [
@@ -464,6 +479,26 @@ describe('CompanyData', function () {
             expect($company->getPrimaryAddress())->toBeNull();
         });
     });
+
+    it('reads ANAF flags as yes only for an explicit yes', function (mixed $flag, bool $expected) {
+        $company = CompanyData::fromAnafResponse([
+            'date_generale' => ['cui' => '12345678', 'denumire' => 'Test', 'statusRO_e_Factura' => $flag],
+            'inregistrare_scop_Tva' => ['scpTVA' => $flag],
+            'inregistrare_SplitTVA' => ['statusSplitTVA' => $flag],
+            'inregistrare_RTVAI' => ['statusTvaIncasare' => $flag],
+            'stare_inactiv' => ['statusInactivi' => $flag],
+        ]);
+
+        expect([$company->isVatPayer, $company->isSplitVat, $company->isRtvai, $company->isInactive, $company->isRegisteredInEFactura,
+            $company->splitVatDetails->isActive, $company->rtvaiDetails->isActive, $company->inactiveStatusDetails->isInactive])
+            ->toBe(array_fill(0, 8, $expected));
+    })->with([
+        'string false' => ['false', false],
+        'string 0' => ['0', false],
+        'int 2' => [2, false],
+        'string true' => ['true', true],
+        'int 1' => [1, true],
+    ]);
 });
 
 describe('CompanyLookupResultData', function () {

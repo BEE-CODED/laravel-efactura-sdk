@@ -433,6 +433,19 @@ describe('rate limit scope through the real client', function () {
         }
     });
 
+    it('spends no unit on a call whose token refresh fails', function () {
+        app()->instance(RateLimiter::class, $limiter = new RateLimiter);
+        $authenticator = Mockery::mock(AnafAuthenticatorInterface::class);
+        $authenticator->shouldReceive('refreshAccessToken')->once()->andThrow(new AuthenticationException('OAuth server unreachable', 0));
+        $client = new EFacturaClient('12345678', 'expired', 'refresh', Carbon::now()->subMinute(), $authenticator);
+        $globalBefore = $limiter->getRemainingQuota('global')['remaining'];
+
+        expect(fn () => $client->getStatusMessage('5001234567'))->toThrow(AuthenticationException::class)
+            ->and($limiter->getRemainingQuota('global')['remaining'])->toBe($globalBefore)
+            ->and($limiter->getRemainingQuota('status', '5001234567')['remaining'])->toBe(50);
+        Http::assertNothingSent();
+    });
+
     it('counts one unit of both limits for an allowed call, at either status limit', function () {
         config()->set('efactura-sdk.rate_limits.status_per_day_message', 1);
         config()->set('efactura-sdk.rate_limits.status_per_day_message_provider', 2);

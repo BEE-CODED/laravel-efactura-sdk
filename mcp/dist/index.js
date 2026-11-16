@@ -21796,7 +21796,7 @@ Why \`ArchiveInspector::verify()\` could not inspect a response archive (\`Archi
 | Case | Backed value | Description |
 |---|---|---|
 | \`ArchiveTooLarge\` | \`'archive_too_large'\` | Over 20 MiB, or the members expand to over 20 MiB together |
-| \`MemberTooLarge\` | \`'member_too_large'\` | A member expands to over 10 MiB, or (with the upload) holds over 1 000 000 \`<\` |
+| \`MemberTooLarge\` | \`'member_too_large'\` | A member expands to over 10 MiB |
 | \`Encrypted\` | \`'encrypted'\` | A member is encrypted |
 | \`TooManyMembers\` | \`'too_many_members'\` | More than 32 members |
 | \`Empty\` | \`'empty'\` | A ZIP with no members |
@@ -22674,6 +22674,7 @@ Reads the answer as one \`StatusVerdict\`: \`InProgress\`, \`Ready\` (\`ok\` wit
 - \`$idDescarcare\` is normally available for both \`ok\` and \`nok\` results \u2014 for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
 - **\`nok\` without a download id is not a rejection.** Treat \`isFailed() && $idDescarcare === null\` like \`hasAnafError()\`: undetermined, not a validation failure.
 - An XML \`<header>\` carrying only \`<Errors/>\` (an unknown upload id, \`Nu aveti dreptul\` \u2026) has no \`stare\` (since 4.0; it used to map to \`nok\`): \`$stare\` is \`null\`, \`$errors\` holds ANAF's messages and \`hasAnafError()\` is \`true\`, the same as the JSON \`{"eroare": "..."}\` answer.
+- A header with a \`stare\` (or \`id_descarcare\`) keeps its \`<Errors>\` in \`errors\`, like the JSON answer; the verdict still comes from \`stare\`.
 
 ## Example
 
@@ -22973,7 +22974,7 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 | \`$deregistrationDate\` | \`?Carbon\` | no | \`null\` | Deregistration date |
 | \`$registrationStatusRaw\` | \`?string\` | no | \`null\` | Raw trade-registry status string (\`date_generale.stare_inregistrare\`), e.g. \`'RADIERE din data 29.03.2024'\` |
 | \`$registrationStatus\` | \`RegistrationStatus\` | no | \`Unknown\` | Parsed trade-registry status enum (Registered\\|Deregistered\\|Unknown) |
-| \`$registrationStatusDate\` | \`?Carbon\` | no | \`null\` | Date parsed from the \`stare_inregistrare\` "din data dd.mm.yyyy" suffix |
+| \`$registrationStatusDate\` | \`?Carbon\` | no | \`null\` | Date parsed from the \`stare_inregistrare\` "din data dd.mm.yyyy" (or yyyy-mm-dd) suffix; an invalid date is \`null\` |
 | \`$registrationDate\` | \`?Carbon\` | no | \`null\` | Fiscal registration date (\`date_generale.data_inregistrare\`) |
 | \`$isRegisteredInEFactura\` | \`bool\` | no | \`false\` | Whether enrolled in the RO e-Factura registry (\`date_generale.statusRO_e_Factura\`) |
 | \`$eFacturaRegistrationDate\` | \`?Carbon\` | no | \`null\` | RO e-Factura registry enrollment date (\`data_inreg_Reg_RO_e_Factura\`) |
@@ -22989,7 +22990,7 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 ### \`fromAnafResponse(array $data): self\`
 Parses the full ANAF found company response structure. Processes nested keys: \`date_generale\`, \`inregistrare_scop_Tva\`, \`inregistrare_RTVAI\`, \`stare_inactiv\`, \`inregistrare_SplitTVA\`, \`adresa_sediu_social\`, \`adresa_domiciliu_fiscal\`.
 
-Values are normalised, never taken verbatim (since 4.0): a numeric \`cui\`, phone or postal code becomes a string, non-scalar text and dates become \`null\` (\`name\`/\`cui\` fall back to \`''\`), and a nested section that is not an object is treated as absent.
+Values are normalised, never taken verbatim (since 4.0): a numeric \`cui\`, phone or postal code becomes a string, non-scalar text and dates become \`null\` (\`name\`/\`cui\` fall back to \`''\`), and a nested section that is not an object is treated as absent; a flag is \`true\` only for \`true\`, \`1\`, \`"1"\` or \`"true"\`.
 
 **Deregistration derivation:** \`isDeregistered\` is \`true\` when \`stare_inactiv.dataRadiere\` parses to a valid date **OR** \`stare_inregistrare\` parses to \`RegistrationStatus::Deregistered\` (a "RADIERE ..." string). \`deregistrationDate\` prefers the \`stare_inactiv.dataRadiere\` value and falls back to the date parsed from the \`stare_inregistrare\` string. \`isActive()\` returns \`false\` for any deregistered company.
 
@@ -23592,7 +23593,7 @@ runs all of these checks without keeping the XML.
   - a Bucharest address needs its sector (\`bucharestSector\`, or named in the city or county)
 
 ### Line Items
-- At least one line required
+- At least one and at most 999 lines (BR-RO-A999)
 - \`name\` required, max 100 characters (BR-RO-L100)
 - \`description\` optional, max 200 characters (BR-RO-L200)
 - \`quantity\` cannot be zero (negative allowed for credit notes)
@@ -24402,8 +24403,8 @@ failure that provably happened before the request reached ANAF: cURL errno 5, 6,
 with \`pretransfer_time\` 0 and \`request_size\` 0. Also thrown, with the cause as \`previous\`, when the
 cache store behind the SDK's rate limiter fails during metering, which runs before every request.
 Either way it means no attempt of the call reached ANAF: when a read's earlier attempt may have (a
-5xx, or a timeout after sending), a later transport failure is a plain \`ApiException(500)\` and a
-metering failure reaches you as the store's own exception. Uploads never retry after such an attempt.
+5xx, or a timeout after sending), a later transport failure or metering failure is a plain
+\`ApiException(500)\` (the metering cause as \`previous\`). Uploads never retry after such an attempt.
 An upload that failed this way can be resent without filing it twice. Catch it before \`ApiException\`.
 
 ## RateLimitExceededException
@@ -24790,13 +24791,13 @@ $address = new AddressData(
 // ValidationException: "County 'NotACounty' cannot be mapped to a valid ISO 3166-2:RO code..."
 \`\`\`
 
-For non-Romanian addresses (e.g., \`countryCode = 'DE'\`), the county is passed through as-is without validation.
+For non-Romanian addresses (e.g., \`countryCode = 'DE'\`), the county is passed through as-is without validation; a blank county is not filed.
 `,
   "rate-limiting": `# Laravel e-Factura SDK \u2014 Rate Limiting
 
 ## Overview
 
-The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. All limits are checked **before** the HTTP request is made. If a limit is exceeded, \`RateLimitExceededException\` is thrown without consuming a quota slot.
+The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. All limits are checked **before** the HTTP request is made. If a limit is exceeded, \`RateLimitExceededException\` is thrown without consuming a quota slot. A call that needs a token refresh refreshes first; a failed refresh counts nothing.
 
 Since v3.0.0 the global limit is checked before **every HTTP attempt**, not once per logical call \u2014
 each retry consumes another global unit, because ANAF meters per request. See "Retries consume
@@ -26075,7 +26076,7 @@ Validates the \`InvoiceData\` DTO and generates a CIUS-RO compliant UBL 2.1 XML 
 | \`issueDate\` | Required |
 | \`currency\` | Three uppercase letters (BR-CL-04); empty is refused |
 | \`dueDate\` | Required on an Invoice (not a credit note) whose amount due is positive (BR-CO-25); a blank string counts as none and is refused on every document |
-| \`lines\` | At least one line item required |
+| \`lines\` | At least one and at most 999 line items (BR-RO-A999) |
 | any string | Valid UTF-8 and XML 1.0 characters only (no control characters other than tab, LF, CR; no U+FFFE/U+FFFF); the message names the field, e.g. \`lines.0.name\` |
 | \`notes\` | At most 20, each non-blank and at most 300 chars (BR-RO-L300) |
 | \`vatPointDateCode\` | \`'3'\`, \`'35'\` or \`'432'\`; not with \`taxPointDate\` (BR-CO-03) |
@@ -26136,7 +26137,7 @@ results. Opting-in callers that need the pre-rounding total use the new helper.
 | \`city\` | Required (trimmed), max 50 chars; in Bucharest filed as \`SECTOR1\`\u2013\`SECTOR6\` |
 | \`postalZone\` | Optional, max 20 chars |
 | \`countryCode\` | Two uppercase letters (BR-CL-14); empty is refused |
-| \`county\` | Required for Romanian addresses; must map to a valid ISO 3166-2:RO code. Only RO addresses are rewritten |
+| \`county\` | Required for Romanian addresses; must map to a valid ISO 3166-2:RO code. Only RO addresses are rewritten; a blank one outside RO is not filed |
 | \`bucharestSector\` | Optional 1\u20136, only on a Bucharest RO address. A Bucharest address needs a sector from this, the city or the county (BR-RO-100/101) |
 
 ### Preceding Invoices (BG-3)
@@ -26264,7 +26265,7 @@ The archive is written to a temporary file in \`$temporaryDirectory\` (default \
 ## \`verify(string $archive, ?string $uploadedXml = null): void\`
 
 1. Limits, always and before any member is read: at most 20 MiB; a readable ZIP of 1 to 32 unencrypted members, each expanding to at most 10 MiB and all together to at most 20 MiB. A failure throws \`ArchiveLimitException\` with \`$reason\` (\`ArchiveLimitReason\`): retryable, not a verdict on the content.
-2. Only with \`$uploadedXml\` (an accepted document whose upload you stored): each member is read with a 10 MiB cap (\`UblDocumentComparator::MAX_BYTES\`, 10 485 760 bytes, also the comparator's own cap, so a member within the limits is never a mismatch for its size) and must be either the uploaded Invoice/CreditNote, exactly once, or an xmldsig \`Signature\` (\`http://www.w3.org/2000/09/xmldsig#\`). Anything else throws \`ArchiveMismatchException\` (final): a DOCTYPE or entity declaration, a member that is not XML or not its declared size, an unrelated document, a second copy, no copy, or a content difference.
+2. Only with \`$uploadedXml\` (an accepted document whose upload you stored): each member is read with a 10 MiB cap (\`UblDocumentComparator::MAX_BYTES\`, 10 485 760 bytes, also the comparator's own cap, so a member within the limits is never a mismatch for its size) and must be either the uploaded Invoice/CreditNote, exactly once, or an xmldsig \`Signature\` (\`http://www.w3.org/2000/09/xmldsig#\`). Anything else throws \`ArchiveMismatchException\` (final): a DOCTYPE or entity declaration, a member holding more than 1 000 000 \`<\`, a member that is not XML or not its declared size, an unrelated document, a second copy, no copy, or a content difference.
 
 An \`$uploadedXml\` over 10 MiB or over 1 000 000 \`<\` can never be compared: \`verify()\` throws \`ArchiveMismatchException\` (final) before step 1, so its archive is never a retryable \`MemberTooLarge\`.
 

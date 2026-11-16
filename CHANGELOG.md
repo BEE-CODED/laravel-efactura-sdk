@@ -74,8 +74,8 @@ the section named after it.
   every provably unsent failure arrives as `RequestNotSentException` (still an `ApiException` with
   `statusCode` 500) ("Added: `RequestNotSentException`").
 - A failing cache store no longer reaches the caller as its own exception before a request is
-  sent: in the SDK's rate-limit metering it is `RequestNotSentException`, and behind the
-  token-refresh lock it is `AuthenticationException` with code 0, each with the store's exception as
+  sent: in the SDK's rate-limit metering it is `RequestNotSentException` (or `ApiException(500)`
+  when an earlier attempt of a read may have reached ANAF), and behind the token-refresh lock it is `AuthenticationException` with code 0, each with the store's exception as
   `previous`. A `catch` for the raw store exception (a `RedisException`, say) no longer sees it
   ("Added: `RequestNotSentException`").
 - `batchGetCompanyData()` sends each CUI once: a CUI given twice (with or without `RO`) is asked for,
@@ -148,6 +148,7 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 - A required field that is only whitespace: invoice number, issue date, registration names,
   company ids, street, city, line names and the county of a Romanian address. (`'0'` as an
   invoice number, which `empty()` refused, is now accepted.)
+- More than 999 lines (BR-RO-A999).
 
 ### Fixed: foreign addresses are filed as given
 
@@ -155,6 +156,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   county `B`, a Berlin `B` or an Italian `Sector 3` became `RO-B`, and the foreign city became
   `SECTOR3`. ANAF accepts that, so it filed a wrong address. Only `countryCode: 'RO'` addresses are
   rewritten now, for parties and deliveries.
+- A blank county on a foreign address is not filed (it was an empty `CountrySubentity`);
+  `AddressSanitizer::canonicalize()` returns `null` for it.
 
 ### Added: VAT categories E, G and K, and exemption reasons
 
@@ -253,11 +256,11 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   `MemberTooLarge`, `Encrypted`, `TooManyMembers`, `Empty`, `Unopenable`, `Io`) says nothing about
   the content: download again later. `Io` is a local failure (temporary file, ZipArchive
   `ER_OPEN`/`ER_READ`/`ER_TMPOPEN`/`ER_MEMORY`); `Unopenable` is any other ZIP open failure,
-  including an empty body. With the uploaded XML, a member holding more than
-  `UblDocumentComparator::MAX_MARKUP` (1 000 000) `<` is `MemberTooLarge` before it is parsed.
+  including an empty body.
 - `ArchiveMismatchException` is final: an uploaded XML over `MAX_BYTES` or `MAX_MARKUP` (it can
   never be compared, so it is refused before the archive is looked at), a DOCTYPE or entity
-  declaration, an empty member, a member that is not XML or not its declared size, a comment or
+  declaration, a member holding more than `UblDocumentComparator::MAX_MARKUP` (1 000 000) `<`
+  (checked before it is parsed), an empty member, a member that is not XML or not its declared size, a comment or
   processing instruction inside the document, an unrelated member, a second copy, no copy, or any
   content difference. Both extend `ArchiveException extends EFacturaException`.
 - One byte cap for a document: `UblDocumentComparator::MAX_BYTES` (10 MiB, 10 485 760 bytes) is
@@ -305,7 +308,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   store exception reached the caller and read as `Uncertain`. `RateLimitExceededException` and
   programming errors (`LogicException`) still reach you as themselves. When a read's retry fails
   this way after an earlier attempt reached ANAF (a 5xx, or a transport failure that may have been
-  delivered), the call was sent, so the store's exception reaches you as itself.
+  delivered), the call may have been sent, so it is a plain `ApiException(500)` with the store's
+  exception as `previous`, like a transport failure that may have been delivered.
 - A failure of the cache store behind the token-refresh lock (for example Redis refusing the
   connection while the access token needs a refresh) is `AuthenticationException` with code 0 and
   the store's exception as `previous`, like a lock timeout: nothing was sent, and
@@ -330,6 +334,9 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   success and on input the SDK refused before sending (no codes, only invalid codes, more than 100,
   an unencodable payload). `failure()` takes it as an optional third argument.
 - Requested CUIs are de-duplicated after the `RO` prefix is removed (in every mode).
+- `CompanyData::$registrationStatusDate` (and the `deregistrationDate` fallback) reads
+  `din data yyyy-mm-dd` as well as `dd.mm.yyyy`, the forms strict mode accepts, and an invalid date
+  such as 31.02 is `null` instead of rolling over.
 
 ### Changed: ANAF's 429 on a company lookup is a rate limit
 
@@ -454,6 +461,9 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   - `StatusResponseData`: a `stare` that is not a string, for example a number, is `null`
     (unknown) instead of a `TypeError`. `eroare` becomes `errors` whenever `Errors` holds nothing
     usable, including an empty list.
+  - Company flags (`scpTVA`, `statusSplitTVA`, `statusTvaIncasare`, `statusInactivi`,
+    `statusRO_e_Factura`) are `true` only for `true`, `1`, `"1"` or `"true"`; a string `"false"`
+    used to read as `true`.
 - `MessageDetailsData::$id` is now `?string`. It is `null` when ANAF sent no usable id (missing,
   empty, or not an id), where it used to be `''`. The other fields still fall back to `''`, but
   an array no longer raises "Array to string conversion".
@@ -487,6 +497,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   `nok` (`isFailed()`) with no `idDescarcare`. A `<Raspuns>` carrying only `Error`/`eroare` is read
   the same way. `XmlParser::parseStatusResponse()` returns `stare` `null` for both. An error with
   an empty or blank message reads as `Operation failed`, so it is still an ANAF error.
+- A header with a `stare` (or `id_descarcare`) keeps its `<Errors>` in `errors`, like the JSON
+  answer; the verdict still comes from `stare`.
 - Why: the JSON answer for the same case (`{"eroare": "..."}`) already gave `hasAnafError()`.
   ANAF said nothing about the document, so the XML answer must not read as a rejection.
 - Upgrade: handle `hasAnafError()` for XML answers too; a check for `isFailed() && idDescarcare ===
@@ -598,6 +610,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 - `DateHelper::formatForAnaf(int)` read a seconds or milliseconds timestamp as a UTC date (Carbon
   3), so an instant between midnight and 02:00/03:00 Bucharest time gave the previous day. It is
   now read in `Europe/Bucharest`, the calendar the class uses for every date it picks.
+  A Carbon keeps its own timezone and a string is parsed in the app timezone: for today on ANAF's
+  calendar, pass `now(DateHelper::ANAF_TIMEZONE)` or use `getCurrentDateForAnaf()`.
 
 ### Added: `tokenPersister`
 
@@ -639,6 +653,11 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   check and the count: then this call's global unit is spent and its refused per-message unit stays
   counted in the already-full window. The global limit still refuses before the per-message unit is
   counted; an allowed call counts one unit of each, as before.
+- A call whose access token needs a refresh gets the token before it counts anything, so a failed
+  refresh (OAuth server down, refresh-lock timeout or store failure, or an earlier failure latched
+  on the client) spends no quota. Such a call also refreshes the token before a limit can refuse
+  it, and a failing refresh is reported as `AuthenticationException` even when a limit is also
+  exhausted.
 - Upgrade: a test double of `RateLimiter` must allow `ensureAvailable()` (with Mockery,
   `shouldReceive('ensureAvailable')`, or `shouldIgnoreMissing()`).
 

@@ -311,7 +311,7 @@ runs all of these checks without keeping the XML.
   - a Bucharest address needs its sector (\`bucharestSector\`, or named in the city or county)
 
 ### Line Items
-- At least one line required
+- At least one and at most 999 lines (BR-RO-A999)
 - \`name\` required, max 100 characters (BR-RO-L100)
 - \`description\` optional, max 200 characters (BR-RO-L200)
 - \`quantity\` cannot be zero (negative allowed for credit notes)
@@ -1125,8 +1125,8 @@ failure that provably happened before the request reached ANAF: cURL errno 5, 6,
 with \`pretransfer_time\` 0 and \`request_size\` 0. Also thrown, with the cause as \`previous\`, when the
 cache store behind the SDK's rate limiter fails during metering, which runs before every request.
 Either way it means no attempt of the call reached ANAF: when a read's earlier attempt may have (a
-5xx, or a timeout after sending), a later transport failure is a plain \`ApiException(500)\` and a
-metering failure reaches you as the store's own exception. Uploads never retry after such an attempt.
+5xx, or a timeout after sending), a later transport failure or metering failure is a plain
+\`ApiException(500)\` (the metering cause as \`previous\`). Uploads never retry after such an attempt.
 An upload that failed this way can be resent without filing it twice. Catch it before \`ApiException\`.
 
 ## RateLimitExceededException
@@ -1514,14 +1514,14 @@ $address = new AddressData(
 // ValidationException: "County 'NotACounty' cannot be mapped to a valid ISO 3166-2:RO code..."
 \`\`\`
 
-For non-Romanian addresses (e.g., \`countryCode = 'DE'\`), the county is passed through as-is without validation.
+For non-Romanian addresses (e.g., \`countryCode = 'DE'\`), the county is passed through as-is without validation; a blank county is not filed.
 `,
 
   "rate-limiting": `# Laravel e-Factura SDK — Rate Limiting
 
 ## Overview
 
-The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. All limits are checked **before** the HTTP request is made. If a limit is exceeded, \`RateLimitExceededException\` is thrown without consuming a quota slot.
+The SDK includes built-in rate limiting to prevent exceeding ANAF API quotas. All limits are checked **before** the HTTP request is made. If a limit is exceeded, \`RateLimitExceededException\` is thrown without consuming a quota slot. A call that needs a token refresh refreshes first; a failed refresh counts nothing.
 
 Since v3.0.0 the global limit is checked before **every HTTP attempt**, not once per logical call —
 each retry consumes another global unit, because ANAF meters per request. See "Retries consume

@@ -840,6 +840,7 @@ Reads the answer as one \`StatusVerdict\`: \`InProgress\`, \`Ready\` (\`ok\` wit
 - \`$idDescarcare\` is normally available for both \`ok\` and \`nok\` results — for \`nok\` it points to an error report ZIP. It is absent when \`isNotProcessed()\` is true.
 - **\`nok\` without a download id is not a rejection.** Treat \`isFailed() && $idDescarcare === null\` like \`hasAnafError()\`: undetermined, not a validation failure.
 - An XML \`<header>\` carrying only \`<Errors/>\` (an unknown upload id, \`Nu aveti dreptul\` …) has no \`stare\` (since 4.0; it used to map to \`nok\`): \`$stare\` is \`null\`, \`$errors\` holds ANAF's messages and \`hasAnafError()\` is \`true\`, the same as the JSON \`{"eroare": "..."}\` answer.
+- A header with a \`stare\` (or \`id_descarcare\`) keeps its \`<Errors>\` in \`errors\`, like the JSON answer; the verdict still comes from \`stare\`.
 
 ## Example
 
@@ -1145,7 +1146,7 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 | \`$deregistrationDate\` | \`?Carbon\` | no | \`null\` | Deregistration date |
 | \`$registrationStatusRaw\` | \`?string\` | no | \`null\` | Raw trade-registry status string (\`date_generale.stare_inregistrare\`), e.g. \`'RADIERE din data 29.03.2024'\` |
 | \`$registrationStatus\` | \`RegistrationStatus\` | no | \`Unknown\` | Parsed trade-registry status enum (Registered\\|Deregistered\\|Unknown) |
-| \`$registrationStatusDate\` | \`?Carbon\` | no | \`null\` | Date parsed from the \`stare_inregistrare\` "din data dd.mm.yyyy" suffix |
+| \`$registrationStatusDate\` | \`?Carbon\` | no | \`null\` | Date parsed from the \`stare_inregistrare\` "din data dd.mm.yyyy" (or yyyy-mm-dd) suffix; an invalid date is \`null\` |
 | \`$registrationDate\` | \`?Carbon\` | no | \`null\` | Fiscal registration date (\`date_generale.data_inregistrare\`) |
 | \`$isRegisteredInEFactura\` | \`bool\` | no | \`false\` | Whether enrolled in the RO e-Factura registry (\`date_generale.statusRO_e_Factura\`) |
 | \`$eFacturaRegistrationDate\` | \`?Carbon\` | no | \`null\` | RO e-Factura registry enrollment date (\`data_inreg_Reg_RO_e_Factura\`) |
@@ -1161,7 +1162,7 @@ Company data from an ANAF company lookup. Comprehensive DTO containing general d
 ### \`fromAnafResponse(array $data): self\`
 Parses the full ANAF found company response structure. Processes nested keys: \`date_generale\`, \`inregistrare_scop_Tva\`, \`inregistrare_RTVAI\`, \`stare_inactiv\`, \`inregistrare_SplitTVA\`, \`adresa_sediu_social\`, \`adresa_domiciliu_fiscal\`.
 
-Values are normalised, never taken verbatim (since 4.0): a numeric \`cui\`, phone or postal code becomes a string, non-scalar text and dates become \`null\` (\`name\`/\`cui\` fall back to \`''\`), and a nested section that is not an object is treated as absent.
+Values are normalised, never taken verbatim (since 4.0): a numeric \`cui\`, phone or postal code becomes a string, non-scalar text and dates become \`null\` (\`name\`/\`cui\` fall back to \`''\`), and a nested section that is not an object is treated as absent; a flag is \`true\` only for \`true\`, \`1\`, \`"1"\` or \`"true"\`.
 
 **Deregistration derivation:** \`isDeregistered\` is \`true\` when \`stare_inactiv.dataRadiere\` parses to a valid date **OR** \`stare_inregistrare\` parses to \`RegistrationStatus::Deregistered\` (a "RADIERE ..." string). \`deregistrationDate\` prefers the \`stare_inactiv.dataRadiere\` value and falls back to the date parsed from the \`stare_inregistrare\` string. \`isActive()\` returns \`false\` for any deregistered company.
 

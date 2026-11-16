@@ -457,7 +457,7 @@ Why \`ArchiveInspector::verify()\` could not inspect a response archive (\`Archi
 | Case | Backed value | Description |
 |---|---|---|
 | \`ArchiveTooLarge\` | \`'archive_too_large'\` | Over 20 MiB, or the members expand to over 20 MiB together |
-| \`MemberTooLarge\` | \`'member_too_large'\` | A member expands to over 10 MiB, or (with the upload) holds over 1 000 000 \`<\` |
+| \`MemberTooLarge\` | \`'member_too_large'\` | A member expands to over 10 MiB |
 | \`Encrypted\` | \`'encrypted'\` | A member is encrypted |
 | \`TooManyMembers\` | \`'too_many_members'\` | More than 32 members |
 | \`Empty\` | \`'empty'\` | A ZIP with no members |

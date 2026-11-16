@@ -354,8 +354,9 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * Consume one quota unit for a logical call, and arm the retry hook to consume
      * the same buckets again for every extra HTTP request a retry makes.
      *
-     * A refused call or retry spends nothing: the endpoint bucket is peeked first,
-     * and the global check refuses before the endpoint bucket is counted.
+     * A refused call or retry spends nothing: the access token is obtained first, so a
+     * failed refresh counts nothing; the endpoint bucket is peeked first, and the global
+     * check refuses before the endpoint bucket is counted.
      *
      * Always call this instead of hitting $rateLimiter directly: passing no
      * endpoint check disarms the hook, which is what keeps a previous call's
@@ -367,11 +368,16 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * @param  (Closure(): void)|null  $peek  Refuses, counting nothing, when that bucket
      *                                        has no room (RateLimiter::ensureAvailable())
      *
+     * @throws AuthenticationException When the access token cannot be refreshed
      * @throws RateLimitExceededException When a cap is already exhausted
      * @throws RequestNotSentException When the limiter's cache store fails
+     * @throws ApiException (500) When the store fails before the retry of a read an earlier attempt may have delivered
      */
     private function meterCall(?Closure $perEndpoint = null, ?Closure $peek = null): void
     {
+        // A refresh that fails (OAuth down, lock timeout, latched failure) must spend no quota; the request's own call is then free.
+        $this->getValidAccessToken();
+
         $meter = function (bool $afterDelivery = false) use ($perEndpoint, $peek): void {
             try {
                 if ($peek !== null) {
@@ -389,11 +395,11 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 // The limiter's own refusal, or a programming error: not a transport failure.
                 throw $e;
             } catch (\Exception $e) {
-                // The limiter's cache store failed. Metering runs before the request (or retry)
-                // it counts, so that request was never sent; but an earlier attempt of a read
-                // may have reached ANAF, and then the call was sent (uploads never get here).
+                // The limiter's cache store failed. Metering runs before the request (or retry) it counts, so that
+                // request was never sent; but when an earlier attempt of a read may have reached ANAF, the call may
+                // have been sent: report it like a transport failure after delivery (uploads never get here).
                 if ($afterDelivery) {
-                    throw $e;
+                    throw new ApiException('Rate limit metering failed before a retry: '.$e->getMessage(), 500, null, $e);
                 }
 
                 throw new RequestNotSentException('Rate limit metering failed before the request was sent: '.$e->getMessage(), $e);
@@ -541,21 +547,15 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * differently. Without this check a JSON error body would be handed back as a
      * "successful" download whose saveTo() writes JSON into a .zip file.
      *
-     * CONTRACT -- the ApiException below carries ANAF's own status code, which for
-     * this failure is normally 200. That is DELIBERATE, not a bug: the 2xx is the
-     * payload here, encoding "ANAF said OK but the body wasn't a document". Callers
-     * need that distinction. A wrapper package keys on statusCode === 200 to leave
-     * the upload Completed -- ANAF accepted the invoice, only the receipt is missing
-     * -- where a synthesised 4xx/5xx would read as "the filing failed" and could
-     * trigger a re-send of a document ANAF already holds. Do not "fix" this to an
-     * error code.
-     *
-     * Nothing inside this SDK misclassifies it: the only statusCode consumers are
-     * the `=== 401` check in authenticationFailure(), used by authenticatedRequest()/
-     * authenticatedXmlRequest()/authenticatedXmlRequestToUrl() -- and this throws from
-     * downloadDocument(), outside those try/catch blocks anyway -- plus AnafDetailsClient's `=== 404`,
-     * which is a different client on a different call stack. There is no `>= 400`
-     * or `>= 500` classification of an ApiException anywhere in the SDK.
+     * The ApiException below keeps ANAF's own status, normally 200, on purpose: a 2xx never
+     * reads as a server error (>= 500 and 408, which callers retry as transient) or as ANAF
+     * refusing the request (4xx). Do not replace it with a synthesised 4xx/5xx. Readers of
+     * ApiException::statusCode it must not trip:
+     * - authenticationFailure(): === 401 (this throws outside its try/catch anyway);
+     * - UploadOutcome::fromThrowable(): 429 and 4xx except 408 (upload calls only);
+     * - AnafDetailsClient: 429 and 404 (another client and call stack);
+     * - callers such as the laravel-efactura wrapper: >= 500 and 408 are transient, any other
+     *   code (this 200 included) is a permanent failure of this download, never of the upload.
      *
      * @throws ApiException When the body is a JSON error or is not a ZIP.
      *                      Its statusCode is ANAF's, typically 200 -- see above.

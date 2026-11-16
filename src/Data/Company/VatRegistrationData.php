@@ -32,7 +32,7 @@ class VatRegistrationData extends Data
     public static function fromAnafResponse(array $data): self
     {
         return new self(
-            isActive: (bool) ($data['statusTvaIncasare'] ?? false),
+            isActive: AnafValue::flag($data['statusTvaIncasare'] ?? null),
             startDate: self::parseDate($data['dataInceputTvaInc'] ?? null),
             endDate: self::parseDate($data['dataSfarsitTvaInc'] ?? null),
             updateDate: self::parseDate($data['dataActualizareTvaInc'] ?? null),

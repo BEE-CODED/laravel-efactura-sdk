@@ -29,7 +29,7 @@ class SplitVatData extends Data
     public static function fromAnafResponse(array $data): self
     {
         return new self(
-            isActive: (bool) ($data['statusSplitTVA'] ?? false),
+            isActive: AnafValue::flag($data['statusSplitTVA'] ?? null),
             startDate: self::parseDate($data['dataInceputSplitTVA'] ?? null),
             cancelDate: self::parseDate($data['dataAnulareSplitTVA'] ?? null),
         );

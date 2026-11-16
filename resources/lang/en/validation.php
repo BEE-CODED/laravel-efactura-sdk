@@ -9,6 +9,7 @@ return [
     'invoice_number_max_length' => 'Invoice number must not exceed 200 characters (BR-RO-L200)',
     'issue_date_required' => 'Issue date is required',
     'at_least_one_line_required' => 'At least one invoice line is required',
+    'lines_max_count' => 'An invoice can have at most 999 lines (BR-RO-A999)',
     'currency_code_invalid' => 'The currency code must be three uppercase letters (ISO 4217, BR-CL-04)',
     'due_date_required_for_positive_payable' => 'An invoice with a positive amount due must have a due date (BR-CO-25)',
 

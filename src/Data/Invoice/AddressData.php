@@ -17,7 +17,7 @@ use Spatie\LaravelData\Support\Transformation\TransformationContextFactory;
  * A Romanian address is filed through AddressSanitizer::canonicalize(): the county as its
  * ISO 3166-2:RO code and, in Bucharest (RO-B), the city as SECTOR1-6. The sector comes from
  * $bucharestSector, else from the city or county text; a Bucharest address without one is
- * refused (BR-RO-100/101). Other countries are filed as given.
+ * refused (BR-RO-100/101). Other countries are filed as given; a blank county is none (null).
  */
 class AddressData extends Data
 {

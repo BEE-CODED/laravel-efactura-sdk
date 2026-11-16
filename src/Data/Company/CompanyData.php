@@ -121,7 +121,8 @@ class CompanyData extends Data
         public RegistrationStatus $registrationStatus = RegistrationStatus::Unknown,
 
         /**
-         * Date extracted from the stare_inregistrare "din data dd.mm.yyyy" suffix.
+         * Date extracted from the stare_inregistrare "din data dd.mm.yyyy" or "yyyy-mm-dd" suffix;
+         * null when it is no real date.
          */
         public ?Carbon $registrationStatusDate = null,
 
@@ -179,8 +180,9 @@ class CompanyData extends Data
      * Create CompanyData from ANAF found company response.
      *
      * Values are normalised, never taken verbatim: a numeric cui, phone or postal
-     * code becomes a string, non-scalar text and dates become null, and a nested
-     * section that is not an object is treated as absent.
+     * code becomes a string, non-scalar text and dates become null, a nested
+     * section that is not an object is treated as absent, and a flag is true only
+     * for true, 1, "1" or "true".
      *
      * @param  array<string, mixed>  $data  Raw ANAF response for a single found company
      */
@@ -239,14 +241,14 @@ class CompanyData extends Data
             phone: AnafValue::text($generalData['telefon'] ?? null),
             fax: AnafValue::text($generalData['fax'] ?? null),
             postalCode: AnafValue::text($generalData['codPostal'] ?? null),
-            isVatPayer: (bool) ($vatScope['scpTVA'] ?? false),
+            isVatPayer: AnafValue::flag($vatScope['scpTVA'] ?? null),
             vatRegistrationDate: self::parseDate($vatScope['data_inceput_ScpTVA'] ?? null) ?? $latestVatPeriod?->startDate,
             vatDeregistrationDate: self::parseDate($vatScope['data_sfarsit_ScpTVA'] ?? null) ?? $latestVatPeriod?->endDate,
-            isSplitVat: (bool) ($splitVat['statusSplitTVA'] ?? false),
+            isSplitVat: AnafValue::flag($splitVat['statusSplitTVA'] ?? null),
             splitVatStartDate: $splitVatDetails?->startDate,
-            isRtvai: (bool) ($rtvai['statusTvaIncasare'] ?? false),
+            isRtvai: AnafValue::flag($rtvai['statusTvaIncasare'] ?? null),
             rtvaiStartDate: $rtvaiDetails?->startDate,
-            isInactive: (bool) ($inactive['statusInactivi'] ?? false),
+            isInactive: AnafValue::flag($inactive['statusInactivi'] ?? null),
             inactiveDate: $inactiveStatusDetails?->inactiveDate,
             isDeregistered: $isDeregistered,
             deregistrationDate: $deregistrationDate,
@@ -254,7 +256,7 @@ class CompanyData extends Data
             registrationStatus: $registrationStatus,
             registrationStatusDate: $registrationStatusDate,
             registrationDate: self::parseDate($generalData['data_inregistrare'] ?? null),
-            isRegisteredInEFactura: (bool) ($generalData['statusRO_e_Factura'] ?? false),
+            isRegisteredInEFactura: AnafValue::flag($generalData['statusRO_e_Factura'] ?? null),
             eFacturaRegistrationDate: self::parseDate($generalData['data_inreg_Reg_RO_e_Factura'] ?? null),
             vatPeriods: $vatPeriods,
             headquartersAddress: $headquartersAddress,
@@ -328,19 +330,23 @@ class CompanyData extends Data
     }
 
     /**
-     * Extract the date from a stare_inregistrare value ("... din data dd.mm.yyyy").
+     * Extract the date from a stare_inregistrare value ("... din data dd.mm.yyyy" or "yyyy-mm-dd").
      */
     private static function parseStatusDate(?string $status): ?Carbon
     {
-        if ($status === null || preg_match('/din data\s+(\d{2})\.(\d{2})\.(\d{4})/u', $status, $matches) !== 1) {
+        if ($status === null || preg_match('/din data\s+(\d{2}\.\d{2}\.\d{4}|\d{4}-\d{2}-\d{2})/u', $status, $matches) !== 1) {
             return null;
         }
 
+        $format = str_contains($matches[1], '.') ? 'd.m.Y' : 'Y-m-d';
         try {
-            return Carbon::create((int) $matches[3], (int) $matches[2], (int) $matches[1]);
+            $date = Carbon::createFromFormat('!'.$format, $matches[1]);
         } catch (\Exception) {
             return null;
         }
+
+        // Round trip, as strict mode checks it: 31.02.2024 is no date (Carbon would roll it into March).
+        return $date instanceof Carbon && $date->format($format) === $matches[1] ? $date : null;
     }
 
     /**

@@ -174,11 +174,12 @@ describe('content', function () {
         'a UTF-16 signature with a DOCTYPE' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => "\xFE\xFF".mb_convert_encoding('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE ds:Signature [<!ENTITY x "y">]>'.XMLDSIG_SIGNATURE, 'UTF-16BE', 'UTF-8')]],
     ]);
 
-    it('refuses a member that parses into too many nodes as a retryable limit', function () {
-        $e = archiveFailure(fn () => $this->inspector->verify(zipOf(['a.xml' => '<a>'.str_repeat('<b/>', UblDocumentComparator::MAX_MARKUP - 1).'</a>']), UBL_INVOICE));
+    it('refuses a member that parses into too many nodes as a final mismatch, which the limits alone accept', function () {
+        $archive = zipOf(['a.xml' => '<a>'.str_repeat('<b/>', UblDocumentComparator::MAX_MARKUP - 1).'</a>']);
 
-        expect($e)->toBeInstanceOf(ArchiveLimitException::class)
-            ->and($e->reason)->toBe(ArchiveLimitReason::MemberTooLarge);
+        $this->inspector->verify($archive); // limits only: the member is never read
+
+        expect(archiveFailure(fn () => $this->inspector->verify($archive, UBL_INVOICE)))->toBeInstanceOf(ArchiveMismatchException::class);
     });
 });
 

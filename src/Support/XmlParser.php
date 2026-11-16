@@ -360,6 +360,14 @@ final class XmlParser
             /** @var array<string, mixed> $attributes */
             $attributes = isset($content['@']) && is_array($content['@']) ? $content['@'] : $content;
 
+            $errors = $content['Errors'] ?? $content['errors'] ?? $content['Error'] ?? $content['error'] ?? null;
+            // A single <Errors> element parses to one associative node
+            // ({"@": {...}, "_": ...}), not a list of errors. Guard with
+            // array_is_list so a lone node is wrapped and findErrorMessage()
+            // runs on the whole node, rather than array_map() walking its
+            // @/_ keys and leaking them into the result.
+            $errorList = $errors === null ? null : (is_array($errors) && array_is_list($errors) ? $errors : [$errors]);
+
             // Check for stare or id_descarcare
             if (isset($attributes['stare']) || isset($attributes['id_descarcare'])) {
                 $stareRaw = $attributes['stare'] ?? null;
@@ -368,19 +376,13 @@ final class XmlParser
                 return [
                     'stare' => $stareRaw !== null && is_scalar($stareRaw) ? (string) $stareRaw : null,
                     'idDescarcare' => $idDescarcareRaw !== null && is_scalar($idDescarcareRaw) ? (string) $idDescarcareRaw : null,
-                    'errors' => null,
+                    // Kept next to a verdict, as the JSON form keeps Errors; a blank one is dropped, as in JSON.
+                    'errors' => $errorList === null ? null : AnafValue::errors(array_map(fn ($err): ?string => self::findErrorMessage($err), $errorList)),
                 ];
             }
 
             // Check for errors in header
-            $errors = $content['Errors'] ?? $content['errors'] ?? $content['Error'] ?? $content['error'] ?? null;
-            if ($errors !== null) {
-                // A single <Errors> element parses to one associative node
-                // ({"@": {...}, "_": ...}), not a list of errors. Guard with
-                // array_is_list so a lone node is wrapped and findErrorMessage()
-                // runs on the whole node, rather than array_map() walking its
-                // @/_ keys and leaking them into the result.
-                $errorList = is_array($errors) && array_is_list($errors) ? $errors : [$errors];
+            if ($errorList !== null) {
                 $errorMessages = array_map(
                     fn ($err): string => self::messageOrDefault(self::findErrorMessage($err)),
                     $errorList

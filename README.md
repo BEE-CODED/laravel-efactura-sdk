@@ -487,6 +487,8 @@ if ($status->isReady()) {
 - An XML `<header>` with only `<Errors/>` (an unknown upload id, "Nu aveti dreptul") has no
   `stare`: it gives `errors` and `hasAnafError()`, like the JSON `eroare` answer below (since 4.0;
   it used to map to `nok`). ANAF said nothing about the document.
+- A header with a `stare` (or `id_descarcare`) keeps its `<Errors>` in `errors`, like the JSON
+  answer; the verdict still comes from `stare`.
 - `hasAnafError()` is true when ANAF answered with an error instead of a status: no recognisable
   `stare`, but `errors` is set (HTTP 200 with `{"eroare": "..."}`; the `eroare` text becomes
   `errors` when `Errors` holds nothing usable). This is not a verdict on the document either.
@@ -568,10 +570,9 @@ try {
 - With the uploaded XML (an accepted document), each member is read with a 10 MiB cap
   (`UblDocumentComparator::MAX_BYTES`, 10 485 760 bytes, also the comparator's own cap, so a member
   within the limits is never a mismatch for its size) and must be
-  either the uploaded Invoice/CreditNote, exactly once, or an xmldsig `Signature`. A member holding
-  more than 1 000 000 `<` is `MemberTooLarge`. A member with a DOCTYPE or entity declaration, an
-  empty member, one that is not XML, any other document or a second copy is a
-  mismatch. Without it (for example a rejection archive, which holds ANAF's errors) no member is
+  either the uploaded Invoice/CreditNote, exactly once, or an xmldsig `Signature`. A member with a
+  DOCTYPE or entity declaration, a member holding more than 1 000 000 `<`, an empty member, one that
+  is not XML, any other document or a second copy is a mismatch. Without it (for example a rejection archive, which holds ANAF's errors) no member is
   read.
 - The comparison is `UblDocumentComparator::assertSameDocument($candidate, $expected)`, also usable
   on its own: the XML declaration, namespace prefixes, whitespace-only text, anything outside the
@@ -761,7 +762,7 @@ public function uploadInvoice(string $xml, Company $company): UploadResponseData
 
 ### Rate Limiting
 
-The SDK automatically enforces rate limits before each API call. When a limit is exceeded, a `RateLimitExceededException` is thrown.
+The SDK automatically enforces rate limits before each API call. When a limit is exceeded, a `RateLimitExceededException` is thrown. A call that needs a token refresh refreshes first; a failed refresh counts nothing.
 
 ```php
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
@@ -931,6 +932,7 @@ ANAF, which would reject them or file a wrong figure:
   instead of being filed as today;
 - a currency code that is not three uppercase letters, or a country code that is not two (empty
   included);
+- more than 999 lines (BR-RO-A999);
 - a required field that is empty after trimming (invoice number, issue date, names, company ids,
   street, city, line names, the county of a Romanian address);
 - text that is not valid UTF-8 or contains a character XML 1.0 cannot carry (control characters
@@ -1244,7 +1246,8 @@ Romanian addresses are automatically sanitized to ISO 3166-2:RO format:
 ```
 
 - Only addresses with `countryCode: 'RO'` are rewritten (BR-RO-100/101/110/111 apply only to RO).
-  A foreign county such as Barcelona's `B` or an Italian `Sector 3` is filed as given.
+  A foreign county such as Barcelona's `B` or an Italian `Sector 3` is filed as given;
+  a blank one is not filed.
 - In Bucharest (`RO-B`) the city is filed as `SECTOR1`…`SECTOR6` (BR-RO-100/101). The sector comes
   from `AddressData::$bucharestSector` (1–6) when set, else from a sector named in the city or the
   county (`Sector 2`, `S.2`, `Sectorul 2`). A Bucharest address without one throws
@@ -1393,7 +1396,7 @@ CnpValidator::isValid('0000000000000'); // true (special ANAF case)
 use BeeCoded\EFacturaSdk\Support\DateHelper;
 
 // Format for ANAF API
-DateHelper::formatForAnaf(now());           // '2024-01-15'
+DateHelper::formatForAnaf(now(DateHelper::ANAF_TIMEZONE)); // '2024-01-15': a Carbon keeps its own timezone, so pin it to ANAF's
 DateHelper::formatForAnaf('2024-01-15');    // '2024-01-15'
 DateHelper::formatForAnaf(1710459000);      // '2024-03-15': a Unix timestamp (s or ms) is read as a Bucharest date
 

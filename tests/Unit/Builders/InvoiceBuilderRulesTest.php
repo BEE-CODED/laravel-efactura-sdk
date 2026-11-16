@@ -160,6 +160,12 @@ describe('S10/S11 Bucharest rewriting only for RO, and only with a sector', func
         'explicit foreign RO-B' => ['FR', 'Paris', 'RO-B'],
     ]);
 
+    it('files no CountrySubentity for a blank foreign county', function (?string $county) {
+        $xml = rbXml(rbInvoice(['customer' => rbParty(['registrationName' => 'Kunde GmbH', 'companyId' => 'DE123456789', 'address' => rbAddress(['city' => 'Berlin', 'county' => $county, 'countryCode' => 'DE', 'postalZone' => '10115'])])]));
+
+        expect(rbAll($xml, '//cac:AccountingCustomerParty//cac:PostalAddress/cbc:CountrySubentity'))->toBe([]);
+    })->with(['null' => [null], 'empty' => [''], 'blank' => ['  ']]);
+
     it('refuses an RO Bucharest address without a resolvable sector', function (string $city, string $county) {
         expect(fn () => rbXml(rbInvoice(['customer' => rbParty(['companyId' => 'RO87654321', 'address' => rbAddress(['city' => $city, 'county' => $county])])])))
             ->toThrow(ValidationException::class, 'needs its sector');
@@ -409,6 +415,11 @@ describe('X1 preceding invoices (BG-3)', function () {
         'unparseable issue date' => [fn () => ['precedingInvoices' => [new PrecedingInvoiceData('F-1', 'not a date')]], 'BT-26'],
         'blank issue date' => [fn () => ['precedingInvoices' => [new PrecedingInvoiceData('F-1', ' ')]], 'BT-26'],
     ]);
+
+    it('refuses more than 999 lines (BR-RO-A999) and files 999', function () {
+        expect(rbAll(rbXml(rbInvoice(['lines' => array_fill(0, 999, rbLine())])), '//cac:InvoiceLine'))->toHaveCount(999)
+            ->and(fn () => rbXml(rbInvoice(['lines' => array_fill(0, 1000, rbLine())])))->toThrow(ValidationException::class, 'BR-RO-A999');
+    });
 });
 
 describe('X2 notes, VAT point date code and delivery', function () {

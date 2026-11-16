@@ -388,7 +388,7 @@ Validates the \`InvoiceData\` DTO and generates a CIUS-RO compliant UBL 2.1 XML 
 | \`issueDate\` | Required |
 | \`currency\` | Three uppercase letters (BR-CL-04); empty is refused |
 | \`dueDate\` | Required on an Invoice (not a credit note) whose amount due is positive (BR-CO-25); a blank string counts as none and is refused on every document |
-| \`lines\` | At least one line item required |
+| \`lines\` | At least one and at most 999 line items (BR-RO-A999) |
 | any string | Valid UTF-8 and XML 1.0 characters only (no control characters other than tab, LF, CR; no U+FFFE/U+FFFF); the message names the field, e.g. \`lines.0.name\` |
 | \`notes\` | At most 20, each non-blank and at most 300 chars (BR-RO-L300) |
 | \`vatPointDateCode\` | \`'3'\`, \`'35'\` or \`'432'\`; not with \`taxPointDate\` (BR-CO-03) |
@@ -449,7 +449,7 @@ results. Opting-in callers that need the pre-rounding total use the new helper.
 | \`city\` | Required (trimmed), max 50 chars; in Bucharest filed as \`SECTOR1\`–\`SECTOR6\` |
 | \`postalZone\` | Optional, max 20 chars |
 | \`countryCode\` | Two uppercase letters (BR-CL-14); empty is refused |
-| \`county\` | Required for Romanian addresses; must map to a valid ISO 3166-2:RO code. Only RO addresses are rewritten |
+| \`county\` | Required for Romanian addresses; must map to a valid ISO 3166-2:RO code. Only RO addresses are rewritten; a blank one outside RO is not filed |
 | \`bucharestSector\` | Optional 1–6, only on a Bucharest RO address. A Bucharest address needs a sector from this, the city or the county (BR-RO-100/101) |
 
 ### Preceding Invoices (BG-3)
@@ -579,7 +579,7 @@ The archive is written to a temporary file in \`$temporaryDirectory\` (default \
 ## \`verify(string $archive, ?string $uploadedXml = null): void\`
 
 1. Limits, always and before any member is read: at most 20 MiB; a readable ZIP of 1 to 32 unencrypted members, each expanding to at most 10 MiB and all together to at most 20 MiB. A failure throws \`ArchiveLimitException\` with \`$reason\` (\`ArchiveLimitReason\`): retryable, not a verdict on the content.
-2. Only with \`$uploadedXml\` (an accepted document whose upload you stored): each member is read with a 10 MiB cap (\`UblDocumentComparator::MAX_BYTES\`, 10 485 760 bytes, also the comparator's own cap, so a member within the limits is never a mismatch for its size) and must be either the uploaded Invoice/CreditNote, exactly once, or an xmldsig \`Signature\` (\`http://www.w3.org/2000/09/xmldsig#\`). Anything else throws \`ArchiveMismatchException\` (final): a DOCTYPE or entity declaration, a member that is not XML or not its declared size, an unrelated document, a second copy, no copy, or a content difference.
+2. Only with \`$uploadedXml\` (an accepted document whose upload you stored): each member is read with a 10 MiB cap (\`UblDocumentComparator::MAX_BYTES\`, 10 485 760 bytes, also the comparator's own cap, so a member within the limits is never a mismatch for its size) and must be either the uploaded Invoice/CreditNote, exactly once, or an xmldsig \`Signature\` (\`http://www.w3.org/2000/09/xmldsig#\`). Anything else throws \`ArchiveMismatchException\` (final): a DOCTYPE or entity declaration, a member holding more than 1 000 000 \`<\`, a member that is not XML or not its declared size, an unrelated document, a second copy, no copy, or a content difference.
 
 An \`$uploadedXml\` over 10 MiB or over 1 000 000 \`<\` can never be compared: \`verify()\` throws \`ArchiveMismatchException\` (final) before step 1, so its archive is never a retryable \`MemberTooLarge\`.
 

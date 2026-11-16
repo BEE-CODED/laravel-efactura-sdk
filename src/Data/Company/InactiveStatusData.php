@@ -31,7 +31,7 @@ class InactiveStatusData extends Data
     public static function fromAnafResponse(array $data): self
     {
         return new self(
-            isInactive: (bool) ($data['statusInactivi'] ?? false),
+            isInactive: AnafValue::flag($data['statusInactivi'] ?? null),
             inactiveDate: self::parseDate($data['dataInactivare'] ?? null),
             reactivationDate: self::parseDate($data['dataReactivare'] ?? null),
             publishDate: self::parseDate($data['dataPublicare'] ?? null),

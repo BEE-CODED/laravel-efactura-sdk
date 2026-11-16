@@ -9,6 +9,7 @@ return [
     'invoice_number_max_length' => 'Numărul facturii nu trebuie să depășească 200 de caractere (BR-RO-L200)',
     'issue_date_required' => 'Data emiterii este obligatorie',
     'at_least_one_line_required' => 'Este necesară cel puțin o linie de factură',
+    'lines_max_count' => 'O factură poate avea cel mult 999 de linii (BR-RO-A999)',
     'currency_code_invalid' => 'Codul monedei trebuie să fie format din trei litere mari (ISO 4217, BR-CL-04)',
     'due_date_required_for_positive_payable' => 'O factură cu o sumă de plată pozitivă trebuie să aibă o dată scadentă (BR-CO-25)',
 

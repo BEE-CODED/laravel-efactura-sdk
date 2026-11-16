@@ -51,6 +51,10 @@ final class DateHelper
     /**
      * Format a date for ANAF API (YYYY-MM-DD format).
      *
+     * A Unix timestamp is read on ANAF's calendar (Europe/Bucharest); a Carbon keeps its own timezone and a
+     * string is parsed in the app timezone (see toTimestamp()). For today on ANAF's calendar, pass
+     * now(DateHelper::ANAF_TIMEZONE) or use getCurrentDateForAnaf().
+     *
      * @param  CarbonInterface|string|int  $date  Any Carbon date, a string, or a Unix timestamp in seconds or milliseconds (read as a Europe/Bucharest date)
      * @return string The formatted date string
      *

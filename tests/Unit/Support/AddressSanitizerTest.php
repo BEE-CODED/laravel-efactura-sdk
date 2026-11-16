@@ -17,6 +17,8 @@ describe('canonicalize', function () {
         'foreign B kept' => [['city' => 'Barcelona', 'county' => 'B', 'countryCode' => 'ES'], ['county' => 'B', 'city' => 'Barcelona']],
         'foreign sector kept' => [['city' => 'Chisinau', 'county' => 'Sect. 4', 'countryCode' => 'MD'], ['county' => 'Sect. 4', 'city' => 'Chisinau']],
         'foreign without county' => [['city' => 'Berlin', 'countryCode' => 'DE'], ['county' => null, 'city' => 'Berlin']],
+        'foreign empty county' => [['city' => 'Berlin', 'county' => '', 'countryCode' => 'DE'], ['county' => null, 'city' => 'Berlin']],
+        'foreign blank county' => [['city' => 'Berlin', 'county' => '  ', 'countryCode' => 'DE'], ['county' => null, 'city' => 'Berlin']],
     ]);
 
     it('refuses what ANAF would reject or what contradicts itself', function (array $address, string $message) {

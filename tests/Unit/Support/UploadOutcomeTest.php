@@ -225,7 +225,7 @@ describe('the SDK rate-limit metering', function () {
         Http::assertSentCount(1);
     });
 
-    it('does not claim a read was never sent once ANAF answered an earlier attempt', function () {
+    it('reads a failed retry metering as possibly sent once ANAF answered an earlier attempt', function () {
         $failure = new RuntimeException('Connection refused');
         $calls = 0;
         $this->rateLimiter->shouldReceive('checkGlobal')->andReturnUsing(function () use (&$calls, $failure) {
@@ -237,8 +237,10 @@ describe('the SDK rate-limit metering', function () {
 
         $client = new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour());
 
-        // The 502 reached ANAF (and counts there): the store's failure surfaces as itself.
-        expect(fn () => $client->getStatusMessage('12345'))->toThrow(fn (RuntimeException $e) => expect($e)->toBe($failure));
+        // The 502 reached ANAF (and counts there): possibly sent, so ApiException(500), never RequestNotSentException.
+        expect(fn () => $client->getStatusMessage('12345'))->toThrow(fn (ApiException $e) => expect($e)->not->toBeInstanceOf(RequestNotSentException::class)
+            ->and($e->statusCode)->toBe(500)
+            ->and($e->getPrevious())->toBe($failure));
         Http::assertSentCount(1);
     });
 

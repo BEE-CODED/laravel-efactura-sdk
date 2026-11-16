@@ -388,6 +388,11 @@ class InvoiceBuilder
             throw new ValidationException(__('efactura-sdk::validation.at_least_one_line_required'));
         }
 
+        // BR-RO-A999: at most 999 lines
+        if (count($input->lines) > 999) {
+            throw new ValidationException(__('efactura-sdk::validation.lines_max_count'));
+        }
+
         foreach ($input->lines as $index => $line) {
             $this->validateLine($line, $index, $input->supplier->isVatPayer);
         }

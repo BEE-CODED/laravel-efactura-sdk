@@ -57,3 +57,15 @@ it('reads the same verdicts from the XML header ANAF answers with', function (st
     'only Errors' => ['', '<Errors errorMessage="Nu exista factura cu id_incarcare= 5001234567"/>', StatusVerdict::AnafError],
     'an unknown stare' => ['stare="altceva" id_descarcare="3001234567"', '', StatusVerdict::Unknown],
 ]);
+
+it('keeps ANAF errors next to a status in both forms', function (array|string $body, StatusVerdict $verdict, ?array $errors) {
+    Http::fake(['*' => is_string($body) ? Http::response($body, 200, ['Content-Type' => 'application/xml']) : Http::response($body)]);
+
+    $status = (new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->getStatusMessage('5001234567');
+
+    expect($status->verdict())->toBe($verdict)->and($status->errors)->toBe($errors);
+})->with([
+    'JSON nok' => [['stare' => 'nok', 'Errors' => 'Nu aveti dreptul'], StatusVerdict::RejectedWithoutDownloadId, ['Nu aveti dreptul']],
+    'XML nok' => ['<?xml version="1.0"?><header xmlns="mfp:anaf:dgti:efactura:stareMesajFactura:v1" stare="nok"><Errors errorMessage="Nu aveti dreptul"/></header>', StatusVerdict::RejectedWithoutDownloadId, ['Nu aveti dreptul']],
+    'XML ok with a blank Errors' => ['<?xml version="1.0"?><header xmlns="mfp:anaf:dgti:efactura:stareMesajFactura:v1" stare="ok" id_descarcare="3001234567"><Errors errorMessage=" "/></header>', StatusVerdict::Ready, null],
+]);

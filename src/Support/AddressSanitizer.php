@@ -256,7 +256,8 @@ class AddressSanitizer
      * Only Romanian addresses are rewritten (BR-RO-100/101/110/111 bind only to country RO):
      * the county becomes its ISO 3166-2:RO code and, in Bucharest (RO-B), the city becomes
      * SECTORn, with n taken from $bucharestSector, else from the city or county text. Other
-     * countries keep their county and city as given, even when they look like "B" or "Sector 3".
+     * countries keep their county and city as given, even when they look like "B" or "Sector 3";
+     * a blank county is none (null).
      *
      * @return array{county: ?string, city: string}
      *
@@ -267,7 +268,8 @@ class AddressSanitizer
     public static function canonicalize(AddressData $address): array
     {
         $sector = $address->bucharestSector;
-        $county = $address->county;
+        // A blank county outside RO is no county, so none is filed (an RO one is refused below and by the builder).
+        $county = $address->countryCode !== 'RO' && trim((string) $address->county) === '' ? null : $address->county;
         if ($address->countryCode === 'RO' && $county !== null) {
             $county = self::isBucharest($county) ? 'RO-B' : self::sanitizeCounty($county)
                 ?? throw new ValidationException(__('efactura-sdk::validation.county_invalid_iso_code', ['county' => $county]));

@@ -6,6 +6,9 @@ use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Services\AnafAuthenticator;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Psr7\Request;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\Http;
 
@@ -283,6 +286,17 @@ describe('AnafAuthenticator', function () {
             $auth = createAuthenticator(Http::getFacadeRoot());
             $auth->refreshAccessToken('expired-refresh-token');
         })->throws(AuthenticationException::class, 'Token refresh failed');
+
+        it('carries code 0 for a transport failure and the HTTP status for an error answer', function (Closure $answer, int $code) {
+            Http::fake(['*' => $answer]);
+
+            expect(fn () => createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('refresh-token'))
+                ->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe($code));
+        })->with([
+            'connection failure' => [fn ($request) => Create::rejectionFor(new ConnectException('cURL error 28: Operation timed out', new Request('POST', $request->url()))), 0],
+            'OAuth server error (503)' => [fn () => Http::response(null, 503), 503],
+            'invalid_grant (400)' => [fn () => Http::response(['error' => 'invalid_grant'], 400), 400],
+        ]);
     });
 
     describe('decodeState', function () {
