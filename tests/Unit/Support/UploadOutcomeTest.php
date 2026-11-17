@@ -203,6 +203,7 @@ describe('the SDK rate-limit metering', function () {
 
         expect(fn () => $client->uploadDocument('<Invoice/>'))
             ->toThrow(fn (RequestNotSentException $e) => expect($e->getPrevious())->toBe($failure)
+                ->and($e->getMessage())->not->toContain('Connection refused')
                 ->and(outcomeParts(UploadOutcome::fromThrowable($e)))->toBe([UploadOutcomeKind::NotSent, UploadOutcomeReason::Transport, null, null, null]));
         Http::assertNothingSent();
     });
@@ -242,7 +243,8 @@ describe('the SDK rate-limit metering', function () {
         // The 502 reached ANAF (and counts there): possibly sent, so ApiException(500), never RequestNotSentException.
         expect(fn () => $client->getStatusMessage('12345'))->toThrow(fn (ApiException $e) => expect($e)->not->toBeInstanceOf(RequestNotSentException::class)
             ->and($e->statusCode)->toBe(500)
-            ->and($e->getPrevious())->toBe($failure));
+            ->and($e->getPrevious())->toBe($failure)
+            ->and($e->getMessage())->not->toContain('Connection refused'));
         Http::assertSentCount(1);
     });
 
@@ -316,6 +318,7 @@ describe('the token refresh lock', function () {
         expect(fn () => $client->uploadDocument('<Invoice/>'))
             ->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe(0)
                 ->and($e->getPrevious())->toBe($failure)
+                ->and($e->getMessage())->not->toContain('Connection refused')
                 ->and(outcomeParts(UploadOutcome::fromThrowable($e)))->toBe([UploadOutcomeKind::NotSent, UploadOutcomeReason::Transient, null, null, null]));
         Http::assertNothingSent();
     })->with(['the lock wait' => false, 'creating the lock' => true]);

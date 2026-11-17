@@ -45,6 +45,7 @@ return [
     'line_tax_percent_range' => 'Line :lineNum: Tax percent must be between 0 and 100',
     'line_tax_not_allowed_for_non_vat_payer' => 'Line :lineNum: A supplier that is not registered for VAT cannot charge VAT (BR-O-09)',
     'line_tax_amount_must_be_zero_for_zero_rate' => 'Line :lineNum: A zero-rated line cannot carry a VAT amount (BR-Z-09)',
+    'line_tax_sign_mismatch' => 'Line :lineNum: taxAmount must have the same sign as the quantity: credited VAT cannot be filed as collected, or vice versa',
 
     // VAT categories (uses :category)
     'explicit_category_supplier_must_be_vat_payer' => 'Lines in VAT category :category require a supplier registered for VAT; category O cannot be combined with :category.',

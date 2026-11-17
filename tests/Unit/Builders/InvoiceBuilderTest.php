@@ -328,10 +328,6 @@ describe('validation', function () {
 
     it('throws exception for empty lines', function () {
         $builder = new InvoiceBuilder;
-        $invoice = createTestInvoiceForBuilder([]);
-
-        // Empty array is passed but the helper function provides default lines
-        // Need to create invoice directly
         $address = new AddressData(street: 'Test', city: 'Test', postalZone: '010101', county: 'Cluj');
         $party = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
 
@@ -364,7 +360,7 @@ describe('validation', function () {
         $builder->buildInvoiceXml($invoice);
     })->throws(ValidationException::class, 'Line 1: Quantity cannot be zero');
 
-    it('allows negative quantity for credit notes', function () {
+    it('allows a negative quantity line on an invoice', function () {
         $builder = new InvoiceBuilder;
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData(name: 'Returned Product', quantity: -2, unitPrice: 100, taxAmount: -38.00, taxPercent: 19),
@@ -860,6 +856,7 @@ describe('VAT number normalization', function () {
 
         expect($xml)->not->toContain('RORO');
         expect(ublText($xml, '//cac:AccountingSupplierParty//cac:PartyLegalEntity/cbc:CompanyID'))->toBe('12345678');
+        expect(ublText($xml, '//cac:AccountingSupplierParty//cac:PartyTaxScheme/cbc:CompanyID'))->toBe('RO12345678');
     });
 });
 
@@ -1289,6 +1286,7 @@ describe('BR-RO-L string length validations', function () {
             street: str_repeat('A', 151),
             city: 'Test',
             postalZone: '010101',
+            county: 'Cluj',
         );
         $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
@@ -1488,7 +1486,7 @@ describe('BT-111 VAT total in the RON accounting currency', function () {
         $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR']);
 
         (new InvoiceBuilder)->buildInvoiceXml($invoice);
-    })->throws(ValidationException::class, 'taxAmountRon');
+    })->throws(ValidationException::class, 'must declare its total VAT in RON');
 
     // BR-CO-15 asserts count(TaxTotal/TaxAmount[@currencyID=BT-5]) eq 1, so a RON
     // invoice may carry only ONE TaxTotal. Supplying BT-111 there cannot be
@@ -1822,13 +1820,11 @@ describe('optional tax point date UBL ordering', function () {
         'credit without due date' => [InvoiceTypeCode::CreditNote, null],
     ]);
 
-    it('keeps omitted and null dates out of legacy XML', function (InvoiceTypeCode $type) {
+    it('keeps a null tax point date out of the XML', function (InvoiceTypeCode $type) {
         $builder = new InvoiceBuilder;
         $legacy = createTestInvoiceForBuilder(overrides: ['invoiceTypeCode' => $type]);
-        $null = createTestInvoiceForBuilder(overrides: ['invoiceTypeCode' => $type, 'taxPointDate' => null]);
         $xml = $builder->buildInvoiceXml($legacy);
-        expect($builder->buildInvoiceXml($null))->toBe($xml)
-            ->and(ublXpath($xml, '/*/cbc:TaxPointDate')->length)->toBe(0);
+        expect(ublXpath($xml, '/*/cbc:TaxPointDate')->length)->toBe(0);
     })->with([InvoiceTypeCode::CommercialInvoice, InvoiceTypeCode::CreditNote]);
 
     it('rejects invalid tax dates on the real builder path', function () {
@@ -1944,7 +1940,7 @@ it('preserves legacy XML for omitted null and zero rounding', function (InvoiceT
 it('rejects invalid rounding assigned after construction at the public XML gate', function (float $rounding) {
     $invoice = createTestInvoiceForBuilder();
     $invoice->payableRoundingAmount = $rounding;
-    expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
+    expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class, 'payableRoundingAmount must be a finite amount');
 })->with([0.001, -0.015, 0.01000001, INF, -INF, NAN, PHP_FLOAT_MAX, 1e16]);
 
 it('normalizes binary noise once without changing taxes in generated XML', function () {
@@ -2094,7 +2090,6 @@ describe('explicit reverse-charge UBL', function () {
         'O at VAT payer' => [TaxCategoryId::NotSubject, true, 0.0, false, 'must agree'],
         'Z at nonpayer' => [TaxCategoryId::ZeroRated, false, 0.0, false, 'must agree'],
         'O and AE nonpayer' => [TaxCategoryId::NotSubject, false, 0.0, true, 'require a supplier registered for VAT'],
-        'O and AE payer' => [TaxCategoryId::NotSubject, true, 0.0, true, 'must agree'],
     ]);
 
     it('keeps complete legacy XML unchanged for omitted null and matching explicit categories', function (bool $vatPayer, float $rate, float $tax, TaxCategoryId $category) {

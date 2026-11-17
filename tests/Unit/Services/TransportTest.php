@@ -140,7 +140,7 @@ describe('a failure before the request left this machine', function () {
         'connect-phase timeout (28)' => [28, 'Connection timed out after 10001 milliseconds', $connectPhase],
     ]);
 
-    it('keeps retrying when a retry setting is blank or negative', function (mixed $retryTimes, mixed $retryDelay, bool $atBoot, int $sent) {
+    it('reads a blank, zero or negative retry setting as its default or floor', function (mixed $retryTimes, mixed $retryDelay, bool $atBoot, int $sent) {
         config()->set('efactura-sdk.http.retry_times', $retryTimes);
         config()->set('efactura-sdk.http.retry_delay', $retryDelay);
         if ($atBoot) {
@@ -267,7 +267,7 @@ describe('the ANAF service endpoints', function () {
 
         Http::assertSent(fn ($request) => $request->url() === $url
             && $request->header('Content-Type') === ['text/plain']
-            && $request->header('Authorization') === ['Bearer token']
+            && ! $request->hasHeader('Authorization')
             && $request->body() === '<Invoice/>');
         // Only the shared request() logs the body lengths.
         $logger->shouldHaveReceived('debug')->withArgs(
@@ -304,12 +304,39 @@ describe('the ANAF service endpoints', function () {
             return $request->method() === 'POST'
                 && $request->url() === $url
                 && $request->isMultipart()
-                && $request->header('Authorization') === ['Bearer token']
+                && ! $request->hasHeader('Authorization')
                 && $parts === ['file' => '<Invoice/>', 'signature' => $signature]
                 && str_ends_with($request->body(), "--{$match[1]}--\r\n");
         });
         Http::assertSentCount(1);
         $logger->shouldHaveReceived('debug')->withArgs(fn (string $message) => str_starts_with($message, 'POST '.$url))->once();
+    });
+
+    it('sends no bearer and refreshes nothing for ANAF\'s public validation service', function () {
+        Http::fake(['webservicesp.anaf.ro/*' => Http::response(['stare' => 'ok'], 200)]);
+        // Expired: a refresh would call the bare authenticator mock and throw.
+        $client = new EFacturaClient(vatNumber: '12345678', accessToken: 'token', refreshToken: 'refresh', expiresAt: Carbon::now()->subMinute());
+
+        $client->validateXml('<Invoice/>', DocumentStandardType::FACT1);
+
+        Http::assertSent(fn ($request) => str_contains($request->url(), 'webservicesp.anaf.ro') && ! $request->hasHeader('Authorization'));
+    });
+
+    it('keeps the bearer for a service URL on the e-Factura API host', function () {
+        config()->set('efactura-sdk.endpoints.services.verify_signature', 'https://api.anaf.ro/api/validate/signature');
+        Http::fake(['*' => Http::response([], 200)]);
+
+        transportClient()->verifySignature('<Invoice/>', '<Signature/>');
+
+        Http::assertSent(fn ($request) => $request->hasHeader('Authorization', 'Bearer token'));
+    });
+
+    it('uploads to the shipped API URL when a host config overrides only part of endpoints', function () {
+        config()->set('efactura-sdk.endpoints', ['services' => config('efactura-sdk.endpoints.services')]);
+        Http::fake(['api.anaf.ro/test/FCTEL/rest/upload*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="5001"/>', 200)]);
+
+        expect(transportClient()->uploadDocument('<Invoice/>')->indexIncarcare)->toBe('5001');
+        Http::assertSentCount(1);
     });
 
     it('refuses a blank invoice or signature before spending quota', function (string $xml, string $signature) {

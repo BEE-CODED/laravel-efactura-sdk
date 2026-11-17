@@ -198,7 +198,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
                 sprintf(
                     'Batch size exceeds maximum allowed (%d). Please split your request.',
                     self::MAX_BATCH_SIZE
-                )
+                ),
+                $invalidCodes
             );
         }
 
@@ -313,7 +314,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
         // Every confirmed company must also parse; a skipped entry would read as absent.
         if ($result === null || ! $result->success || count($result->companies) !== count($body['found'])) {
-            $this->logger->warning('ANAF lookup answer does not confirm the requested companies', ['cuis' => $cuis]);
+            $this->logger->warning('ANAF lookup answer does not confirm the requested companies', ['count' => count($cuis)]);
 
             return CompanyLookupResultData::failure(
                 'ANAF response does not confirm the requested companies.',

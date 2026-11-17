@@ -93,12 +93,13 @@ final class DateHelper
     /**
      * Parse a date string like Carbon::parse(), refusing what Carbon would roll over.
      *
-     * @throws InvalidArgumentException When the string is blank, unparseable or impossible (2024-02-30, 24:00)
+     * @throws InvalidArgumentException When the string is blank, unparseable, impossible (2024-02-30, 24:00) or a slash date starting with the day or month (05/03/2024)
      */
     public static function parse(string $value): Carbon
     {
         // timelib warns on day/month overflow and on 24:00 or :60; Carbon would roll them over.
-        if (trim($value) === '' || date_parse($value)['warnings'] !== []) {
+        // ... and n/n[/y], which timelib reads month-first (05/03/2024 would be 3 May).
+        if (trim($value) === '' || preg_match('#\A\s*\d{1,2}/\d#', $value) === 1 || date_parse($value)['warnings'] !== []) {
             throw new InvalidArgumentException('Invalid date provided: '.$value);
         }
 

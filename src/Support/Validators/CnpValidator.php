@@ -33,7 +33,7 @@ final class CnpValidator
     private const ANAF_ZERO_CNP = '0000000000000';
 
     /**
-     * Check if a string has valid CNP format (13 digits).
+     * Check if a string has the CNP shape: 13 digits starting with 1-9, or ANAF's zero CNP.
      * Does NOT validate checksum or date - use isValid() for full validation.
      *
      * @param  string  $cnp  The CNP code to check
@@ -41,7 +41,7 @@ final class CnpValidator
      */
     public static function isValidFormat(string $cnp): bool
     {
-        return (bool) preg_match('/^\d{13}$/', $cnp);
+        return preg_match('/\A(?:[1-9]\d{12}|0{13})\z/', $cnp) === 1;
     }
 
     /**

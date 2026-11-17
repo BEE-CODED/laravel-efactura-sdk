@@ -12,7 +12,7 @@ describe('canonicalize', function () {
     })->with([
         'RO county name' => [['city' => 'Cluj-Napoca', 'county' => 'Cluj'], ['county' => 'RO-CJ', 'city' => 'Cluj-Napoca']],
         'explicit sector wins' => [['city' => 'Bucuresti', 'county' => 'Municipiul Bucuresti', 'bucharestSector' => 5], ['county' => 'RO-B', 'city' => 'SECTOR5']],
-        'sector in the city' => [['city' => 'Sectorul 2', 'county' => 'B'], ['county' => 'RO-B', 'city' => 'SECTOR2']],
+        'sector in the city' => [['city' => 'Sectorul 2', 'county' => 'B', 'bucharestSector' => 5], ['county' => 'RO-B', 'city' => 'SECTOR5']],
         'sector in the county' => [['city' => 'Bucuresti', 'county' => 'Sector 6'], ['county' => 'RO-B', 'city' => 'SECTOR6']],
         'foreign B kept' => [['city' => 'Barcelona', 'county' => 'B', 'countryCode' => 'ES'], ['county' => 'B', 'city' => 'Barcelona']],
         'foreign sector kept' => [['city' => 'Chisinau', 'county' => 'Sect. 4', 'countryCode' => 'MD'], ['county' => 'Sect. 4', 'city' => 'Chisinau']],
@@ -30,7 +30,7 @@ describe('canonicalize', function () {
         'unknown RO county' => [['city' => 'X', 'county' => 'Atlantis'], 'could not be mapped'],
         'sector out of range' => [['city' => 'Bucuresti', 'county' => 'B', 'bucharestSector' => 7], 'bucharestSector must be 1 to 6'],
         'sector outside Bucharest' => [['city' => 'Cluj-Napoca', 'county' => 'Cluj', 'bucharestSector' => 1], 'bucharestSector must be 1 to 6'],
-        'sector on a foreign address' => [['city' => 'Paris', 'county' => 'B', 'countryCode' => 'FR', 'bucharestSector' => 1], 'bucharestSector must be 1 to 6'],
+        'sector on a foreign address' => [['city' => 'Paris', 'county' => 'RO-B', 'countryCode' => 'FR', 'bucharestSector' => 1], 'bucharestSector must be 1 to 6'],
     ]);
 });
 
@@ -57,6 +57,15 @@ describe('normalizeDiacritics', function () {
 });
 
 describe('sanitizeCounty', function () {
+    it('maps a two-letter county code and a spaced hyphen or dash', function (string $county, string $expected) {
+        expect(AddressSanitizer::sanitizeCounty($county))->toBe($expected);
+    })->with([
+        'plate code' => ['CJ', 'RO-CJ'],
+        'lowercase plate code' => ['if', 'RO-IF'],
+        'spaced hyphen' => ['Caras - Severin', 'RO-CS'],
+        'spaced en dash' => ["Bistrita \u{2013} Nasaud", 'RO-BN'],
+    ]);
+
     it('converts county names to ISO 3166-2:RO codes', function () {
         expect(AddressSanitizer::sanitizeCounty('București'))->toBe('RO-B');
         expect(AddressSanitizer::sanitizeCounty('Bucuresti'))->toBe('RO-B');

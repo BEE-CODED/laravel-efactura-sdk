@@ -18,6 +18,8 @@ use DOMNode;
  * builder writes (NUMERIC_ELEMENTS) may differ; CDATA counts as text. Any other difference,
  * a DOCTYPE or entity declaration, unparseable XML, a comment or processing instruction
  * inside the root, or text mixed with child elements throws ArchiveMismatchException.
+ * Two byte-identical documents are always the same: the comment, processing-instruction
+ * and mixed-text refusals apply only when they differ.
  */
 final class UblDocumentComparator
 {
@@ -36,7 +38,9 @@ final class UblDocumentComparator
      */
     public function assertSameDocument(string $candidate, string $expected): void
     {
-        if (! $this->same($this->root($candidate), $this->root($expected))) {
+        $a = $this->root($candidate);
+        $b = $this->root($expected);
+        if ($candidate !== $expected && ! $this->same($a, $b)) {
             throw new ArchiveMismatchException('The document differs from the expected one.');
         }
     }

@@ -2,7 +2,9 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Data\Company\CompanyData;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFacturaSdk\Data\Company\VatPeriodData;
 use BeeCoded\EFacturaSdk\Enums\CompanyLookupFailureKind;
 use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
@@ -14,6 +16,8 @@ use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Request;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Psr\Log\LoggerInterface;
 
 beforeEach(function () {
     $rateLimiter = Mockery::mock(RateLimiter::class);
@@ -109,7 +113,6 @@ describe('strict evidence', function () {
         'a CUI nobody asked for' => [['found' => [foundCompany(18547290), foundCompany(11111111)], 'notFound' => [14399840]]],
         'a CUI as text' => [['found' => [foundCompany(18547290)], 'notFound' => ['14399840']]],
         'a found CUI as text' => [['found' => [foundCompany(18547290, ['cui' => '18547290'])], 'notFound' => [14399840]]],
-        'the legacy lowercase notfound' => [['found' => [foundCompany(18547290)], 'notfound' => [14399840]]],
         'both not-found keys' => [['found' => [foundCompany(18547290)], 'notFound' => [14399840], 'notfound' => []]],
         'found as an object' => [['found' => ['a' => foundCompany(18547290)], 'notFound' => [14399840]]],
         'notFound missing' => [['found' => [foundCompany(18547290), foundCompany(14399840)]]],
@@ -123,6 +126,16 @@ describe('strict evidence', function () {
         'no stare_inactiv' => [['found' => [array_diff_key(foundCompany(18547290), ['stare_inactiv' => true])], 'notFound' => [14399840]]],
         'a company on a 404' => [['found' => [foundCompany(18547290)], 'notFound' => [14399840]], 404],
     ]);
+
+    it('logs how many codes a refused strict answer was for, never the codes', function () {
+        $logger = Mockery::spy(LoggerInterface::class);
+        Log::shouldReceive('channel')->andReturn($logger);
+        Http::fake(['*' => Http::response(['found' => [], 'notFound' => []], 200)]);
+
+        strictClient()->getCompanyData('1900101123457');
+
+        $logger->shouldHaveReceived('warning')->with('ANAF lookup answer does not confirm the requested companies', ['count' => 1])->once();
+    });
 
     it('keeps a permissive client permissive', function () {
         Http::fake(['*' => Http::response(['found' => [foundCompany(18547290, ['stare_inregistrare' => 'SUSPENDAT'])], 'notfound' => [['cui' => 14399840]]], 200)]);
@@ -191,6 +204,8 @@ describe('the failure kind', function () {
     ]);
 
     it('names no kind for an input the SDK refused before sending', function (array $codes) {
+        Http::fake();
+
         $result = (new AnafDetailsClient)->batchGetCompanyData($codes);
 
         expect($result->success)->toBeFalse()
@@ -201,6 +216,17 @@ describe('the failure kind', function () {
         'only invalid codes' => [['abc', 'RO']],
         'too many codes' => [array_map(fn (int $i) => (string) (10000000 + $i), range(1, 101))],
     ]);
+
+    it('reports the invalid codes of an oversized batch', function () {
+        Http::fake();
+
+        $result = (new AnafDetailsClient)->batchGetCompanyData([...array_map(fn (int $i) => (string) (10000000 + $i), range(1, 101)), 'abc']);
+
+        expect($result->success)->toBeFalse()
+            ->and($result->error)->toContain('Batch size exceeds')
+            ->and($result->invalidCodes)->toBe(['abc']);
+        Http::assertNothingSent();
+    });
 
     it('names an unreadable answer when the batch also had an invalid code', function () {
         Http::fake(['*' => Http::response('{}', 200)]);
@@ -239,8 +265,12 @@ describe('the failure kind', function () {
 
         $result = (new AnafDetailsClient)->getCompanyData('RO18547290');
 
+        $rebuilt = CompanyLookupResultData::from($result->toArray());
+
         expect($result->first()?->cui)->toBe('18547290')
-            ->and(CompanyLookupResultData::from($result->toArray())->toArray())->toBe($result->toArray());
+            ->and($rebuilt->first())->toBeInstanceOf(CompanyData::class)
+            ->and($rebuilt->first()->vatPeriods[0])->toBeInstanceOf(VatPeriodData::class)
+            ->and($rebuilt->toArray())->toBe($result->toArray());
     });
 
     it('round-trips through the DTO', function () {

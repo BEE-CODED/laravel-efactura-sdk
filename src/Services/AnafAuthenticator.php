@@ -37,7 +37,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
     private readonly string $tokenUrl;
 
-    private readonly int $timeout;
+    private readonly float $timeout;
 
     /** Whether a token request that provably never left may be sent once more (http.retry_times > 1). */
     private readonly bool $retryUnsent;
@@ -58,7 +58,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         $this->retryUnsent = (int) ($config['http']['retry_times'] ?? 3) > 1;
         // env() yields a string; an empty or zero value would be Guzzle's "no timeout".
         $timeout = (float) ($config['http']['timeout'] ?? 30);
-        $this->timeout = $timeout > 0 ? max(1, (int) ceil($timeout)) : 30;
+        $this->timeout = $timeout > 0 ? $timeout : 30;
     }
 
     /**
@@ -243,6 +243,8 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         try {
             $response = $this->http
                 ->timeout($this->timeout)
+                // A redirect hides that the first hop reached ANAF: a failure on a later hop would read as "not sent".
+                ->withoutRedirecting()
                 ->asForm()
                 ->withBasicAuth($this->clientId, $this->clientSecret)
                 ->withHeaders([
@@ -264,11 +266,8 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
                 ]
             );
 
-            throw new AuthenticationException(
-                'Failed to communicate with ANAF OAuth server: '.$e->getMessage(),
-                0,
-                $e
-            );
+            // No previous: the HTTP exception's frames hold the form data and the client secret.
+            throw new AuthenticationException('Failed to communicate with ANAF OAuth server: '.$e->getMessage(), 0);
         }
     }
 

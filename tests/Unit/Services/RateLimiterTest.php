@@ -308,6 +308,20 @@ describe('getRemainingQuota', function () {
             ->toBe(['limit' => 100, 'remaining' => 40, 'resetsIn' => 86400]);
     });
 
+    it('reports every limit as fully available while limiting is disabled', function () {
+        config(['efactura-sdk.rate_limits.status_per_day_message' => 2]);
+        $limiter = new RateLimiter;
+        $limiter->checkStatusQuery('MSG123');
+        $limiter->checkStatusQuery('MSG123');
+        $limiter->checkGlobal();
+
+        config(['efactura-sdk.rate_limits.enabled' => false]);
+
+        expect($limiter->getRemainingQuota('status', 'MSG123'))->toBe(['limit' => 2, 'remaining' => 2, 'resetsIn' => 0])
+            ->and($limiter->getRemainingQuota('global')['remaining'])->toBe($limiter->getRemainingQuota('global')['limit'])
+            ->and(fn () => $limiter->getRemainingQuota('status', ''))->toThrow(InvalidArgumentException::class);
+    });
+
     it('reads the provider limit from config, defaulting to 100 for a config published before it existed', function () {
         config(['efactura-sdk.rate_limits.status_per_day_message_provider' => 80]);
 
@@ -517,6 +531,8 @@ describe('cache store warning', function () {
         'array limiter under a redis default' => [['cache.default' => 'redis', 'cache.limiter' => 'array'], 1],
         'file driver under another store name' => [['cache.default' => 'local', 'cache.stores.local' => ['driver' => 'file', 'path' => sys_get_temp_dir()]], 1],
         'array default but a redis limiter' => [['cache.default' => 'array', 'cache.limiter' => 'redis'], 0],
+        'apc driver' => [['cache.default' => 'local', 'cache.stores.local' => ['driver' => 'apc']], 1],
+        'session driver' => [['cache.default' => 'local', 'cache.stores.local' => ['driver' => 'session']], 1],
     ]);
 });
 

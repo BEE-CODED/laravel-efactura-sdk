@@ -189,6 +189,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *                                                             primary store (no read replica, no cache): a
      *                                                             lagging copy hands back a spent refresh token.
      *                                                             Strongly recommended for multi-worker deployments.
+     *                                                             An exception it throws fails the call with
+     *                                                             AuthenticationException (code 0) before any refresh.
      * @param  (Closure(OAuthTokensData): mixed)|null  $tokenPersister  Optional callback that stores the
      *                                                                  tokens a refresh just minted. Called
      *                                                                  inside the refresh lock, right after a
@@ -282,9 +284,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      */
     public static function getBaseUrl(): string
     {
+        // mergeConfigFrom merges only the top level: a host config overriding part of endpoints drops these keys.
         return config('efactura-sdk.sandbox', true)
-            ? config('efactura-sdk.endpoints.api.test')
-            : config('efactura-sdk.endpoints.api.production');
+            ? (config('efactura-sdk.endpoints.api.test') ?: 'https://api.anaf.ro/test/FCTEL/rest')
+            : (config('efactura-sdk.endpoints.api.production') ?: 'https://api.anaf.ro/prod/FCTEL/rest');
     }
 
     /**
@@ -335,7 +338,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * or those buckets under-count by the retry factor. That is how ANAF comes to
      * trip "limita de descarcare depasita" for 24h while getRemainingQuota() still
      * reports headroom. An attempt that provably never left was never counted at
-     * ANAF, so its retry spends nothing: an outage cannot burn a day's quota.
+     * ANAF, so its retry spends nothing more; the call's own unit, metered before the first attempt, stays spent.
      *
      * @throws RateLimitExceededException When the retry would exceed a cap
      */
@@ -371,16 +374,20 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *                                               metered only globally pass null.
      * @param  (Closure(): void)|null  $peek  Refuses, counting nothing, when that bucket
      *                                        has no room (RateLimiter::ensureAvailable())
+     * @param  bool  $authenticated  Whether the request carries the access token, which is then
+     *                               obtained (and refreshed) first
      *
      * @throws AuthenticationException When the access token cannot be refreshed
      * @throws RateLimitExceededException When a cap is already exhausted
      * @throws RequestNotSentException When the limiter's cache store fails
      * @throws ApiException (500) When the store fails before the retry of a read an earlier attempt may have delivered
      */
-    private function meterCall(?Closure $perEndpoint = null, ?Closure $peek = null): void
+    private function meterCall(?Closure $perEndpoint = null, ?Closure $peek = null, bool $authenticated = true): void
     {
         // A refresh that fails (OAuth down, lock timeout, latched failure) must spend no quota; the request's own call is then free.
-        $this->getValidAccessToken();
+        if ($authenticated) {
+            $this->getValidAccessToken();
+        }
 
         $meter = function (bool $afterDelivery = false) use ($perEndpoint, $peek): void {
             try {
@@ -403,10 +410,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 // request was never sent; but when an earlier attempt of a read may have reached ANAF, the call may
                 // have been sent: report it like a transport failure after delivery (uploads never get here).
                 if ($afterDelivery) {
-                    throw new ApiException('Rate limit metering failed before a retry: '.$e->getMessage(), 500, null, $e);
+                    throw new ApiException('Rate limit metering failed before a retry ('.class_basename($e).').', 500, null, $e);
                 }
 
-                throw new RequestNotSentException('Rate limit metering failed before the request was sent: '.$e->getMessage(), $e);
+                throw new RequestNotSentException('Rate limit metering failed before the request was sent ('.class_basename($e).').', $e);
             }
         };
 
@@ -670,12 +677,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.validate');
         }
 
-        // Metered globally only, so this also disarms any previous call's bucket.
-        $this->meterCall();
-
         $url = $validateUrl.'/'.$standard->value;
+        $authenticated = $this->sendsToken($url);
 
-        $response = $this->authenticatedXmlRequestToUrl($url, 'POST', $xml);
+        // Metered globally only, so this also disarms any previous call's bucket.
+        $this->meterCall(authenticated: $authenticated);
+
+        $response = $this->authenticatedXmlRequestToUrl($url, 'POST', $xml, $authenticated);
 
         return $this->parseValidationResponse($response);
     }
@@ -694,8 +702,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.verify_signature');
         }
 
+        $authenticated = $this->sendsToken($verifyUrl);
+
         // Metered globally only - see validateXml().
-        $this->meterCall();
+        $this->meterCall(authenticated: $authenticated);
 
         // ANAF reads two multipart files: "file" (the invoice XML) and "signature" (the XML
         // holding its signature), both from the descarcare archive.
@@ -707,7 +717,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         }
         $body .= "--{$boundary}--\r\n";
 
-        $response = $this->authenticatedXmlRequestToUrl($verifyUrl, 'POST', $body, contentType: "multipart/form-data; boundary={$boundary}");
+        $response = $this->authenticatedXmlRequestToUrl($verifyUrl, 'POST', $body, $authenticated, contentType: "multipart/form-data; boundary={$boundary}");
 
         $result = $this->parseValidationResponse($response);
 
@@ -732,13 +742,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.transform');
         }
 
-        // Metered globally only - see validateXml().
-        $this->meterCall();
         $endpoint = $validate ? $standard->value : "{$standard->value}/DA";
-
         $url = $transformUrl.'/'.$endpoint;
+        $authenticated = $this->sendsToken($url);
 
-        $response = $this->authenticatedXmlRequestToUrl($url, 'POST', $xml, expectBinary: true);
+        // Metered globally only - see validateXml().
+        $this->meterCall(authenticated: $authenticated);
+
+        $response = $this->authenticatedXmlRequestToUrl($url, 'POST', $xml, $authenticated, expectBinary: true);
 
         // ANAF can answer 2xx with a JSON error instead of a PDF, sometimes without a JSON content type.
         $contentType = (string) $response->header('Content-Type');
@@ -750,8 +761,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             $messages = ValidationResultData::fromAnafResponse($errorData)->errors;
 
             throw new ApiException(
-                AnafValue::text($errorData['message'] ?? null)
-                    ?? AnafValue::text($errorData['eroare'] ?? null)
+                self::errorText($errorData['message'] ?? null)
+                    ?? self::errorText($errorData['eroare'] ?? null)
                     ?? ($messages !== null ? implode('; ', $messages) : null)
                     ?? 'PDF conversion failed',
                 $response->status(),
@@ -883,7 +894,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
                 $this->releaseQuietly($lock);
             }
 
-            throw new AuthenticationException('Token refresh lock unavailable: '.$e->getMessage(), 0, $e);
+            throw new AuthenticationException('Token refresh lock unavailable ('.class_basename($e).').', 0, $e);
         }
 
         try {
@@ -937,8 +948,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * every later call on this client. Comparing expiry keeps both cases right:
      * a worker that rotated after us has a strictly later expiry and still wins.
      *
-     * Never throws: a store failure must not take down the API call. We fall back
-     * to our own tokens, which is exactly the pre-existing behaviour.
+     * @throws AuthenticationException (code 0) When the reloader throws: the store's tokens are unknown, and
+     *                                 spending our own refresh token could kill a grant another worker already rotated.
      */
     private function reloadTokens(): void
     {
@@ -949,12 +960,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         try {
             $tokens = ($this->tokenReloader)();
         } catch (\Throwable $e) {
-            $this->logger->warning('Token reloader failed, falling back to in-memory tokens', [
-                'vatNumber' => $this->vatNumber,
-                'error' => $e->getMessage(),
-            ]);
-
-            return;
+            throw new AuthenticationException('Token store unavailable', 0, $e);
         }
 
         if (! $tokens instanceof OAuthTokensData) {
@@ -1112,33 +1118,41 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     }
 
     /**
-     * Make an authenticated XML request to a full URL (for validation/transform services).
+     * Make an XML request to a full URL (for validation/transform services), with the bearer when $authenticated.
      *
-     * @throws AuthenticationException When authentication fails
+     * @throws AuthenticationException When $authenticated and authentication fails
      * @throws ApiException When API call fails
      */
     private function authenticatedXmlRequestToUrl(
         string $fullUrl,
         string $method,
         string $xmlBody,
+        bool $authenticated,
         bool $expectBinary = false,
         string $contentType = 'text/plain'
     ): Response {
-        $token = $this->getValidAccessToken();
-
         $headers = [
-            'Authorization' => 'Bearer '.$token,
             'Content-Type' => $contentType,
             'Accept' => $expectBinary ? 'application/pdf, application/json' : 'application/json',
         ];
+        if ($authenticated) {
+            $headers['Authorization'] = 'Bearer '.$this->getValidAccessToken();
+        }
 
         try {
             // An absolute URL passes through getRequestUrl(). Idempotent: these services are
             // stateless functions of the posted XML, so a retry cannot file anything.
             return $this->callRaw($fullUrl, $method, $xmlBody, $contentType, $headers);
         } catch (ApiException $e) {
-            throw $this->authenticationFailure($e);
+            // A 401 from a service that got no token is not a refused grant.
+            throw $authenticated ? $this->authenticationFailure($e) : $e;
         }
+    }
+
+    private function sendsToken(string $url): bool
+    {
+        // Only the e-Factura API host takes the bearer; ANAF's public webservicesp services need none.
+        return strcasecmp((string) parse_url($this->getRequestUrl($url), PHP_URL_HOST), (string) parse_url(static::getBaseUrl(), PHP_URL_HOST)) === 0;
     }
 
     /**

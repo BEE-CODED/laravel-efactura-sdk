@@ -5,6 +5,7 @@ declare(strict_types=1);
 use BeeCoded\EFacturaSdk\Data\Company\AddressData;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyData;
 use BeeCoded\EFacturaSdk\Data\Company\CompanyLookupResultData;
+use BeeCoded\EFacturaSdk\Data\Company\InactiveStatusData;
 use BeeCoded\EFacturaSdk\Data\Company\SplitVatData;
 use BeeCoded\EFacturaSdk\Data\Company\VatPeriodData;
 use BeeCoded\EFacturaSdk\Data\Company\VatRegistrationData;
@@ -649,6 +650,12 @@ describe('CompanyLookupResultData', function () {
                 ->and($result->getByCui('012345678'))->toBeNull();
         });
 
+        it('takes an integer CUI, like batchGetCompanyData()', function () {
+            $company = CompanyData::fromAnafResponse(['date_generale' => ['cui' => '12345678', 'denumire' => 'Test']]);
+
+            expect(CompanyLookupResultData::success([$company])->getByCui(12345678))->toBe($company);
+        });
+
         it('returns null when not found', function () {
             $result = CompanyLookupResultData::success([]);
 
@@ -667,6 +674,44 @@ describe('CompanyLookupResultData', function () {
             expect($result->getByCui('RO'))->toBeNull();
             expect($result->getByCui('ro'))->toBeNull();
         });
+    });
+});
+
+describe('a partial or null-stripped own array', function () {
+    it('is read as the DTO\'s own shape, nested sections too', function () {
+        $company = CompanyData::fromAnafResponse([
+            'date_generale' => ['cui' => '18547290', 'denumire' => 'ACME SRL'],
+            'inregistrare_SplitTVA' => ['statusSplitTVA' => true, 'dataInceputSplitTVA' => '2019-01-01'],
+            'stare_inactiv' => ['statusInactivi' => false, 'dataRadiere' => '2024-05-02'],
+            'adresa_sediu_social' => ['sdenumire_Localitate' => 'Cluj-Napoca'],
+        ]);
+        $strip = function (array $values) use (&$strip): array {
+            $kept = [];
+            foreach ($values as $key => $value) {
+                if ($value !== null && $value !== false) {
+                    $kept[$key] = is_array($value) ? $strip($value) : $value;
+                }
+            }
+
+            return $kept;
+        };
+
+        $rebuilt = CompanyData::from(json_encode($strip($company->toArray()), JSON_THROW_ON_ERROR));
+
+        expect($rebuilt->splitVatDetails?->isActive)->toBeTrue()
+            ->and($rebuilt->splitVatDetails?->startDate?->format('Y-m-d'))->toBe('2019-01-01')
+            ->and($rebuilt->inactiveStatusDetails?->deregistrationDate?->format('Y-m-d'))->toBe('2024-05-02')
+            ->and($rebuilt->headquartersAddress?->city)->toBe('Cluj-Napoca');
+    });
+
+    it('is read from a direct array', function () {
+        $company = CompanyData::from(['cui' => '18547290', 'name' => 'ACME SRL']);
+
+        expect($company->cui)->toBe('18547290')
+            ->and($company->name)->toBe('ACME SRL')
+            ->and(SplitVatData::from(['isActive' => true, 'startDate' => '2019-01-01T00:00:00+00:00'])->isActive)->toBeTrue()
+            ->and(InactiveStatusData::from(['deregistrationDate' => '2024-05-02T00:00:00+00:00'])->deregistrationDate)->not->toBeNull()
+            ->and(AddressData::from(['city' => 'Cluj'])->city)->toBe('Cluj');
     });
 });
 

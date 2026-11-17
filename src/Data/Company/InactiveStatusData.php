@@ -30,8 +30,8 @@ class InactiveStatusData extends Data
      */
     public static function fromAnafResponse(array $data): self
     {
-        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
-        if (! array_key_exists('statusInactivi', $data) && array_key_exists('isInactive', $data)) {
+        // laravel-data sends ::from($dto->toArray()) here too: an array with none of ANAF's keys is this DTO's own shape.
+        if (array_intersect_key($data, array_flip(['statusInactivi', 'dataInactivare', 'dataReactivare', 'dataPublicare', 'dataRadiere'])) === []) {
             return self::factory()->withoutMagicalCreation()->from($data);
         }
 

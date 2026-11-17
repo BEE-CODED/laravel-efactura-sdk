@@ -140,8 +140,8 @@ class RateLimiter
         $store = config('cache.limiter') ?? config('cache.default');
         $driver = config("cache.stores.{$store}.driver", $store);
 
-        // null/array are not shared between processes; file increments without a lock, so concurrent workers can overshoot.
-        if (in_array($driver, ['null', 'array', 'file'], true)) {
+        // null/array/apc/session are per process or per session; file increments without a lock, so concurrent workers can overshoot.
+        if (in_array($driver, ['null', 'array', 'file', 'apc', 'session'], true)) {
             try {
                 Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->warning(
                     "EFactura SDK rate limits may not hold on the '{$store}' cache store ({$driver} driver): ".
@@ -373,6 +373,7 @@ class RateLimiter
 
     /**
      * Get remaining quota for various limits.
+     * While rate limiting is disabled every limit reads as fully available.
      *
      * @param  string  $type  The rate limit type ('global', 'company_lookup', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download')
      * @param  string  $identifier  The identifier (CUI or message ID) - required for all types
@@ -390,19 +391,11 @@ class RateLimiter
 
         // 'global' and 'company_lookup' are single buckets: the limit is per request, not per CUI or message.
         if ($scope === RateLimitScope::Global) {
-            return [
-                'limit' => $this->globalPerMinute,
-                'remaining' => $this->minuteStore->getRemaining('global', $this->globalPerMinute),
-                'resetsIn' => $this->minuteStore->availableIn('global'),
-            ];
+            return $this->quota($this->minuteStore, 'global', $this->globalPerMinute);
         }
 
         if ($scope === RateLimitScope::CompanyLookup) {
-            return [
-                'limit' => $this->companyLookupPerSecond,
-                'remaining' => $this->secondStore->getRemaining('company_lookup', $this->companyLookupPerSecond),
-                'resetsIn' => $this->secondStore->availableIn('company_lookup'),
-            ];
+            return $this->quota($this->secondStore, 'company_lookup', $this->companyLookupPerSecond);
         }
 
         if (trim($identifier) === '') {
@@ -412,10 +405,19 @@ class RateLimiter
         // The same key and limit the check spends, so the two can never diverge.
         [$key, $limit] = $this->endpointBucket($scope, $identifier, $useProviderLimit);
 
-        return [
-            'limit' => $limit,
-            'remaining' => $this->dailyStore->getRemaining($key, $limit),
-            'resetsIn' => $this->dailyStore->availableIn($key),
-        ];
+        return $this->quota($this->dailyStore, $key, $limit);
+    }
+
+    /**
+     * @return array{limit: int, remaining: int, resetsIn: int}
+     */
+    private function quota(RateLimitStore $store, string $key, int $limit): array
+    {
+        // Nothing is counted or refused while limiting is off: report the whole limit, not a stale counter.
+        if (! $this->isEnabled()) {
+            return ['limit' => $limit, 'remaining' => $limit, 'resetsIn' => 0];
+        }
+
+        return ['limit' => $limit, 'remaining' => $store->getRemaining($key, $limit), 'resetsIn' => $store->availableIn($key)];
     }
 }

@@ -36,8 +36,9 @@ the section named after it.
   date, or with a blank one (BR-CO-25), a Bucharest address without a sector, a non-zero `taxAmountRon` without
   standard-rated lines, a non-zero VAT amount in a Z/O/E/G/K breakdown, malformed currency or
   country codes, text XML cannot carry, required fields that are blank after trimming, an element
-  that would be filed blank, a line unit code that is not a UN/ECE code, and a date that does not
-  exist ("Breaking (4.0): the builder refuses documents ANAF rejects").
+  that would be filed blank, a line unit code that does not have the shape of a UN/ECE code, a line
+  whose VAT sign is opposite to its quantity, and a date that does not exist ("Breaking (4.0): the
+  builder refuses documents ANAF rejects").
 - `TaxCategoryId` has three new cases (`Exempt`, `Export`, `IntraCommunitySupply`), so an exhaustive
   `match` over it needs new arms ("Added: VAT categories E, G and K").
 - `InvoiceData::$precedingInvoiceNumber` is deprecated in favour of `$precedingInvoices`; setting
@@ -50,7 +51,8 @@ the section named after it.
   `reverse_charge_tax_amount_ron_must_be_zero` → `tax_amount_ron_must_be_zero`, and
   `payable_rounding_amount_invalid` → `amount_invalid` (it names the field). New keys to translate
   in published overrides: `issue_date_invalid`, `due_date_invalid`, `tax_point_date_invalid`,
-  `element_blank`, `line_unit_code_invalid`, `line_prefixed` and the `roles` group.
+  `element_blank`, `line_unit_code_invalid`, `line_tax_sign_mismatch`, `line_prefixed` and the
+  `roles` group.
 - `UploadResponseData::$executionStatus` can be `null`, and `! isSuccessful()` no longer means
   "failed" ("an unrecognised upload status is `null`").
 - ANAF values are normalised: ids become strings, `MessageDetailsData::$id` can be `null`, counts
@@ -71,7 +73,8 @@ the section named after it.
   `null` value now means sandbox; in 3.x it meant production. `false`, `0` and `'0'` still mean
   production ("Fixed: blank env values keep the safe default").
 - Dates that do not exist (`2024-02-30`, `24:00`) are refused, or read as `null` in ANAF company
-  data, instead of rolled forward ("Fixed: impossible dates are refused").
+  data, instead of rolled forward, and month-first slash dates (`05/03/2024`) are refused ("Fixed:
+  impossible dates are refused").
 - `BaseApiClient::request()` sends a body only through `callRaw()` with a content type: the
   multipart, form and JSON-array POST branches were removed, and a non-GET call with array data now
   throws `LogicException` at once, without retries ("Removed: unused `request()` body branches").
@@ -88,6 +91,8 @@ the section named after it.
   by the first OAuth call, not when the authenticator is resolved. The latched "Token refresh
   previously failed" exception carries the original failure's code instead of always `401`
   ("Fixed: configuration errors are not refused grants").
+- A `tokenReloader` exception fails the call with `AuthenticationException` code 0 instead of being
+  logged and ignored ("Added: `tokenPersister`").
 - An upload that fails with a connect-phase timeout is now retried like DNS/connect/TLS failures, and
   every provably unsent failure arrives as `RequestNotSentException` (still an `ApiException` with
   `statusCode` 500) ("Added: `RequestNotSentException`").
@@ -160,8 +165,13 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   3.x rolled an `issueDate` or `dueDate` forward to the next real date; `taxPointDate`, the actual
   delivery date and a preceding invoice issue date are refused the same way.
   `getIssueDateAsCarbon()` refuses a blank string instead of returning the current time.
-  Hydration through `::from()` converts date strings with laravel-data's cast
-  (`data.date_format`), which does not check them.
+  `::from()` keeps a date string as `new` does, so `2024-02-30` is refused at build and
+  `'2024-03-15'` no longer throws `CannotCastDate`; `toArray()`/`toJson()` write these five dates
+  as DATE_ATOM in their own timezone and ignore `data.date_format`/`data.date_timezone`, so the
+  filed day survives a round trip. A hydrated date string stays a string; read it with the
+  `get…AsCarbon()` getters.
+- A slash date that starts with the day or month (`05/03/2024`): 3.x read it month-first and filed
+  3 May. Year-first `2024/03/15` is accepted.
 - A Romanian address whose county is Bucharest but whose sector cannot be found in
   `bucharestSector`, the city or the county (BR-RO-100/101). The city used to be filed as given,
   which ANAF rejects.
@@ -188,6 +198,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   Recommendation 20/21 code (BR-CL-23), such as `h87` or `KGMX`: it used to be filed as given. An
   empty `unitCode` is refused too; it used to be filed as `EA`. The message names the line
   (`line_unit_code_invalid`). Leaving `unitCode` out of `InvoiceLineData` still means `EA`.
+- A line whose non-zero `taxAmount` has the opposite sign to its quantity
+  (`line_tax_sign_mismatch`). 3.x filed the VAT with the wrong sign, which ANAF accepts.
 
 ### Fixed: foreign addresses are filed as given
 
@@ -206,6 +218,9 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 
 - A county written with decomposed diacritics (NFD, as macOS and some PDFs produce it), such as
   `Bras` + U+0326 + `ov`, maps like the precomposed one instead of being refused.
+- A two-letter county code (`CJ`, as `Company\AddressData::$countyAutoCode` returns it) maps to
+  `RO-CJ`, and a hyphen or dash with spaces (`Caras - Severin`, `Bistrita – Nasaud`) maps like
+  `Caras-Severin`; both were refused with `county_invalid_iso_code`.
 
 ### Fixed: Romanian validation messages name the party in Romanian
 
@@ -319,7 +334,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   never be compared, so it is refused before the archive is looked at), a DOCTYPE or entity
   declaration, a member holding more than `UblDocumentComparator::MAX_MARKUP` (1 000 000) `<`
   (checked before it is parsed), an empty member, a member that is not XML or not its declared size, a comment or
-  processing instruction inside the document, an unrelated member, a second copy, no copy, or any
+  processing instruction inside the document (unless the archived copy is byte-identical to the
+  upload), an unrelated member, a second copy, no copy, or any
   content difference. Both extend `ArchiveException extends EFacturaException`.
 - One byte cap for a document: `UblDocumentComparator::MAX_BYTES` (10 MiB, 10 485 760 bytes) is
   both the archive's per-member cap and the comparator's own, so a member the limits admit is never
@@ -370,6 +386,9 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   this way after an earlier attempt reached ANAF (a 5xx, or a transport failure that may have been
   delivered), the call may have been sent, so it is a plain `ApiException(500)` with the store's
   exception as `previous`, like a transport failure that may have been delivered.
+- These exceptions, and the token-refresh lock's below, name only the store exception's class
+  (`Rate limit metering failed before the request was sent (RuntimeException).`), never its
+  message, which can hold SQL or Redis details. Read `getPrevious()` for the store's detail.
 - A failure of the cache store behind the token-refresh lock (for example Redis refusing the
   connection while the access token needs a refresh) is `AuthenticationException` with code 0 and
   the store's exception as `previous`, like a lock timeout: nothing was sent, and
@@ -415,11 +434,15 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 
 - `validateXml()`, `verifySignature()` (as multipart, see below) and `convertXmlToPdf()` go through
   `callRaw()`; `BaseApiClient::getRequestUrl()` keeps an absolute `http(s)://` route as the URL.
-  Retries and the 401 gate are unchanged. With `logging.debug` the posted XML and the response body (a PDF for
+  Retries are unchanged. With `logging.debug` the posted XML and the response body (a PDF for
   `convertXmlToPdf()`) are now logged, like uploads and downloads, and their failures can be
   `RequestNotSentException`.
 - A missing or blank `endpoints.services.*` URL is refused with `ValidationException('Missing
   configuration: …')` before the token is refreshed or any quota is counted.
+- The access token is fetched (and refreshed) and sent only when the service URL is on the
+  `endpoints.api` host (`api.anaf.ro`). The default `webservicesp.anaf.ro` services get no bearer
+  and no refresh, and a 401 from them is an `ApiException`, not an `AuthenticationException`. 3.x
+  sent the bearer to every service.
 
 ### Removed: unused `request()` body branches
 
@@ -467,8 +490,15 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 
 - The warning logged when a client is built judges Laravel's limiter store (`cache.limiter`, else
   `cache.default`) by its driver, instead of the name in `cache.default`. It also warns for the
-  `file` driver, whose increment is not atomic, so concurrent workers can pass a limit. Its log
-  context is `cache_store` and `cache_driver`.
+  `file` driver, whose increment is not atomic, so concurrent workers can pass a limit, and the
+  `apc` and `session` drivers, whose counters live in one process or one session. Its log context
+  is `cache_store` and `cache_driver`.
+
+### Changed: the remaining quota while rate limiting is disabled
+
+- `RateLimiter::getRemainingQuota()` reports every limit as fully available (`remaining` = `limit`,
+  `resetsIn` 0) while rate limiting is disabled; it reported the counters left from before the
+  switch.
 
 ### Fixed: the SDK log channel is defined when the host did not define it
 
@@ -476,8 +506,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   it at boot as a `stack` over the host's default channel. Before, every `Log::channel()` call built
   Laravel's emergency logger and wrote an emergency entry. A host channel is never replaced, and no
   stack is defined over itself (when the default channel has the same name).
-- A blank `EFACTURA_LOG_CHANNEL` logs to your default channel ("Fixed: blank env values keep the
-  safe default").
+- A blank or false `EFACTURA_LOG_CHANNEL` logs to your default channel ("Fixed: blank env values
+  keep the safe default").
 
 ### Fixed: company lookups at least a second apart
 
@@ -556,8 +586,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   big for a PHP int keeps every digit. A leading UTF-8 BOM is ignored on every ANAF body the SDK
   reads: JSON answers, error bodies (including the company lookup's 404 not-found answer), the
   token answer, and XML upload and status answers.
-- A 2xx body that is not a JSON object, for example a bare number, now throws `ApiException`
-  carrying ANAF's status code: `Unable to parse upload response`, `Unable to parse status response`,
+- A 2xx body that is not JSON, or is a bare JSON scalar (for example a number), now throws
+  `ApiException` carrying ANAF's status code: `Unable to parse upload response`, `Unable to parse status response`,
   `Unable to parse validation response`, `PDF conversion failed with invalid JSON response`, and
   the new `Unable to parse message list response` and
   `Unable to parse paginated message list response`. `getMessages()` and `getMessagesPaginated()`
@@ -598,6 +628,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 - A JSON error is recognised by its content type or by a body starting with `{` (after any UTF-8
   BOM or whitespace), so a JSON error sent without a JSON content type throws ANAF's message
   instead of being returned as the PDF.
+- In a JSON error, `message` and `eroare` count only when they are non-blank text, as on the
+  non-2xx path, so `{"message":"","eroare":"X"}` throws `X`.
 - Upgrade: catch `ApiException` around `convertXmlToPdf()`.
 
 ### Changed (4.0): message lists take a canonical CIF
@@ -623,14 +655,19 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   leading zero, optional RO prefix).'
 - `VatNumberValidator::stripPrefix('RO 123')` returns `'123'`, so BT-47
   `PartyLegalEntity/CompanyID` no longer carries the space.
+- `VatNumberValidator::withCountryPrefix()` removes whitespace (`'RO 123'` gives `'RO123'`), so
+  BT-31/BT-48 `PartyTaxScheme/CompanyID` carries no space, and a spaced id passes the AE/K/E/G VAT
+  identifier check instead of being refused.
+- `CnpValidator::isValidFormat()` follows the same shape: a 13-digit code starting with 0 (other
+  than the zero CNP) or ending in a newline is refused.
 - `CompanyLookupResultData::getByCui()` finds spaced input and returns `null` for input the lookup
-  refuses.
+  refuses, and takes an integer CUI, like `batchGetCompanyData()`.
 - `batchGetCompanyData()` accepts integer CUIs and records a non-scalar element as invalid (its
   `get_debug_type()`, such as `null`) instead of throwing a `TypeError`. It refuses leading-zero
   codes and codes of 11-12 or 14 and more digits, which 3.x sent (the overlong ones as
   `PHP_INT_MAX`), and de-duplicates on the canonical CUI. Codes without a CUI or CNP shape are
   reported in `invalidCodes` and never sent (the control digit is not checked); CUIs ANAF does not
-  know are in `notFound`.
+  know are in `notFound`. A batch over 100 CUIs also reports its invalid codes in `invalidCodes`.
 - `new EFacturaClient()` and `EFacturaClient::fromTokens()` throw `ValidationException('CIF is not a
   valid Romanian CUI or CNP')` for a blank or malformed `$vatNumber`, before any quota, refresh or
   request. `getVatNumber()`, the refresh-lock key, the RASP limit and the upload `cif` use the
@@ -659,14 +696,14 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   with its found companies.
 - Why: laravel-data sends every array given to `::from()` through `fromAnafResponse()`, which read
   only ANAF's keys, so a DTO cached or queued as an array came back empty (`indexIncarcare`,
-  `idDescarcare`, counts and errors `null`, message dates `''`). Each DTO now recognises its own
-  shape by a key ANAF never sends (`executionStatus`, `idDescarcare`, `dataCreare`,
-  `downloadError`, `currentPage`; for the company DTOs `isVatPayer` without `date_generale`,
-  `startDate`, `isInactive`, `actType`, `cancelDate` and `street`), the way `OAuthTokensData`
-  already did; `ValidationResultData` shares its other keys with ANAF and also reads its own
-  `errors`. The same values are normalised
-  either way. The arrays `XmlParser::parseUploadResponse()` and
-  `parseStatusResponse()` return use these keys too, so they are read correctly as well.
+  `idDescarcare`, counts and errors `null`, message dates `''`). A response DTO now reads its own
+  key wherever ANAF's is absent; a company DTO takes its own shape when none of ANAF's keys for it
+  is present (`CompanyData`: no `date_generale` and a `cui`), so a partial or null-stripped own
+  array is read too. `ValidationResultData` shares its other keys with ANAF and also reads its own
+  `errors`. The same values are normalised either way; an own-shape array with a malformed date
+  throws `CannotCastDate` instead of becoming `null`. The arrays
+  `XmlParser::parseUploadResponse()` and `parseStatusResponse()` return use these keys too, so they
+  are read correctly as well.
 - This holds for laravel-data's default (camelCase) output naming only. An application that maps
   output names to snake_case (`name_mapping_strategy.output` in `config/data.php`) gets ANAF-like
   keys from `toArray()`, which are read as an ANAF answer and lose fields such as `errors`.
@@ -688,9 +725,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 
 - `EFacturaClient::getTimeoutDuration()`, `AnafDetailsClient::getTimeoutDuration()` and
   `AnafAuthenticator` read `http.timeout` as a number, falling back to 30 when it is empty, `0` or
-  negative. A fraction such as `0.5` is kept for API requests; `AnafAuthenticator` rounds it up to
-  whole seconds. `env()` returns a string, which was a `TypeError` under `strict_types`; an empty
-  value would have meant no timeout at all.
+  negative. A fraction such as `0.5` is kept, for the token request too. `env()` returns a string,
+  which was a `TypeError` under `strict_types`; an empty value would have meant no timeout at all.
 
 ### Fixed: the bearer token is not logged
 
@@ -703,12 +739,14 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   `AnafAuthenticator::exchangeCodeForToken()` and `refreshAccessToken()` (and the interface), the
   token request's form data, and the access and refresh tokens of `new EFacturaClient()` and
   `new OAuthTokensData()`, and the request headers (with the `Authorization: Bearer` access token)
-  of `BaseApiClient::request()`, `call()` and `callRaw()`. A trace shows
-  `SensitiveParameterValue` instead.
-- This matters only with `zend.exception_ignore_args=Off`. A chained previous exception (Laravel's
-  `ConnectionException` and its `PendingRequest` frames) can still hold the form data or the
-  request headers, so keep the
-  setting on in production or redact in your error tracker.
+  of `BaseApiClient::request()`, `call()` and `callRaw()`. A direct call's trace shows
+  `SensitiveParameterValue` instead (a facade call keeps them in `Facade::__callStatic`'s frame:
+  pass the code and refresh token to `app(AnafAuthenticatorInterface::class)`).
+- This matters only with `zend.exception_ignore_args=Off`. A token-request
+  `AuthenticationException` chains no previous exception, so its form data and client secret stay
+  out of reports. A chained previous exception of an API call (Laravel's `ConnectionException` and
+  its `PendingRequest` frames) can still hold the request headers, so keep the setting on in
+  production or redact in your error tracker.
 
 ### Fixed: the error message of an XML error body
 
@@ -717,7 +755,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
   `error` still come first. Each of them, and the XML message, counts only when it is non-blank
   text: a blank, boolean or non-scalar value falls through to the next one (so
   `{"message":"","eroare":"X"}` reads `X`, and a lone blank one reads as
-  `No error message in API response`). A literal `0` is kept as the message.
+  `No error message in API response`). A literal `0` is kept as the message. A blank XML
+  `errorMessage` is skipped and the next `<Errors>` is read.
 
 ### Fixed: a refused token answer keeps ANAF's reason
 
@@ -735,10 +774,14 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 - `DownloadResponseData::$filename` keeps only the base name of the `Content-Disposition` value:
   path parts are stripped, and `''`, `.` and `..` become `null`. It is still ANAF's suggestion and
   untrusted.
+- `DownloadResponseData::fromHttpResponse()` reads header names case-insensitively, a
+  `Content-Disposition` carrying only `filename*` (RFC 5987) gives `filename` `null`, and
+  `contentLength` is always the byte length of `content`, no longer the `Content-Length` header.
 
 ### Changed: ANAF XML answers with a DOCTYPE are refused
 
-- An upload, status or error body that declares a DOCTYPE or entity is unparseable, the same rule
+- An upload, status or error body that declares a DOCTYPE or entity, or contains a NUL byte (a
+  UTF-16 or UTF-32 body), is unparseable, the same rule
   as `ArchiveInspector`: `uploadDocument()` and `getStatusMessage()` throw `ApiException`,
   `XmlParser::parseUploadResponse()` and `parseStatusResponse()` throw `XmlParsingException`, and
   the error-message lookup ignores the body. No byte cap is added.
@@ -754,13 +797,19 @@ The provider normalises these values once, at boot:
 - A blank `EFACTURA_RETRY_TIMES` means 3 attempts; it used to mean one, with no retries. `0` or a
   negative value counts as 1.
 - A blank `EFACTURA_RETRY_DELAY` means 5 s; it used to mean 0. A negative value counts as 0, also
-  when set at runtime; it used to throw `ValueError`. A non-integer retry value uses the default.
-- A blank or non-integer rate limit uses the default: a blank one used to throw when the client was
-  built, and `5O0` was read as 5. `0` and negative limits still throw.
-- A blank `EFACTURA_LOG_CHANNEL` logs to your default channel instead of building Laravel's
-  emergency logger on every call.
+  when set at runtime; it used to throw `ValueError`. A non-integer retry value uses the default;
+  `true` or `false` (`EFACTURA_RETRY_TIMES=true`) counts as non-integer.
+- A blank or non-integer rate limit uses the default (`true` or `false` counts as non-integer): a
+  blank one used to throw when the client was built, and `5O0` was read as 5. `0` and negative limits still throw.
+- A blank or false `EFACTURA_LOG_CHANNEL` logs to your default channel instead of building
+  Laravel's emergency logger on every call.
+- A missing or blank `endpoints.api.test`/`production` uses the shipped ANAF URL. That happens, for
+  example, when a host config overrides only part of `endpoints`, because `mergeConfigFrom` does
+  not merge below the top level. It used to be a `TypeError` after the quota was counted, which
+  `UploadOutcome` read as `Uncertain`.
 - A `config()->set()` after the provider registered is not normalised; the retry getters' floors and
-  the rate limiter's own checks still guard it.
+  the rate limiter's limit checks still guard it, but a blank `sandbox` or `rate_limits.enabled`
+  set then reads as false (production, no limiting): set them as booleans.
 
 ### Fixed: the token refresh lock outlives the refresh
 
@@ -780,6 +829,8 @@ The provider normalises these values once, at boot:
   connect-phase timeout) is sent once more, immediately, when `retry_times` is above 1. A failure
   that may have been delivered (a timeout after sending, a 5xx) or any answer is never resent,
   because the refresh token rotates. The refresh lock covers both attempts.
+- Like an upload, the token request never follows an HTTP redirect: a 3xx answer throws
+  `AuthenticationException` with that status as its code and is never resent.
 
 ### Fixed: the code of an unreadable token answer
 
@@ -802,12 +853,14 @@ The provider normalises these values once, at boot:
   `23:59:60`) is refused or `null` instead of rolled forward. The invoice side is in "Breaking
   (4.0): the builder refuses documents ANAF rejects".
 - `DateHelper::formatForAnaf()`, `toTimestamp()`, `getDayRange()` and `daysBetween()` throw
-  `InvalidArgumentException` for a blank string, an impossible date or an impossible clock time.
+  `InvalidArgumentException` for a blank string, an impossible date, an impossible clock time or a
+  slash date that starts with the day or month (`05/03/2024`).
   `isValidAnafFormat()` requires a real date and no trailing newline, and
   `formatForAnaf("2024-01-15\n")` returns `'2024-01-15'`. The timezone handling is unchanged.
 - New readers: `DateHelper::exact(string $value, string $format, ?string $timezone = null): ?Carbon`
   reads a date written exactly in a format, or returns `null`; `DateHelper::parse(string $value):
-  Carbon` parses like `Carbon::parse()` and throws for a blank, unparseable or impossible date.
+  Carbon` parses like `Carbon::parse()` and throws for a blank, unparseable or impossible date, or
+  a day- or month-first slash date.
 - Company DTO dates are read only as exact `Y-m-d` or `d.m.Y` dates. Anything else (padded strings,
   datetimes, relative words, `2024-02-31`) is `null`. Dates stay at midnight in the app timezone.
 - In non-strict lookups, a `dataRadiere` that is not an exact date no longer marks the company
@@ -820,8 +873,10 @@ The provider normalises these values once, at boot:
   lock, right after a successful refresh and before the lock is released, so no other worker can
   spend the rotated refresh token before it is stored. An exception it throws reaches the caller
   unchanged, including a `LockTimeoutException` from a lock of its own; the client keeps the new
-  tokens and `wasTokenRefreshed()` is still true. A `tokenReloader` exception, as before, is
-  caught and logged as a warning, and the client keeps its in-memory tokens.
+  tokens and `wasTokenRefreshed()` is still true.
+- A `tokenReloader` exception now fails the call with `AuthenticationException` (code 0, not
+  latched) before any refresh, quota or request; 3.x logged it and refreshed with its own, possibly
+  spent, refresh token.
 
 ### Removed
 
@@ -861,7 +916,7 @@ The provider normalises these values once, at boot:
 - A retry after an attempt that provably never reached ANAF (cURL 5, 6, 7 or 35, or a
   connect-phase timeout) counts nothing. Only a retry after an attempt that may have reached ANAF
   spends one unit of the global limit and of the per-CUI or per-message limit the call draws on. In
-  3.x every retry did, so an outage could use up a message's status or download quota for the day.
+  3.x every retry did; a call during an outage still spends its own one unit.
   Company lookups still count every retry.
 - Upgrade: a test double of `RateLimiter` must allow `ensureAvailable()` (with Mockery,
   `shouldReceive('ensureAvailable')`, or `shouldIgnoreMissing()`). A subclass that overrides

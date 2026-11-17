@@ -795,6 +795,11 @@ class InvoiceBuilder
                 __('efactura-sdk::validation.line_tax_amount_must_be_zero_for_zero_rate', ['lineNum' => $lineNum])
             );
         }
+
+        // The tax sign must follow the quantity (unitPrice is never negative); ANAF's BR-S-09/BR-CO-17 compare absolute values, so a reversed sign would be filed.
+        if ($emitsTax && $taxAmount->getSign() !== $quantity->getSign()) {
+            throw new ValidationException(__('efactura-sdk::validation.line_tax_sign_mismatch', ['lineNum' => $lineNum]));
+        }
     }
 
     /**

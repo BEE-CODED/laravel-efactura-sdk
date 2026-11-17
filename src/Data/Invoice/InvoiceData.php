@@ -13,6 +13,7 @@ use Brick\Math\RoundingMode;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Spatie\LaravelData\Attributes\DataCollectionOf;
+use Spatie\LaravelData\Attributes\WithCastAndTransformer;
 use Spatie\LaravelData\Data;
 use Spatie\LaravelData\Support\Partials\Partial;
 use Spatie\LaravelData\Support\Transformation\TransformationContext;
@@ -46,14 +47,10 @@ class InvoiceData extends Data
      * Immutable dates are converted to a mutable Carbon; a Carbon that is already
      * mutable is stored as-is. A string is left untouched.
      *
-     * Careful when changing this: the normalisation below only protects direct construction.
-     * On laravel-data's ::from() path the constructor runs and is then OVERWRITTEN --
-     * DataFromArrayResolver skips promoted properties but direct-writes un-promoted ones,
-     * and these are un-promoted. Today that is harmless because laravel-data's cast resolves
-     * the declared property type and produces a Carbon by itself, so the end state matches
-     * and getIssueDateAsCarbon()'s `instanceof Carbon` check stays correct. Any further
-     * normalisation added here would silently not apply via ::from().
+     * On ::from() a string is kept and a CarbonInterface becomes a Carbon, as in the constructor,
+     * and the getters parse strings strictly.
      */
+    #[WithCastAndTransformer(KeepDateInput::class)]
     public Carbon|string $issueDate;
 
     public PartyData $supplier;
@@ -67,6 +64,7 @@ class InvoiceData extends Data
     /**
      * Payment due date. Normalised in the same way as $issueDate.
      */
+    #[WithCastAndTransformer(KeepDateInput::class)]
     public Carbon|string|null $dueDate = null;
 
     public string $currency = 'RON';
@@ -109,6 +107,7 @@ class InvoiceData extends Data
     public float|string|null $taxAmountRon = null;
 
     /** Optional VAT applicability date (BT-7); never inferred by the SDK. */
+    #[WithCastAndTransformer(KeepDateInput::class)]
     public Carbon|string|null $taxPointDate = null;
 
     /** Optional payable rounding (BT-114), in the same sign convention as the lines. */

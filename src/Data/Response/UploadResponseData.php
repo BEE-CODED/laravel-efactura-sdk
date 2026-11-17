@@ -45,15 +45,13 @@ class UploadResponseData extends Data
      *
      * laravel-data treats any static from*() taking an array as a magic creation
      * method, so ::from() hands this method EVERY array, including this DTO's own
-     * toArray() output. An executionStatus key without ANAF's
-     * ExecutionStatus picks that shape, read with the same normalisation.
+     * toArray() output. Its own keys are read wherever ANAF's are absent, with the same normalisation.
      *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
     {
-        $own = array_key_exists('executionStatus', $response) && ! array_key_exists('ExecutionStatus', $response);
-        $status = $own ? $response['executionStatus'] : ($response['ExecutionStatus'] ?? null);
+        $status = $response['ExecutionStatus'] ?? $response['executionStatus'] ?? null;
 
         // Only an exact 0/1 (int or numeric string) is a recognised status; anything else is unknown.
         $executionStatus = match ($status instanceof ExecutionStatus ? $status->value : $status) {
@@ -65,8 +63,8 @@ class UploadResponseData extends Data
         return new self(
             executionStatus: $executionStatus,
             dateResponse: AnafValue::id($response['dateResponse'] ?? null),
-            indexIncarcare: AnafValue::id($response[$own ? 'indexIncarcare' : 'index_incarcare'] ?? null),
-            errors: AnafValue::errors($response[$own ? 'errors' : 'Errors'] ?? null),
+            indexIncarcare: AnafValue::id($response['index_incarcare'] ?? $response['indexIncarcare'] ?? null),
+            errors: AnafValue::errors($response['Errors'] ?? null) ?? AnafValue::errors($response['errors'] ?? null),
         );
     }
 

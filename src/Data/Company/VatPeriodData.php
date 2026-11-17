@@ -43,8 +43,8 @@ class VatPeriodData extends Data
      */
     public static function fromAnafResponse(array $data): self
     {
-        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
-        if (! array_key_exists('data_inceput_ScpTVA', $data) && array_key_exists('startDate', $data)) {
+        // laravel-data sends ::from($dto->toArray()) here too: an array with none of ANAF's keys is this DTO's own shape.
+        if (array_intersect_key($data, array_flip(['data_inceput_ScpTVA', 'data_sfarsit_ScpTVA', 'data_anul_imp_ScpTVA', 'mesaj_ScpTVA'])) === []) {
             return self::factory()->withoutMagicalCreation()->from($data);
         }
 

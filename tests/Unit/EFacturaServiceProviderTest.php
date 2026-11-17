@@ -103,7 +103,16 @@ describe('the env normaliser', function () {
     })->with([
         'blank' => [''],
         'a letter O for a zero' => ['5O0'],
+        'env true' => [true],
     ]);
+
+    it('drops a true retry value so its default applies', function (string $key) use ($register) {
+        config()->set($key, true);
+
+        $register();
+
+        expect(config($key))->toBeNull();
+    })->with(['efactura-sdk.http.retry_times', 'efactura-sdk.http.retry_delay']);
 
     it('still refuses a zero rate limit when the limiter is built', function () use ($register) {
         config()->set('efactura-sdk.rate_limits.global_per_minute', 0);
@@ -139,8 +148,8 @@ describe('the SDK log channel', function () {
             ->and(config('logging.channels.efactura-sdk'))->toBe(['driver' => 'stack', 'channels' => ['null']]);
     });
 
-    it('logs a blank channel name to the host default', function () use ($boot) {
-        config()->set('efactura-sdk.logging.channel', '');
+    it('logs a blank or false channel name to the host default', function (mixed $channel) use ($boot) {
+        config()->set('efactura-sdk.logging.channel', $channel);
         $logged = [];
         Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$logged) {
             $logged[] = $event->level.': '.$event->message;
@@ -152,6 +161,15 @@ describe('the SDK log channel', function () {
 
         expect($logged)->toBe(['info: probe'])
             ->and(config('efactura-sdk.logging.channel'))->toBeNull();
+    })->with(['blank' => [''], 'false from env' => [false]]);
+
+    it('keeps the dedicated channel when the published config has no channel key', function () {
+        config()->set('efactura-sdk.logging', ['debug' => false]);
+
+        (new EFacturaServiceProvider(app()))->register();
+
+        expect(config('efactura-sdk.logging'))->not->toHaveKey('channel')
+            ->and(config('efactura-sdk.logging.channel', 'efactura-sdk'))->toBe('efactura-sdk');
     });
 
     it('leaves a channel the host defined alone', function () use ($boot) {

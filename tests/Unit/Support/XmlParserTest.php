@@ -380,4 +380,10 @@ describe('DOCTYPE and entity declarations', function () {
     it('reads no error message from a response that declares a DOCTYPE', function () {
         expect(XmlParser::extractErrorMessage('<!DOCTYPE h><header><Errors errorMessage="x"/></header>'))->toBeNull();
     });
+
+    it('reads no error message from a UTF-16 body', function () {
+        $xml = "\xFE\xFF".mb_convert_encoding('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE h [<!ENTITY a "x">]><header><Errors errorMessage="&a;"/></header>', 'UTF-16BE', 'UTF-8');
+
+        expect(XmlParser::extractErrorMessage($xml))->toBeNull();
+    });
 });

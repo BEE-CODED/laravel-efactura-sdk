@@ -104,7 +104,7 @@ class CompanyLookupResultData extends Data
     /**
      * Get company by CUI, read through VatNumberValidator::canonical(); null for a CUI the lookup refuses.
      */
-    public function getByCui(string $cui): ?CompanyData
+    public function getByCui(string|int $cui): ?CompanyData
     {
         $cui = VatNumberValidator::canonical($cui);
 

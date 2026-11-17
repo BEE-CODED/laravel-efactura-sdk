@@ -11,7 +11,7 @@ describe('withCountryPrefix', function () {
         'bare RO CUI' => ['12345678', 'RO', 'RO12345678'],
         'null country means RO' => ['12345678', null, 'RO12345678'],
         'already prefixed, lowercase and padded' => [' ro87654321 ', 'RO', 'RO87654321'],
-        'separator kept, not doubled' => ['RO 12345678', 'RO', 'RO 12345678'],
+        'separator removed, not doubled' => ['RO 12345678', 'RO', 'RO12345678'],
         'Greek id with its VAT prefix' => ['EL123456789', 'GR', 'EL123456789'],
         'Greek id with its country code' => ['GR123456789', 'RO', 'EL123456789'],
         'Northern Ireland on a GB address' => ['XI123456789', 'GB', 'XI123456789'],
@@ -90,15 +90,8 @@ describe('isValid', function () {
     it('returns false for invalid 13-digit CNP', function () {
         // 13-digit numbers are treated as CNPs - if CNP validation fails, isValid returns false
         // This ensures the fix where we check CNP validity for 13-digit numbers works
-        expect(VatNumberValidator::isValid('1234567890123'))->toBeFalse(); // Invalid CNP checksum
-        expect(VatNumberValidator::isValid('9999999999999'))->toBeFalse(); // Invalid CNP (invalid month 99)
-    });
-
-    it('does not treat 13-digit number as 10-digit CUI with RO prefix', function () {
-        // Regression test: 13-digit numbers should be validated as CNPs,
-        // not as CUIs that happen to start with RO-like digits
-        // This is a 13-digit number, not RO + 10 digits
-        expect(VatNumberValidator::isValid('1234567890123'))->toBeFalse();
+        expect(VatNumberValidator::isValid('1900101123458'))->toBeFalse(); // Invalid CNP checksum
+        expect(VatNumberValidator::isValid('9999999999996'))->toBeFalse(); // Invalid CNP (invalid month 99)
     });
 });
 
@@ -180,7 +173,7 @@ describe('normalize', function () {
     it('throws exception for 13 digits with invalid CNP checksum', function () {
         // Bug fix: 13-digit numbers with invalid CNP checksum should not get RO prefix
         // Instead, they should throw an exception
-        VatNumberValidator::normalize('1234567890123');
+        VatNumberValidator::normalize('1900101123458');
     })->throws(InvalidArgumentException::class, 'Invalid CNP');
 
     it('throws exception for 13 digits with invalid date in CNP', function () {

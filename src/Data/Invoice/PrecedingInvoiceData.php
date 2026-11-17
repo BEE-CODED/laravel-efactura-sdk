@@ -7,6 +7,7 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 use BeeCoded\EFacturaSdk\Support\DateHelper;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
+use Spatie\LaravelData\Attributes\WithCastAndTransformer;
 use Spatie\LaravelData\Data;
 
 /**
@@ -19,6 +20,7 @@ class PrecedingInvoiceData extends Data
     // concrete Carbon, exactly as InvoiceData does (order and defaults are load-bearing there).
     public string $number;
 
+    #[WithCastAndTransformer(KeepDateInput::class)]
     public Carbon|string|null $issueDate = null;
 
     public function __construct(string $number, CarbonInterface|string|null $issueDate = null)

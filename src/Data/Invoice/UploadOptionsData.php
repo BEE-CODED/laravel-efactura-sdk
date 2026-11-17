@@ -11,6 +11,9 @@ use Spatie\LaravelData\Data;
  * Options for uploading an invoice to ANAF e-Factura.
  *
  * Maps to TypeScript UploadOptions interface.
+ *
+ * Build it with `new` and real bools, or validateAndCreate(): ::from() does not validate, and PHP
+ * reads any non-empty string (including "false") as true, which sends extern/autofactura/executare=DA.
  */
 class UploadOptionsData extends Data
 {

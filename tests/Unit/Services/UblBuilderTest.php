@@ -136,7 +136,7 @@ describe('UblBuilder', function () {
                     street: 'Street',
                     city: 'City',
                     postalZone: '010101',
-                    county: 'County',
+                    county: 'Cluj',
                     countryCode: 'RO',
                 ),
                 isVatPayer: true,
@@ -148,7 +148,7 @@ describe('UblBuilder', function () {
                     street: 'Street',
                     city: 'City',
                     postalZone: '020202',
-                    county: 'County',
+                    county: 'Cluj',
                     countryCode: 'RO',
                 ),
                 isVatPayer: true,
@@ -156,8 +156,8 @@ describe('UblBuilder', function () {
             lines: [], // Empty lines should fail
         );
 
-        $ubl->generateInvoiceXml($invoice);
-    })->throws(ValidationException::class);
+        expect(fn () => $ubl->generateInvoiceXml($invoice))->toThrow(fn (ValidationException $e) => expect($e->getMessage())->toBe(__('efactura-sdk::validation.at_least_one_line_required'))->and($e->getPrevious())->toBeNull());
+    });
 
     it('wraps non-validation exceptions', function () {
         $mockBuilder = Mockery::mock(InvoiceBuilder::class);
@@ -243,7 +243,7 @@ it('uses native payable rounding through direct container and custom injected bu
             ->and($xpath->evaluate('string(/*/cac:LegalMonetaryTotal/cbc:PayableRoundingAmount)'))->toBe('-0.01')
             ->and($xpath->evaluate('string(/*/cac:LegalMonetaryTotal/cbc:PayableAmount)'))->toBe('118.99');
         $invoice->payableRoundingAmount = 0.001;
-        expect(fn () => $service->generateInvoiceXml($invoice))->toThrow(ValidationException::class);
+        expect(fn () => $service->generateInvoiceXml($invoice))->toThrow(ValidationException::class, 'payableRoundingAmount must be a finite amount');
         $invoice->payableRoundingAmount = -0.01;
     }
     expect($custom->called)->toBeTrue();

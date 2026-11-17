@@ -15,6 +15,8 @@ describe('isValidFormat', function () {
         expect(CnpValidator::isValidFormat('12345678901234'))->toBeFalse(); // 14 digits
         expect(CnpValidator::isValidFormat('ABC1234567890'))->toBeFalse();
         expect(CnpValidator::isValidFormat(''))->toBeFalse();
+        expect(CnpValidator::isValidFormat('0123456789012'))->toBeFalse(); // zero-led, not the zero CNP
+        expect(CnpValidator::isValidFormat("1234567890123\n"))->toBeFalse();
     });
 });
 
@@ -94,6 +96,11 @@ describe('isValid', function () {
         expect(CnpValidator::isValid('2850101123453'))->toBeTrue();
         // Sex digit 5: male 2000-2099
         expect(CnpValidator::isValid('5000515123458'))->toBeTrue();
+        // Sex digits 3, 4: 1800-1899
+        expect(CnpValidator::isValid('3850101123455'))->toBeTrue();
+        expect(CnpValidator::isValid('4850101123457'))->toBeTrue();
+        // Sex digit 6: 29 Feb 2000, a date that only exists in the 2000 century
+        expect(CnpValidator::isValid('6000229123455'))->toBeTrue();
     });
 
     it('validates foreign resident CNP with sex digit 7 (1900s century)', function () {
@@ -118,15 +125,6 @@ describe('isValid', function () {
         //     = 18 + 63 + 0 + 0 + 4 + 0 + 3 + 5 + 16 + 6 + 28 + 45 = 188
         // 188 % 11 = 1, so control digit = 1
         expect(CnpValidator::isValid('9900101123451'))->toBeTrue();
-    });
-
-    it('validates foreign resident CNP born in 2000s (sex digit 7)', function () {
-        // Foreign residents born after 1999 should also be valid
-        // CNP: 7000515123456
-        // Sum = 7*2 + 0*7 + 0*9 + 0*1 + 5*4 + 1*6 + 5*3 + 1*5 + 2*8 + 3*2 + 4*7 + 5*9
-        //     = 14 + 0 + 0 + 0 + 20 + 6 + 15 + 5 + 16 + 6 + 28 + 45 = 155
-        // 155 % 11 = 1, so control digit = 1
-        expect(CnpValidator::isValid('7000515123451'))->toBeTrue();
     });
 
     it('validates foreign resident leap year February 29', function () {

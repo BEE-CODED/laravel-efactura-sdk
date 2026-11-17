@@ -50,15 +50,13 @@ class ListMessagesResponseData extends Data
      *
      * laravel-data treats any static from*() taking an array as a magic creation
      * method, so ::from() hands this method EVERY array, including this DTO's own
-     * toArray() output. A downloadError key without ANAF's
-     * eroare_descarcare picks that shape (error for eroare); each message picks its own.
+     * toArray() output. Its own keys are read wherever ANAF's are absent (error for eroare);
+     * each message reads its own the same way.
      *
      * @param  array<string, mixed>  $response
      */
     public static function fromAnafResponse(array $response): self
     {
-        $own = array_key_exists('downloadError', $response) && ! array_key_exists('eroare_descarcare', $response);
-
         $mesaje = null;
         if (isset($response['mesaje']) && is_array($response['mesaje'])) {
             // Filter to ensure all elements are arrays before mapping; re-index so the list stays a list
@@ -77,8 +75,8 @@ class ListMessagesResponseData extends Data
             cui: AnafValue::id($response['cui'] ?? null),
             titlu: AnafValue::text($response['titlu'] ?? null),
             info: AnafValue::text($response['info'] ?? null),
-            error: AnafValue::text($response[$own ? 'error' : 'eroare'] ?? null),
-            downloadError: AnafValue::text($response[$own ? 'downloadError' : 'eroare_descarcare'] ?? null),
+            error: AnafValue::text($response['eroare'] ?? $response['error'] ?? null),
+            downloadError: AnafValue::text($response['eroare_descarcare'] ?? $response['downloadError'] ?? null),
         );
     }
 

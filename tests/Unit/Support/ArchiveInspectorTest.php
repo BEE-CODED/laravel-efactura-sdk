@@ -159,27 +159,47 @@ describe('limits', function () {
 });
 
 describe('content', function () {
-    it('throws a final mismatch', function (Closure $members) {
-        expect(archiveFailure(fn () => $this->inspector->verify(zipOf($members()), UBL_INVOICE)))
-            ->toBeInstanceOf(ArchiveMismatchException::class);
+    it('throws a final mismatch', function (Closure $members, string $message) {
+        $e = archiveFailure(fn () => $this->inspector->verify(zipOf($members()), UBL_INVOICE));
+
+        expect($e)->toBeInstanceOf(ArchiveMismatchException::class)
+            ->and($e->getMessage())->toContain($message);
     })->with([
-        'a DOCTYPE member' => [fn () => ['a.xml' => '<!DOCTYPE Signature [<!ENTITY x "y">]>'.XMLDSIG_SIGNATURE, 'b.xml' => UBL_INVOICE]],
-        'an unparseable member' => [fn () => ['a.xml' => UBL_INVOICE, 'raspuns.txt' => 'not xml']],
-        'a comment inside the document' => [fn () => ['a.xml' => str_replace('<cac:InvoiceLine>', '<!-- x --><cac:InvoiceLine>', UBL_INVOICE)]],
-        'an unrelated document' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => '<Signature/>']],
-        'a second copy' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => UBL_INVOICE]],
-        'signatures only' => [fn () => ['a.xml' => XMLDSIG_SIGNATURE]],
-        'a different document' => [fn () => ['a.xml' => str_replace('297.50', '297.51', UBL_INVOICE)]],
-        'an empty member' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => '']],
-        'a UTF-16 signature with a DOCTYPE' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => "\xFE\xFF".mb_convert_encoding('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE ds:Signature [<!ENTITY x "y">]>'.XMLDSIG_SIGNATURE, 'UTF-16BE', 'UTF-8')]],
+        'a DOCTYPE member' => [fn () => ['a.xml' => '<!DOCTYPE Signature [<!ENTITY x "y">]>'.XMLDSIG_SIGNATURE, 'b.xml' => UBL_INVOICE], 'Unverifiable'],
+        'an unparseable member' => [fn () => ['a.xml' => UBL_INVOICE, 'raspuns.txt' => 'not xml'], 'unsupported member'],
+        'a comment inside the document' => [fn () => ['a.xml' => str_replace('<cac:InvoiceLine>', '<!----><cac:InvoiceLine>', UBL_INVOICE)], 'comment or processing instruction'],
+        'an unrelated document' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => '<Signature/>'], 'unrelated document'],
+        'a second copy' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => UBL_INVOICE], 'does not hold exactly'],
+        'signatures only' => [fn () => ['a.xml' => XMLDSIG_SIGNATURE], 'does not hold exactly'],
+        'a different document' => [fn () => ['a.xml' => str_replace('297.50', '297.51', UBL_INVOICE)], 'differs from the expected'],
+        'an empty member' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => ''], 'Unverifiable'],
+        'a UTF-16 signature with a DOCTYPE' => [fn () => ['a.xml' => UBL_INVOICE, 'b.xml' => "\xFE\xFF".mb_convert_encoding('<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE ds:Signature [<!ENTITY x "y">]>'.XMLDSIG_SIGNATURE, 'UTF-16BE', 'UTF-8')], 'unsupported member'],
     ]);
+
+    it('accepts an archive holding an upload with a comment inside its root byte for byte', function () {
+        $doc = str_replace('<cac:InvoiceLine>', '<!-- line 1 --><cac:InvoiceLine>', UBL_INVOICE);
+
+        $this->inspector->verify(zipOf(['a.xml' => $doc]), $doc);
+    })->throwsNoExceptions();
+
+    it('refuses a member that holds more than its declared size', function () {
+        // Deflated: libzip returns the whole member whatever the header says (a stored one it refuses itself).
+        $archive = zipOf(['a.xml' => UBL_INVOICE]);
+        $central = strpos($archive, "PK\x01\x02");
+        $archive = substr_replace(substr_replace($archive, pack('V', 20), $central + 24, 4), pack('V', 20), 22, 4);
+
+        expect(archiveFailure(fn () => $this->inspector->verify($archive, UBL_INVOICE))->getMessage())->toBe('Unverifiable ANAF archive member.');
+    });
 
     it('refuses a member that parses into too many nodes as a final mismatch, which the limits alone accept', function () {
         $archive = zipOf(['a.xml' => '<a>'.str_repeat('<b/>', UblDocumentComparator::MAX_MARKUP - 1).'</a>']);
 
         $this->inspector->verify($archive); // limits only: the member is never read
 
-        expect(archiveFailure(fn () => $this->inspector->verify($archive, UBL_INVOICE)))->toBeInstanceOf(ArchiveMismatchException::class);
+        $e = archiveFailure(fn () => $this->inspector->verify($archive, UBL_INVOICE));
+
+        expect($e)->toBeInstanceOf(ArchiveMismatchException::class)
+            ->and($e->getMessage())->toContain('too much markup');
     });
 
     it('accepts an archive holding the upload byte for byte when a number is not a plain decimal', function (string $doc) {
@@ -200,23 +220,23 @@ describe('UblDocumentComparator', function () {
         'CDATA as text' => [str_replace('Livrare &amp; montaj', '<![CDATA[Livrare & montaj]]>', UBL_INVOICE)],
     ])->throwsNoExceptions();
 
-    it('rejects any other difference', function (string $candidate) {
+    it('rejects any other difference', function (string $candidate, string $message) {
         expect(fn () => (new UblDocumentComparator)->assertSameDocument($candidate, UBL_INVOICE))
-            ->toThrow(ArchiveMismatchException::class);
+            ->toThrow(ArchiveMismatchException::class, $message);
     })->with([
-        'a DOCTYPE' => ['<!DOCTYPE Invoice SYSTEM "https://example.invalid/evil.dtd">'.UBL_INVOICE],
-        'unparseable XML' => ['<Invoice>'],
-        'an empty document' => [''],
-        'a missing element' => [str_replace('<cbc:Note>Livrare &amp; montaj</cbc:Note>', '', UBL_INVOICE)],
-        'elements where text is expected' => [str_replace('<cbc:ID>FCT-1</cbc:ID>', '<cbc:ID><cbc:Note>FCT-1</cbc:Note></cbc:ID>', UBL_INVOICE)],
-        'a processing instruction inside' => [str_replace('<cbc:ID>FCT-1', '<?pi x?><cbc:ID>FCT-1', UBL_INVOICE)],
-        'text beside elements' => [str_replace('<cac:InvoiceLine>', 'loose<cac:InvoiceLine>', UBL_INVOICE)],
-        'a changed amount' => [str_replace('297.50', '297.51', UBL_INVOICE)],
-        'a changed attribute' => [str_replace('currencyID="RON">250', 'currencyID="EUR">250', UBL_INVOICE)],
-        'an added element' => [str_replace('</cac:LegalMonetaryTotal>', '<cbc:PrepaidAmount currencyID="RON">0</cbc:PrepaidAmount></cac:LegalMonetaryTotal>', UBL_INVOICE)],
-        'zeroes outside the numeric elements' => [str_replace('<cbc:ID>1</cbc:ID>', '<cbc:ID>1.0</cbc:ID>', UBL_INVOICE)],
-        'a non-decimal number' => [str_replace('>297.50<', '>2.975e2<', UBL_INVOICE)],
-        'an element moved to another namespace' => [str_replace('<cbc:ID>FCT-1</cbc:ID>', '<x:ID xmlns:x="urn:other">FCT-1</x:ID>', UBL_INVOICE)],
+        'a DOCTYPE' => [str_replace('?>', '?><!DOCTYPE Invoice SYSTEM "https://example.invalid/evil.dtd">', UBL_INVOICE), 'declares a DOCTYPE'],
+        'unparseable XML' => ['<Invoice>', 'not well-formed'],
+        'an empty document' => ['', 'is empty'],
+        'a missing element' => [str_replace('<cbc:Note>Livrare &amp; montaj</cbc:Note>', '', UBL_INVOICE), 'differs from the expected'],
+        'elements where text is expected' => [str_replace('<cbc:ID>FCT-1</cbc:ID>', '<cbc:ID><cbc:Note>FCT-1</cbc:Note></cbc:ID>', UBL_INVOICE), 'differs from the expected'],
+        'a processing instruction inside' => [str_replace('<cbc:ID>FCT-1', '<?pi?><cbc:ID>FCT-1', UBL_INVOICE), 'comment or processing instruction'],
+        'text beside elements' => [str_replace('<cac:InvoiceLine>', 'loose<cac:InvoiceLine>', UBL_INVOICE), 'mixes text'],
+        'a changed amount' => [str_replace('297.50', '297.51', UBL_INVOICE), 'differs from the expected'],
+        'a changed attribute' => [str_replace('currencyID="RON">250', 'currencyID="EUR">250', UBL_INVOICE), 'differs from the expected'],
+        'an added element' => [str_replace('</cac:LegalMonetaryTotal>', '<cbc:PrepaidAmount currencyID="RON">0</cbc:PrepaidAmount></cac:LegalMonetaryTotal>', UBL_INVOICE), 'differs from the expected'],
+        'zeroes outside the numeric elements' => [str_replace('<cbc:ID>1</cbc:ID>', '<cbc:ID>1.0</cbc:ID>', UBL_INVOICE), 'differs from the expected'],
+        'a non-decimal number' => [str_replace('>297.50<', '>2.975e2<', UBL_INVOICE), 'malformed number'],
+        'an element moved to another namespace' => [str_replace('<cbc:ID>FCT-1</cbc:ID>', '<x:ID xmlns:x="urn:other">FCT-1</x:ID>', UBL_INVOICE), 'differs from the expected'],
     ]);
 
     it('ignores trailing zeroes in every UBL amount, quantity and percent element', function (string $element) {

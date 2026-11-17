@@ -136,8 +136,13 @@ describe('AnafAuthenticator', function () {
     describe('timeout config', function () {
         // env() hands EFACTURA_TIMEOUT over as a string; under strict_types an int property
         // rejected it with a TypeError, and an empty value must not become Guzzle's 0 (no timeout).
-        it('accepts a string timeout and falls back to 30 when it is empty', function (mixed $timeout, int $expected) {
-            Http::fake(['*' => Http::response(['access_token' => 'a', 'refresh_token' => 'r', 'expires_in' => 3600])]);
+        it('accepts a string timeout and falls back to 30 when it is empty', function (mixed $timeout, float $expected) {
+            $sent = null;
+            Http::fake(function ($request, array $options) use (&$sent) {
+                $sent = $options['timeout'] ?? null;
+
+                return Http::response(['access_token' => 'a', 'refresh_token' => 'r', 'expires_in' => 3600]);
+            });
 
             $auth = new AnafAuthenticator(
                 http: Http::getFacadeRoot(),
@@ -150,14 +155,14 @@ describe('AnafAuthenticator', function () {
 
             $auth->refreshAccessToken('refresh-token');
 
-            expect((fn () => $this->timeout)->call($auth))->toBe($expected);
+            expect($sent)->toBe($expected);
         })->with([
-            'numeric string' => ['60', 60],
-            'sub-second float rounds up' => [0.5, 1],
-            'fractional string rounds up' => ['2.5', 3],
-            'empty string' => ['', 30],
-            'zero string' => ['0', 30],
-            'null' => [null, 30],
+            'numeric string' => ['60', 60.0],
+            'sub-second float is kept' => [0.5, 0.5],
+            'fractional string is kept' => ['2.5', 2.5],
+            'empty string' => ['', 30.0],
+            'zero string' => ['0', 30.0],
+            'null' => [null, 30.0],
         ]);
     });
 
@@ -367,6 +372,21 @@ describe('AnafAuthenticator', function () {
             'OAuth server error (503)' => [fn () => Http::response(null, 503)],
         ]);
 
+        it('never follows a redirect from the token endpoint', function () {
+            Http::fake([
+                'logincert.anaf.ro/*' => Http::response('', 302, ['Location' => 'https://elsewhere.invalid/token']),
+                'elsewhere.invalid/*' => fn ($request) => Create::rejectionFor(new ConnectException('cURL error 6: Could not resolve host: elsewhere.invalid', new Request('GET', $request->url()))),
+            ]);
+
+            try {
+                createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('old');
+                $this->fail('Expected AuthenticationException');
+            } catch (AuthenticationException $e) {
+                expect($e->getCode())->toBe(302);
+            }
+            Http::assertSentCount(1);
+        });
+
         it('keeps the refresh token out of the exception trace', function (Closure $answer) {
             Http::fake(['*' => $answer]);
             $old = ini_set('zend.exception_ignore_args', '0');
@@ -375,13 +395,15 @@ describe('AnafAuthenticator', function () {
                 createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('secret-refresh-token');
                 $this->fail('Expected AuthenticationException');
             } catch (AuthenticationException $e) {
-                // Only this exception's own trace: a chained ConnectionException's Laravel frames hold the form data.
                 $found = false;
-                $trace = $e->getTrace();
-                array_walk_recursive($trace, function (mixed $value) use (&$found) {
-                    $found = $found || $value === 'secret-refresh-token';
-                });
-                expect($found)->toBeFalse();
+                for ($link = $e; $link !== null; $link = $link->getPrevious()) {
+                    $trace = $link->getTrace();
+                    array_walk_recursive($trace, function (mixed $value) use (&$found) {
+                        $found = $found || in_array($value, ['secret-refresh-token', 'test-client-secret'], true);
+                    });
+                }
+                expect($found)->toBeFalse()
+                    ->and($e->getPrevious())->toBeNull();
             } finally {
                 ini_set('zend.exception_ignore_args', (string) $old);
             }

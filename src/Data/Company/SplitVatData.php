@@ -28,8 +28,8 @@ class SplitVatData extends Data
      */
     public static function fromAnafResponse(array $data): self
     {
-        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
-        if (! array_key_exists('statusSplitTVA', $data) && array_key_exists('cancelDate', $data)) {
+        // laravel-data sends ::from($dto->toArray()) here too: an array with none of ANAF's keys is this DTO's own shape.
+        if (array_intersect_key($data, array_flip(['statusSplitTVA', 'dataInceputSplitTVA', 'dataAnulareSplitTVA'])) === []) {
             return self::factory()->withoutMagicalCreation()->from($data);
         }
 

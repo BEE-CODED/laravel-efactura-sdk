@@ -34,19 +34,16 @@ class DownloadResponseData extends Data
      */
     public static function fromHttpResponse(string $content, array $headers = []): self
     {
-        $contentType = $headers['Content-Type'] ?? $headers['content-type'] ?? 'application/zip';
-        $rawLength = $headers['Content-Length'] ?? $headers['content-length'] ?? null;
-        if (is_array($rawLength)) {
-            $rawLength = $rawLength[0] ?? null;
-        }
-        $contentLength = $rawLength !== null ? (int) $rawLength : null;
+        // Header names are case-insensitive; filename* (RFC 5987) is not decoded, so it gives null.
+        $headers = array_change_key_case($headers);
+        $contentType = $headers['content-type'] ?? 'application/zip';
 
         $filename = null;
-        $contentDisposition = $headers['Content-Disposition'] ?? $headers['content-disposition'] ?? null;
+        $contentDisposition = $headers['content-disposition'] ?? null;
         if (is_array($contentDisposition)) {
             $contentDisposition = $contentDisposition[0] ?? null;
         }
-        if ($contentDisposition && preg_match('/filename[^;=\n]*=([\"\']?)([^\"\';\n]*)/', $contentDisposition, $matches)) {
+        if ($contentDisposition && preg_match('/(?:^|;)\s*filename\s*=\s*(["\']?)([^"\';\n]*)/i', $contentDisposition, $matches)) {
             // ANAF's suggestion is untrusted: never let it name a path.
             $name = basename(str_replace('\\', '/', $matches[2]));
             $filename = in_array($name, ['', '.', '..'], true) ? null : $name;
@@ -56,7 +53,7 @@ class DownloadResponseData extends Data
             content: $content,
             contentType: is_array($contentType) ? $contentType[0] : $contentType,
             filename: $filename,
-            contentLength: $contentLength ?? strlen($content),
+            contentLength: strlen($content),
         );
     }
 

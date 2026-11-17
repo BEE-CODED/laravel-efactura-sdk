@@ -265,5 +265,10 @@ describe('BaseApiClient', function () {
         it('keeps a literal "0" XML errorMessage', function () use ($message) {
             expect($message('<?xml version="1.0"?><header><Errors errorMessage="0"/></header>'))->toBe('0');
         });
+
+        it('reads the next XML error after a blank one', function () use ($message) {
+            expect($message('<?xml version="1.0"?><header ExecutionStatus="1"><Errors errorMessage=""/><Errors errorMessage="Fisierul transmis nu este valid"/></header>'))
+                ->toBe('Fisierul transmis nu este valid');
+        });
     });
 });

@@ -312,6 +312,11 @@ class AddressSanitizer
             return self::RO_ISO_3166_2_RO_MAP[$normalized];
         }
 
+        // A bare two-letter county code ('CJ', as the company lookup's countyAutoCode gives it)
+        if (in_array('RO-'.$normalized, self::RO_ISO_3166_2_RO_MAP, true)) {
+            return 'RO-'.$normalized;
+        }
+
         // Try stripping common prefixes
         $stripped = self::stripAdministrativePrefixes($normalized);
         if ($stripped !== $normalized && isset(self::RO_ISO_3166_2_RO_MAP[$stripped])) {
@@ -357,7 +362,7 @@ class AddressSanitizer
      * Extract the Bucharest sector number from an address.
      *
      * This method returns the sector number (1-6) for informational purposes.
-     * For UBL CountrySubentity field, use sanitizeBucharestSector() which returns RO-B.
+     * The filed county (CountrySubentity) and city come from canonicalize().
      *
      * @param  string  $address  The address to extract sector from
      * @return int|null The sector number (1-6) or null if not found
@@ -436,6 +441,9 @@ class AddressSanitizer
         $normalized = self::normalizeDiacritics($normalized);
         // Decomposed (NFD) input: drop combining marks (s + U+0326 is ș, a + U+0306 is ă).
         $normalized = (string) preg_replace('/\p{Mn}+/u', '', $normalized);
+
+        // 'Caras - Severin', 'Bistrita – Nasaud' (en/em dash) read as 'CARAS-SEVERIN'
+        $normalized = (string) preg_replace('/\s*[-\x{2013}\x{2014}]\s*/u', '-', $normalized);
 
         // Normalize separators (replace multiple spaces with single space)
         $normalized = (string) preg_replace('/\s+/', ' ', $normalized);

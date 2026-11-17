@@ -108,7 +108,7 @@ interface EFacturaClientInterface
      *
      * @throws ValidationException When parameters are invalid
      * @throws AuthenticationException When authentication fails
-     * @throws ApiException When API call fails, or the 2xx body is not a JSON object
+     * @throws ApiException When API call fails, or the 2xx body is not JSON or is a bare JSON scalar
      * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData;
@@ -123,7 +123,7 @@ interface EFacturaClientInterface
      *
      * @throws ValidationException When parameters are invalid
      * @throws AuthenticationException When authentication fails
-     * @throws ApiException When API call fails, or the 2xx body is not a JSON object
+     * @throws ApiException When API call fails, or the 2xx body is not JSON or is a bare JSON scalar
      * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData;
@@ -138,7 +138,7 @@ interface EFacturaClientInterface
      * @return ValidationResultData Contains validation result and any errors
      *
      * @throws ValidationException When XML content is empty or endpoints.services.validate is not configured
-     * @throws AuthenticationException When authentication fails
+     * @throws AuthenticationException When the service URL is on the e-Factura API host and authentication fails
      * @throws ApiException When the call fails, or the 2xx body is not JSON or is a bare JSON scalar
      * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
@@ -159,7 +159,7 @@ interface EFacturaClientInterface
      * @return ValidationResultData Contains signature verification result
      *
      * @throws ValidationException When either XML is empty or endpoints.services.verify_signature is not configured
-     * @throws AuthenticationException When authentication fails
+     * @throws AuthenticationException When the service URL is on the e-Factura API host and authentication fails
      * @throws ApiException When the call fails, or the 2xx body is not JSON or is a bare JSON scalar
      * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
@@ -178,7 +178,7 @@ interface EFacturaClientInterface
      * @return string Binary PDF content
      *
      * @throws ValidationException When XML content is empty or endpoints.services.transform is not configured
-     * @throws AuthenticationException When authentication fails
+     * @throws AuthenticationException When the service URL is on the e-Factura API host and authentication fails
      * @throws ApiException When ANAF refuses the document (a JSON error), answers with something other than a PDF, or the call fails
      * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */

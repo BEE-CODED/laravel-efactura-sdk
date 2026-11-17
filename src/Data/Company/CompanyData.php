@@ -190,7 +190,7 @@ class CompanyData extends Data
     public static function fromAnafResponse(array $data): self
     {
         // laravel-data sends every array given to ::from() here, its own toArray() too.
-        if (! array_key_exists('date_generale', $data) && array_key_exists('isVatPayer', $data)) {
+        if (! array_key_exists('date_generale', $data) && array_key_exists('cui', $data)) {
             return self::factory()->withoutMagicalCreation()->from($data);
         }
 

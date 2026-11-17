@@ -9,6 +9,7 @@ use BeeCoded\EFacturaSdk\Data\Response\StatusResponseData;
 use BeeCoded\EFacturaSdk\Data\Response\UploadResponseData;
 use BeeCoded\EFacturaSdk\Data\Response\ValidationResultData;
 use BeeCoded\EFacturaSdk\Enums\ExecutionStatus;
+use BeeCoded\EFacturaSdk\Enums\StatusVerdict;
 use BeeCoded\EFacturaSdk\Enums\UploadStatusValue;
 use BeeCoded\EFacturaSdk\Support\XmlParser;
 
@@ -450,7 +451,8 @@ describe('round trip through toArray()', function () {
 
         // Compared through toArray(): toEqual() would also compare laravel-data's internal context.
         expect($rebuilt)->toBeInstanceOf($original::class)
-            ->and($rebuilt->toArray())->toBe($array);
+            ->and($rebuilt->toArray())->toBe($array)
+            ->and($rebuilt->mesaje ?? [])->each->toBeInstanceOf(MessageDetailsData::class);
     })->with([
         'upload, success' => fn () => new UploadResponseData(ExecutionStatus::Success, '202611101200', '5001'),
         'upload, unknown status' => fn () => new UploadResponseData(null, null, '5001', ['Eroare']),
@@ -481,6 +483,18 @@ describe('round trip through toArray()', function () {
         ),
         'validation' => fn () => new ValidationResultData(false, 'detalii', 'trace', ['E1', 'E2']),
     ]);
+});
+
+describe('a partial own array', function () {
+    it('reads each own key wherever ANAF\'s is absent', function () {
+        $upload = UploadResponseData::from(['indexIncarcare' => '5001', 'errors' => ['x']]);
+
+        expect(StatusResponseData::from(['errors' => ['Nu aveti dreptul']])->verdict())->toBe(StatusVerdict::AnafError)
+            ->and($upload->indexIncarcare)->toBe('5001')
+            ->and($upload->errors)->toBe(['x'])
+            ->and(PaginatedMessagesResponseData::from(['error' => 'x'])->hasError())->toBeTrue()
+            ->and(MessageDetailsData::from(['id' => '1', 'cif' => '1', 'tip' => 'T', 'detalii' => 'd', 'idSolicitare' => '9'])->idSolicitare)->toBe('9');
+    });
 });
 
 describe('message lists with entries that are not objects', function () {

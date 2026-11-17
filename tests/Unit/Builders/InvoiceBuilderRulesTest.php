@@ -162,6 +162,7 @@ describe('H header dates are real dates', function () {
         'tax point time 24:00' => [fn () => ['taxPointDate' => '2024-01-01 24:00:00'], 'BT-7'],
         'delivery date' => [fn () => ['delivery' => new DeliveryData('2023-02-29')], 'BT-72'],
         'preceding invoice date' => [fn () => ['precedingInvoices' => [new PrecedingInvoiceData('F-1', '2024-02-30')]], 'BT-26'],
+        'a month-first slash date' => [fn () => ['issueDate' => '05/03/2024'], 'BT-2'],
     ]);
 });
 
@@ -305,12 +306,12 @@ describe('S13/X7 VAT categories E, G and K with exemption reasons', function () 
             'lines' => [rbLine(['taxAmount' => 0, 'taxPercent' => 0, 'taxCategoryId' => TaxCategoryId::Export])],
         ]), 'require a supplier registered for VAT'],
         'E without a usable seller VAT id' => [fn () => rbInvoice([
-            'supplier' => rbParty(['companyId' => '1234 5678']),
+            'supplier' => rbParty(['companyId' => '1234-5678']),
             'lines' => [rbLine(['taxAmount' => 0, 'taxPercent' => 0, 'taxCategoryId' => TaxCategoryId::Exempt])],
             'exemptionReasons' => [new ExemptionReasonData(TaxCategoryId::Exempt, text: 'Scutit')],
         ]), 'Supplier must be registered for VAT and supply a usable VAT identifier for VAT category E'],
         'G without a usable seller VAT id' => [fn () => rbInvoice([
-            'supplier' => rbParty(['companyId' => '1234 5678']),
+            'supplier' => rbParty(['companyId' => '1234-5678']),
             'lines' => [rbLine(['taxAmount' => 0, 'taxPercent' => 0, 'taxCategoryId' => TaxCategoryId::Export])],
         ]), 'Supplier must be registered for VAT and supply a usable VAT identifier for VAT category G'],
         'K buyer not a VAT payer' => [fn () => rbKInvoice(new DeliveryData('2026-11-05', rbAddress(['countryCode' => 'DE', 'city' => 'Berlin', 'county' => 'Berlin'])), [
@@ -336,6 +337,15 @@ describe('S14 VAT breakdown amount is exactly zero outside S and AE', function (
 
         expect(rbAll($xml, '//cac:TaxSubtotal/cbc:TaxAmount'))->toBe(['0.00']);
     });
+});
+
+describe('line VAT sign follows the quantity', function () {
+    it('refuses a line whose VAT sign is opposite to its quantity', function (Closure $invoice) {
+        expect(fn () => rbXml($invoice()))->toThrow(ValidationException::class, 'same sign as the quantity');
+    })->with([
+        'credit note, tax not negated' => [fn () => rbInvoice(['invoiceTypeCode' => InvoiceTypeCode::CreditNote, 'lines' => [rbLine(['quantity' => -2, 'taxAmount' => 38, 'taxPercent' => 19])]])],
+        'invoice with negative tax' => [fn () => rbInvoice(['lines' => [rbLine(['taxAmount' => -19])]])],
+    ]);
 });
 
 describe('S15 currency and country codes', function () {

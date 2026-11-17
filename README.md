@@ -106,7 +106,10 @@ Add a dedicated logging channel in `config/logging.php`:
 
 If you do not define the channel, the SDK defines it at boot as a `stack` over your default
 channel, so its entries go where your other logs go. A failing log handler never fails an ANAF
-call. A blank `EFACTURA_LOG_CHANNEL` logs to your default channel.
+call. A blank or `false` `EFACTURA_LOG_CHANNEL` logs to your default channel.
+
+Log entries and transport-failure exception messages name the filer's CIF (`vatNumber`, the request
+route), which for a natural person is their CNP: set the channel's retention and access accordingly.
 
 ### Rate Limiting Configuration
 
@@ -182,17 +185,18 @@ return redirect($authUrl);
 #### Step 2: Handle OAuth Callback
 
 ```php
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
-use BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth;
 use Illuminate\Http\Request;
 
 public function handleCallback(Request $request)
 {
     // pull(): a state is accepted once
     $pending = $request->session()->pull('efactura_oauth');
+    $auth = app(AnafAuthenticatorInterface::class);
 
     try {
-        $state = EFacturaSdkAuth::decodeState((string) $request->query('state'));
+        $state = $auth->decodeState((string) $request->query('state'));
     } catch (AuthenticationException) {
         abort(403);
     }
@@ -202,7 +206,7 @@ public function handleCallback(Request $request)
         abort(403);
     }
 
-    $tokens = EFacturaSdkAuth::exchangeCodeForToken((string) $request->query('code'));
+    $tokens = $auth->exchangeCodeForToken((string) $request->query('code'));
 
     // Store tokens in YOUR database, under the company you kept on the server.
     // Cast access_token and refresh_token as 'encrypted' on the model.
@@ -225,14 +229,14 @@ client refreshing the same grant can spend the same refresh token, and one of th
 refused (the company must then be authorised again).
 
 ```php
-use BeeCoded\EFacturaSdk\Facades\EFacturaSdkAuth;
+use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 
 // $cif is the canonical CIF (VatNumberValidator::canonical(), what getVatNumber() returns)
 EFacturaClient::tokenRefreshLock($cif)->block(10, function () use ($tokenModel) {
     $tokenModel->refresh(); // another worker may already have rotated the pair
 
-    $newTokens = EFacturaSdkAuth::refreshAccessToken($tokenModel->refresh_token);
+    $newTokens = app(AnafAuthenticatorInterface::class)->refreshAccessToken($tokenModel->refresh_token);
 
     // Update stored tokens
     $tokenModel->update([
@@ -307,24 +311,6 @@ must not decide a resend. The rules `UploadOutcome` applies are in [Exception Ha
 
 #### Check Processing Status
 
-```php
-$status = $client->getStatusMessage($uploadId);
-
-if ($status->isReady()) {
-    $downloadId = $status->idDescarcare;
-    // Document is ready for download
-} elseif ($status->isInProgress()) {
-    // Still processing, check again later
-} elseif ($status->isFailed() && $status->idDescarcare !== null) {
-    // ANAF rejected the document; $status->idDescarcare is the error report
-    $errors = $status->errors;
-} elseif ($status->isFailed() || $status->hasAnafError()) {
-    // No verdict on the document (see $status->errors): park it for a human, do not re-upload
-} elseif ($status->isNotProcessed()) {
-    // Final: ANAF did not take the file in ("XML cu erori nepreluat de sistem"); no download id
-}
-```
-
 - `nok` does not always carry a download id. A `nok` without `idDescarcare` is not a validation
   failure: park it like `hasAnafError()`.
 - An XML `<header>` with only `<Errors/>` (an unknown upload id, "Nu aveti dreptul") has no
@@ -348,6 +334,7 @@ accepted without a receipt, or park it, but never upload it again.
 use BeeCoded\EFacturaSdk\Enums\StatusVerdict;
 use BeeCoded\EFacturaSdk\Support\PollSchedule;
 
+$status = $client->getStatusMessage($uploadId);
 $verdict = $status->verdict();
 
 if ($verdict === StatusVerdict::InProgress) {
@@ -375,10 +362,14 @@ taking it verbatim (since 4.0): numeric ids (`indexIncarcare`, `idDescarcare`, `
 message ids) become strings, and big integers keep every digit. A `stare` that is not a string,
 text that is not a scalar, and an id that is a float, bool or array all become `null`. `Errors`
 can be a string, an `{errorMessage}` object or a list of either, and always comes back as a list of
-non-empty strings or `null`. A 2xx body that is not a JSON object (for example a bare number)
-throws `ApiException`, the same as an unparseable one. Every response DTO also reads its own `toArray()` output
+non-empty strings or `null`. A 2xx body that is not JSON, or is a bare JSON scalar (for example a
+number), throws `ApiException`. Every response DTO also reads its own `toArray()` output
 back, so `StatusResponseData::from($status->toArray())` rebuilds an equal DTO (since 4.0), with
 laravel-data's default camelCase output names (not with a snake_case output mapper).
+`::from()` normalises ANAF's answer only when it gets an array: pass ANAF's body through
+`json_decode($body, true)` first, because a JSON string or object takes laravel-data's plain
+pipeline, where ANAF keys such as `id_descarcare`, `eroare` and `Errors` are not read and the
+company DTOs return their defaults.
 
 #### Download Document
 
@@ -429,8 +420,8 @@ try {
   the root and trailing decimal zeroes in the eleven elements the builder writes as numbers
   (`InvoicedQuantity`, `CreditedQuantity`, `PriceAmount`, `LineExtensionAmount`,
   `TaxExclusiveAmount`, `TaxInclusiveAmount`, `PayableAmount`, `PayableRoundingAmount`,
-  `TaxableAmount`, `TaxAmount`, `Percent`) may differ, and CDATA counts as text. Any other difference, or a comment or processing instruction inside the root,
-  throws `ArchiveMismatchException`.
+  `TaxableAmount`, `TaxAmount`, `Percent`) may differ, and CDATA counts as text. Any other difference, or a comment or processing instruction inside the
+  root of a document that is not byte-identical to the other, throws `ArchiveMismatchException`.
 - The archive is written to a temporary file in `sys_get_temp_dir()`, or the directory given to
   `new ArchiveInspector($directory)`, and removed afterwards.
 
@@ -504,6 +495,10 @@ if ($validation->valid) {
 }
 ```
 
+`validateXml()`, `convertXmlToPdf()` and `verifySignature()` send the access token only to a service
+URL on the e-Factura API host (`api.anaf.ro`). The default `webservicesp.anaf.ro` services get none,
+so these calls never refresh the token, and a 401 from them is an `ApiException`.
+
 #### Convert to PDF
 
 ```php
@@ -573,7 +568,8 @@ try {
 **Multi-worker deployments:** pass a `tokenReloader` and a `tokenPersister` (since 4.0). The client
 takes a cache lock before it refreshes, held for the HTTP timeout plus 30 seconds. Under that lock it
 calls `tokenReloader` to adopt tokens another worker already rotated, so the reloader must read your
-primary store (no read replica, no cache). After a refresh it calls
+primary store (no read replica, no cache). If `tokenReloader` throws, the call fails with
+`AuthenticationException` code 0 and nothing is refreshed. After a refresh it calls
 `tokenPersister` with the new `OAuthTokensData` before releasing the lock, so no other worker can
 spend the rotated refresh token first. If `tokenPersister` throws, the exception reaches your code;
 the client keeps the new tokens and `wasTokenRefreshed()` is still true.
@@ -784,11 +780,16 @@ ANAF, which would reject them or file a wrong figure:
 
 - an invoice (not a credit note) with a positive amount due and no `dueDate` (a blank string counts
   as none) (BR-CO-25). A blank `dueDate` on any other document, or an `issueDate`, `dueDate` or
-  `taxPointDate` that is not a real date (unparseable, or impossible like `2024-02-30`), is refused
+  `taxPointDate` that is not a real date (unparseable, or impossible like `2024-02-30`), or a slash
+  date that starts with the day or month (`05/03/2024`, which PHP reads month-first), is refused
   with `ValidationException` (`issue_date_invalid`, `due_date_invalid`, `tax_point_date_invalid`).
   The `get…AsCarbon()` getters throw `InvalidArgumentException`;
 - a currency code that is not three uppercase letters, or a country code that is not two (empty
   included);
+- a line `unitCode` that is not two or three uppercase letters or digits, an empty one included
+  (the shape of a UN/ECE Rec. 20/21 code; the code list itself is not checked; key
+  `line_unit_code_invalid`);
+- a line whose `taxAmount` sign differs from its quantity's (`line_tax_sign_mismatch`);
 - a required field that is empty after trimming (invoice number, issue date, names, company ids,
   street, city, line names, the county of a Romanian address); any element the builder would file
   blank, such as a line `id` of `''` or a company id that is only the `RO` prefix (the message names
@@ -919,7 +920,8 @@ $invoice = new InvoiceData(
 `InvoiceData` accepts an optional `CarbonInterface|string|null $taxPointDate = null` (BT-7).
 Supply the caller-selected tax date explicitly; the SDK never chooses today. Left null, it is not
 filed and `toArray()`/`toJson()` leave it out; a non-null date is appended to serialization.
-`InvoiceData::from()` reads it the same way, with Spatie's usual date casting.
+`InvoiceData::from()` reads it the same way: `::from()` keeps a date string as given and reads it
+the same strict way.
 
 ```php
 $invoice = new InvoiceData(
@@ -1157,6 +1159,8 @@ The `taxAmount` sign must follow the quantity:
 - Positive quantity → positive `taxAmount`
 - Negative quantity (credit note lines) → negative `taxAmount`
 
+A line whose non-zero `taxAmount` has the other sign is refused (`line_tax_sign_mismatch`).
+
 The SDK's credit note sign-flip (negating quantities for ANAF) also applies to `taxAmount` internally — you don't need to handle this yourself.
 
 > **Upgrading from v1.x:** Add `taxAmount` to every `new InvoiceLineData(...)` call. If you were using net pricing (tax-exclusive `unitPrice`), compute it as `round(round(quantity * unitPrice, 2) * taxPercent / 100, 2)`. If you were using tax-included pricing, pass the VAT amount you already extracted from the gross total.
@@ -1169,6 +1173,7 @@ Romanian addresses are automatically sanitized to ISO 3166-2:RO format:
 // County names are normalized
 'Cluj' -> 'RO-CJ'
 'Judetul Cluj' -> 'RO-CJ'
+'CJ' -> 'RO-CJ'
 'BUCURESTI' -> 'RO-B'
 
 // Bucharest sectors are extracted
@@ -1307,7 +1312,7 @@ VatNumberValidator::isValid('invalid');     // false
 // spaces and an RO prefix are ignored)
 VatNumberValidator::isValidFormat('12345678'); // true
 
-VatNumberValidator::normalize('12345678');  // 'RO12345678' (format-checked only, no checksum; a prefixed CNP comes back bare)
+VatNumberValidator::normalize('12345678');  // 'RO12345678' (a CUI is format-checked only, without its control digit; a CNP must be valid and comes back bare, without RO)
 VatNumberValidator::stripPrefix('RO14399840'); // '14399840'
 VatNumberValidator::canonical(' RO 1439 9840 '); // '14399840' (null when malformed)
 
@@ -1340,7 +1345,7 @@ DateHelper::formatForAnaf('2024-02-30');    // throws InvalidArgumentException: 
 
 // The strict readers behind them
 DateHelper::exact('15.03.2024', 'd.m.Y');   // Carbon, or null unless the string is exactly that real date
-DateHelper::parse('2024-03-15 10:00');      // Carbon; throws InvalidArgumentException for a blank, unparseable or impossible date
+DateHelper::parse('2024-03-15 10:00');      // Carbon; throws InvalidArgumentException for a blank, unparseable or impossible date, or a day/month-first slash date
 
 // Timestamps in milliseconds (for paginated messages)
 DateHelper::toTimestamp(now());             // 1705312800000
@@ -1478,8 +1483,8 @@ try {
     $result = $client->uploadDocument($xml);
 } catch (AuthenticationException $e) {
     // getCode(): 400/401 = ANAF refused the grant or token -> reconnect the company.
-    // 0 = OAuth server unreachable, refresh-lock timeout or lock store failure, or missing OAuth
-    // configuration -> retry later / fix the configuration. Another code = the OAuth server's HTTP status.
+    // 0 = OAuth server unreachable, refresh-lock timeout or lock store failure, the token reloader
+    // failed, or missing OAuth configuration -> retry later / fix the configuration. Another code = the OAuth server's HTTP status.
     // "Token refresh previously failed": this client is spent; create a new one.
 } catch (RateLimitExceededException $e) {
     // The SDK's own limit: nothing was sent.

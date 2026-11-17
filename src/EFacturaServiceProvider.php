@@ -99,7 +99,8 @@ final class EFacturaServiceProvider extends ServiceProvider
      * Turn the raw env() values into what the readers expect, once at register (also with a
      * cached config, which skips mergeConfigFrom). Idempotent. A missing key falls back to its
      * reader's own default, so a blank or malformed value is removed rather than defaulted here.
-     * A config()->set() after register() is not normalised; the readers' own guards cover it.
+     * A config()->set() after register() is not normalised: only the retry floors and the limit checks guard it,
+     * so set sandbox and rate_limits.enabled as real booleans (a blank then reads as false).
      */
     private function normaliseConfig(): void
     {
@@ -113,7 +114,9 @@ final class EFacturaServiceProvider extends ServiceProvider
 
         // A blank retry_times used to mean one attempt; a negative retry_delay made sleep() throw.
         foreach (['http.retry_times' => 1, 'http.retry_delay' => 0] as $key => $min) {
-            $value = filter_var(Arr::get($sdk, $key), FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE);
+            // filter_var reads an env true as 1.
+            $raw = Arr::get($sdk, $key);
+            $value = is_bool($raw) ? null : filter_var($raw, FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE);
             if ($value === null) {
                 Arr::forget($sdk, $key);
             } else {
@@ -121,15 +124,17 @@ final class EFacturaServiceProvider extends ServiceProvider
             }
         }
 
-        // Only a blank or non-integer limit is removed; 0 and negatives stay so the limiter refuses them.
+        // Only a blank, boolean or non-integer limit is removed; 0 and negatives stay so the limiter refuses them.
         foreach ((array) Arr::get($sdk, 'rate_limits', []) as $name => $limit) {
-            if ($name !== 'enabled' && filter_var($limit, FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE) === null) {
+            if ($name !== 'enabled' && (is_bool($limit) || filter_var($limit, FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE) === null)) {
                 Arr::forget($sdk, "rate_limits.{$name}");
             }
         }
 
-        // Log::channel('') builds the emergency logger on every call; null is the host's default channel.
-        if (Arr::get($sdk, 'logging.channel') === '') {
+        // Log::channel() of a blank, whitespace or false channel builds the emergency logger on every call;
+        // null is the host's default channel. An absent key keeps the readers' 'efactura-sdk' default.
+        $channel = Arr::get($sdk, 'logging.channel');
+        if ($channel !== null && (! is_string($channel) || trim($channel) === '')) {
             Arr::set($sdk, 'logging.channel', null);
         }
 

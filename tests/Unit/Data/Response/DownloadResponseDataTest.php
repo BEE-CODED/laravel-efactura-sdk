@@ -41,7 +41,7 @@ describe('DownloadResponseData', function () {
             );
 
             expect($response->contentType)->toBe('application/zip');
-            expect($response->contentLength)->toBe(1024);
+            expect($response->contentLength)->toBe(14);
             expect($response->filename)->toBe('document.zip');
         });
 
@@ -55,7 +55,7 @@ describe('DownloadResponseData', function () {
             );
 
             expect($response->contentType)->toBe('application/xml');
-            expect($response->contentLength)->toBe(500);
+            expect($response->contentLength)->toBe(7);
         });
 
         it('defaults to application/zip', function () {

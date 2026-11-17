@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Builders\InvoiceBuilder;
 use BeeCoded\EFacturaSdk\Data\Invoice\AddressData;
 use BeeCoded\EFacturaSdk\Data\Invoice\DeliveryData;
 use BeeCoded\EFacturaSdk\Data\Invoice\ExemptionReasonData;
@@ -424,7 +425,7 @@ describe('InvoiceData immutable date support', function () {
     });
 
     it('yields a mutable Carbon for an immutable issueDate on the ::from() path', function () {
-        // Note what this does and does not guard. laravel-data's cast converts the immutable
+        // Note what this does and does not guard. KeepDateInput's cast converts the immutable
         // date to a Carbon BEFORE the constructor runs, so this passes with or without the
         // constructor's normalisation -- it is not a guard for that. What it does guard is the
         // un-promotion rewrite: the resolver direct-writes un-promoted properties, so anything
@@ -754,14 +755,16 @@ describe('InvoiceData optional payable rounding compatibility', function () {
         $payload = createTestInvoice()->toArray();
         $payload['lines'][0]['taxPercent'] = '-1';
 
-        expect(fn () => InvoiceData::validateAndCreate($payload))->toThrow(Illuminate\Validation\ValidationException::class);
+        expect(fn () => InvoiceData::validateAndCreate($payload))
+            ->toThrow(fn (Illuminate\Validation\ValidationException $e) => expect($e->validator->errors()->keys())->toBe(['lines.0.taxPercent']));
     });
 
     it('preserves legacy validation rules and outcomes for omitted input', function () {
         $payload = createTestInvoice()->toArray();
         expect(InvoiceData::validateAndCreate($payload)->toArray())->toBe($payload);
         unset($payload['invoiceNumber']);
-        expect(fn () => InvoiceData::validateAndCreate($payload))->toThrow(Illuminate\Validation\ValidationException::class);
+        expect(fn () => InvoiceData::validateAndCreate($payload))
+            ->toThrow(fn (Illuminate\Validation\ValidationException $e) => expect($e->validator->errors()->keys())->toBe(['invoiceNumber']));
     });
 
     it('keeps mapping wrapping and caller partial contexts through null value null transitions', function (bool $useFactory, bool $withTaxPointDate) {
@@ -869,5 +872,41 @@ describe('4.0 references, notes, delivery and exemption reasons', function () {
 
         $alias->precedingInvoices = [new PrecedingInvoiceData('F-2')];
         expect(fn () => $alias->getPrecedingInvoices())->toThrow(ValidationException::class, 'deprecated');
+    });
+});
+
+describe('InvoiceData ::from() dates', function () {
+    beforeEach(function () {
+        config(['data.date_timezone' => 'UTC']);
+        $address = new AddressData('Str. Test 1', 'Bucuresti', postalZone: '010101', county: 'Bucuresti', bucharestSector: 1);
+        $this->buildable = [
+            'supplier' => new PartyData(registrationName: 'Test Supplier SRL', companyId: 'RO12345678', address: $address, isVatPayer: true),
+            'customer' => new PartyData(registrationName: 'Test Customer SRL', companyId: 'RO87654321', address: $address, isVatPayer: true),
+            'dueDate' => Carbon::create(2024, 4, 15),
+        ];
+    });
+
+    it('keeps a date string as given and files the same day after a round trip', function () {
+        $hydrated = InvoiceData::from([
+            ...createTestInvoice(overrides: $this->buildable)->toArray(),
+            'issueDate' => '2024-03-15',
+            'precedingInvoices' => [['number' => 'A1', 'issueDate' => '2024-03-01']],
+        ]);
+        $xml = (new InvoiceBuilder)->buildInvoiceXml($hydrated);
+
+        expect($xml)->toContain('<cbc:IssueDate>2024-03-15</cbc:IssueDate>')
+            ->and($xml)->toContain('<cbc:IssueDate>2024-03-01</cbc:IssueDate>');
+
+        $local = createTestInvoice(overrides: [...$this->buildable, 'issueDate' => Carbon::parse('2024-03-15', 'Europe/Bucharest')]);
+        $rebuilt = InvoiceData::from(json_decode($local->toJson(), true, flags: JSON_THROW_ON_ERROR));
+
+        expect((new InvoiceBuilder)->buildInvoiceXml($rebuilt))->toContain('<cbc:IssueDate>2024-03-15</cbc:IssueDate>');
+    });
+
+    it('refuses an impossible date string at build, as new does', function () {
+        $hydrated = InvoiceData::from([...createTestInvoice(overrides: $this->buildable)->toArray(), 'issueDate' => '2024-02-30']);
+
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($hydrated))
+            ->toThrow(ValidationException::class, 'The issue date (BT-2) "2024-02-30" is not a valid date');
     });
 });

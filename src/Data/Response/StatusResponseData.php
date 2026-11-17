@@ -54,8 +54,7 @@ class StatusResponseData extends Data
      *
      * laravel-data treats any static from*() taking an array as a magic creation
      * method, so ::from() hands this method EVERY array, including this DTO's own
-     * toArray() output. An idDescarcare key without ANAF's
-     * id_descarcare picks that shape, read with the same normalisation.
+     * toArray() output. Its own keys are read wherever ANAF's are absent, with the same normalisation.
      *
      * @param  array<string, mixed>  $response
      */
@@ -64,21 +63,14 @@ class StatusResponseData extends Data
         $stare = $response['stare'] ?? null;
         $stare = $stare instanceof UploadStatusValue ? $stare->value : $stare;
 
-        if (array_key_exists('idDescarcare', $response) && ! array_key_exists('id_descarcare', $response)) {
-            return new self(
-                stare: is_string($stare) ? UploadStatusValue::tryFrom($stare) : null,
-                idDescarcare: AnafValue::id($response['idDescarcare']),
-                errors: AnafValue::errors($response['errors'] ?? null),
-            );
-        }
-
         return new self(
             // A non-string stare (e.g. a number) is not a status ANAF defines: unknown, so null.
             stare: is_string($stare) ? UploadStatusValue::tryFrom($stare) : null,
-            idDescarcare: AnafValue::id($response['id_descarcare'] ?? null),
-            // Only when ANAF sent no usable Errors: a real one always wins over eroare.
+            idDescarcare: AnafValue::id($response['id_descarcare'] ?? $response['idDescarcare'] ?? null),
+            // Only when ANAF sent no usable Errors: a real one always wins over eroare, then the own errors.
             errors: AnafValue::errors($response['Errors'] ?? null)
-                ?? AnafValue::errors($response['eroare'] ?? null),
+                ?? AnafValue::errors($response['eroare'] ?? null)
+                ?? AnafValue::errors($response['errors'] ?? null),
         );
     }
 

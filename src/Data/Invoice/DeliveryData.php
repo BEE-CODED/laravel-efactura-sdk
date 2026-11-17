@@ -7,6 +7,7 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 use BeeCoded\EFacturaSdk\Support\DateHelper;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
+use Spatie\LaravelData\Attributes\WithCastAndTransformer;
 use Spatie\LaravelData\Data;
 use Spatie\LaravelData\Support\Partials\Partial;
 use Spatie\LaravelData\Support\Transformation\TransformationContext;
@@ -24,6 +25,7 @@ class DeliveryData extends Data
 {
     // Declared rather than promoted so the date accepts any CarbonInterface while storing a
     // concrete Carbon, exactly as InvoiceData does (order and defaults are load-bearing there).
+    #[WithCastAndTransformer(KeepDateInput::class)]
     public Carbon|string|null $actualDeliveryDate = null;
 
     public ?AddressData $address = null;

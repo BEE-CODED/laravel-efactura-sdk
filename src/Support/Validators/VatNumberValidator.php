@@ -222,16 +222,15 @@ final class VatNumberValidator
      * This resolves toward the first reading: an explicit prefix is better evidence of the
      * issuing state than an address is, and a foreign VAT registration is far commoner than an
      * unprefixed French id with a letter-letter key. A prefixed "FRGR123456789" is unambiguous
-     * and passes through untouched. Malformed-but-prefixed input such as "RO 12345678" is left
-     * intact rather than doubled.
+     * and passes through untouched. Whitespace is removed: "RO 12345678" gives "RO12345678".
      *
      * @param  string  $id  The VAT identifier, with or without its prefix
      * @param  string|null  $country  The party's ISO 3166-1 alpha-2 country code (null = RO)
-     * @return string The identifier carrying a VAT prefix, uppercased and trimmed
+     * @return string The identifier carrying a VAT prefix, uppercased, without whitespace
      */
     public static function withCountryPrefix(string $id, ?string $country): string
     {
-        $id = strtoupper(trim($id));
+        $id = strtoupper(preg_replace('/\s+/', '', $id) ?? $id);
         $country = strtoupper($country ?? self::RO_PREFIX);
         $expectedPrefix = self::VAT_PREFIX_OVERRIDES[$country] ?? $country;
 

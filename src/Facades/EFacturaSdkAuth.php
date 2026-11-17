@@ -15,9 +15,10 @@ use Illuminate\Support\Facades\Facade;
  *
  * Use this facade for the OAuth flow:
  * - Generate authorization URL for user redirect
- * - Exchange authorization code for tokens
- * - Refresh expired tokens
  * - Decode state parameter for CSRF validation
+ *
+ * Pass the authorization code and refresh token to app(AnafAuthenticatorInterface::class), not this
+ * facade: Facade::__callStatic keeps its arguments in its own frame, which #[\SensitiveParameter] does not redact.
  *
  * For API operations, create an EFacturaClient with your stored tokens:
  *

@@ -1004,8 +1004,19 @@ describe('EFacturaClient', function () {
         })->with([
             'status (call)' => [fn (EFacturaClient $client) => $client->getStatusMessage('12345')],
             'upload (callRaw)' => [fn (EFacturaClient $client) => $client->uploadDocument('<Invoice/>')],
-            'validate (callRaw to a URL)' => [fn (EFacturaClient $client) => $client->validateXml('<Invoice/>', DocumentStandardType::FACT1)],
+            'validate (callRaw to a URL)' => [function (EFacturaClient $client) {
+                config()->set('efactura-sdk.endpoints.services.validate', 'https://api.anaf.ro/prod/FCTEL/rest/validare');
+                $client->validateXml('<Invoice/>', DocumentStandardType::FACT1);
+            }],
         ]);
+
+        it('keeps a 401 from a service that got no token as an ApiException', function () {
+            Http::fake(['*' => Http::response(['error' => 'Unauthorized'], 401)]);
+
+            expect(fn () => (new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->validateXml('<Invoice/>', DocumentStandardType::FACT1))
+                ->toThrow(fn (ApiException $e) => expect($e)->not->toBeInstanceOf(AuthenticationException::class)
+                    ->and($e->statusCode)->toBe(401));
+        });
     });
 
     describe('UploadOptionsData integration', function () {
@@ -1051,6 +1062,14 @@ describe('EFacturaClient', function () {
 
             $client->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1);
         })->throws(ApiException::class, 'Invalid XML format');
+
+        it("reads ANAF's reason past a blank message in a 2xx JSON error", function (mixed $message) {
+            config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transform');
+            Http::fake(['*' => Http::response(['message' => $message, 'eroare' => 'Fisierul nu este valid'], 200, ['Content-Type' => 'application/json'])]);
+
+            expect(fn () => (new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->convertXmlToPdf('<Invoice/>', DocumentStandardType::FACT1))
+                ->toThrow(fn (ApiException $e) => expect($e->getMessage())->toBe('Fisierul nu este valid'));
+        })->with(['blank' => [''], 'false' => [false]]);
 
         it('throws ApiException when JSON response is invalid/null', function () {
             // Configure the transform endpoint
@@ -1275,6 +1294,16 @@ describe('EFacturaClient', function () {
             'dot dot' => ['..', null],
             'root' => ['/', null],
             'plain name' => ['document.zip', 'document.zip'],
+        ]);
+
+        it('reads download headers whatever their case', function (array $headers, string $property, string|int|null $expected) {
+            Http::fake(['*' => Http::response("PK\x03\x04data", 200, $headers)]);
+
+            expect((new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->downloadDocument('123')->{$property})->toBe($expected);
+        })->with([
+            'mixed-case names' => [['Content-type' => 'application/zip', 'Content-disposition' => 'attachment; filename=5001.zip'], 'filename', '5001.zip'],
+            'filename* only' => [['Content-Disposition' => "attachment; filename*=UTF-8''5001.zip"], 'filename', null],
+            'bad Content-Length' => [['Content-Length' => 'abc'], 'contentLength', 8],
         ]);
 
         it('accepts an empty ZIP archive', function () {
@@ -1760,21 +1789,10 @@ describe('EFacturaClient', function () {
             expect($client->wasTokenRefreshed())->toBeTrue();
         });
 
-        it('falls back to its own tokens when the reloader throws', function () {
-            // A store lookup failure must not take down the API call: refreshing
-            // with a possibly-stale token is still better than failing outright.
-            $this->authenticator->shouldReceive('refreshAccessToken')
-                ->once()
-                ->with('own-refresh-token')
-                ->andReturn(new OAuthTokensData(
-                    accessToken: 'new-access-token',
-                    refreshToken: 'new-refresh-token',
-                    expiresAt: Carbon::now()->addHour(),
-                ));
-
-            Http::fake([
-                '*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200),
-            ]);
+        it('refreshes nothing when the reloader throws', function () {
+            // The store's tokens are unknown: our own refresh token may already be spent by another worker.
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+            Http::fake();
 
             $client = new EFacturaClient(
                 vatNumber: '12345678',
@@ -1784,9 +1802,10 @@ describe('EFacturaClient', function () {
                 tokenReloader: fn () => throw new RuntimeException('database is down'),
             );
 
-            $client->getStatusMessage('12345');
-
-            expect($client->wasTokenRefreshed())->toBeTrue();
+            expect(fn () => $client->getStatusMessage('12345'))
+                ->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe(0));
+            Http::assertNothingSent();
+            expect($client->wasTokenRefreshed())->toBeFalse();
         });
 
         it('does not consult the reloader when the token is still valid', function () {
@@ -2053,7 +2072,8 @@ describe('EFacturaClient', function () {
 
             expect(fn () => $client->getStatusMessage('12345'))->toThrow(RuntimeException::class, 'store down')
                 ->and($client->wasTokenRefreshed())->toBeTrue()
-                ->and($client->getTokens()->refreshToken)->toBe('new-refresh');
+                ->and($client->getTokens()->refreshToken)->toBe('new-refresh')
+                ->and(Cache::lock('efactura:token_refresh:12345678', 5)->get())->toBeTrue();
             Http::assertNothingSent();
         });
 
@@ -2142,6 +2162,7 @@ describe('EFacturaClient', function () {
                 expect(fn () => $client->getStatusMessage($uploadId))
                     ->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe($code));
             }
+            expect(Cache::lock('efactura:token_refresh:12345678', 5)->get())->toBeTrue();
             Http::assertNothingSent();
         })->with(['transport or configuration (0)' => [0], 'grant refused (400)' => [400]]);
 

@@ -348,11 +348,11 @@ describe('explicit VAT category compatibility', function () {
     ]);
 
     it('rejects unknown categories at the real data validation gate', function () {
-        InvoiceLineData::validateAndCreate([
+        expect(fn () => InvoiceLineData::validateAndCreate([
             'name' => 'Product', 'quantity' => 1, 'unitPrice' => 100,
             'taxAmount' => 0, 'taxPercent' => 0, 'taxCategoryId' => 'UNKNOWN',
-        ]);
-    })->throws(ValidationException::class);
+        ]))->toThrow(fn (ValidationException $e) => expect($e->validator->errors()->keys())->toBe(['taxCategoryId']));
+    });
 });
 
 describe('explicit VAT category transformation contexts', function () {

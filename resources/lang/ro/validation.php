@@ -45,6 +45,7 @@ return [
     'line_tax_percent_range' => 'Linia :lineNum: Procentul de taxă trebuie să fie între 0 și 100',
     'line_tax_not_allowed_for_non_vat_payer' => 'Linia :lineNum: Un furnizor neînregistrat în scopuri de TVA nu poate factura TVA (BR-O-09)',
     'line_tax_amount_must_be_zero_for_zero_rate' => 'Linia :lineNum: O linie cu cotă zero de TVA nu poate avea o valoare a TVA (BR-Z-09)',
+    'line_tax_sign_mismatch' => 'Linia :lineNum: taxAmount trebuie să aibă același semn ca și cantitatea: TVA creditată nu poate fi declarată drept TVA colectată, și invers',
 
     // Categorii TVA (folosește :category)
     'explicit_category_supplier_must_be_vat_payer' => 'Liniile din categoria de TVA :category necesită un furnizor înregistrat în scopuri de TVA; categoria O nu poate fi combinată cu :category.',

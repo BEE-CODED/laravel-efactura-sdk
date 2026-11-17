@@ -67,7 +67,7 @@ return [
     |     'days' => 30,
     | ],
     |
-    | A blank channel logs to your default channel.
+    | A blank or false channel logs to your default channel.
     |
     */
     'logging' => [

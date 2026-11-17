@@ -57,8 +57,8 @@ class AddressData extends Data
      */
     public static function fromHeadquartersResponse(array $data): self
     {
-        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
-        if (! array_key_exists('sdenumire_Strada', $data) && array_key_exists('street', $data)) {
+        // laravel-data sends ::from($dto->toArray()) here too: an array with none of ANAF's keys is this DTO's own shape.
+        if (array_intersect_key($data, array_flip(['sdenumire_Strada', 'snumar_Strada', 'sdenumire_Localitate', 'scod_Localitate', 'sdenumire_Judet', 'scod_Judet', 'scod_JudetAuto', 'stara', 'scod_Postal', 'sdetalii_Adresa'])) === []) {
             return self::factory()->withoutMagicalCreation()->from($data);
         }
 
@@ -83,8 +83,8 @@ class AddressData extends Data
      */
     public static function fromFiscalDomicileResponse(array $data): self
     {
-        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
-        if (! array_key_exists('ddenumire_Strada', $data) && array_key_exists('street', $data)) {
+        // laravel-data sends ::from($dto->toArray()) here too: an array with none of ANAF's keys is this DTO's own shape.
+        if (array_intersect_key($data, array_flip(['ddenumire_Strada', 'dnumar_Strada', 'ddenumire_Localitate', 'dcod_Localitate', 'ddenumire_Judet', 'dcod_Judet', 'dcod_JudetAuto', 'dtara', 'dcod_Postal', 'ddetalii_Adresa'])) === []) {
             return self::factory()->withoutMagicalCreation()->from($data);
         }
 

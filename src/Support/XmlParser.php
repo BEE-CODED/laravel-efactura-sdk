@@ -121,8 +121,9 @@ final class XmlParser
             return null;
         }
 
-        if (preg_match('/<!\s*(DOCTYPE|ENTITY)/i', $xml) === 1) {
-            self::$lastParseException = new XmlParsingException('The response declares a DOCTYPE or entity', $xml);
+        // A NUL byte means UTF-16/32, where the byte regex cannot see a DOCTYPE; ANAF answers in UTF-8.
+        if (preg_match('/<!\s*(DOCTYPE|ENTITY)/i', $xml) === 1 || str_contains($xml, "\0")) {
+            self::$lastParseException = new XmlParsingException('The response declares a DOCTYPE or entity, or is not UTF-8', $xml);
 
             return null;
         }
@@ -174,18 +175,6 @@ final class XmlParser
                 $result[$strippedName] = $content;
             } else {
                 $result[$strippedName] = $value ?? '';
-            }
-        } elseif (! empty($data)) {
-            // Fallback for other structures
-            foreach ($data as $key => $item) {
-                $stringKey = (string) $key;
-                if (is_array($item)) {
-                    /** @var array<string, mixed> $itemArray */
-                    $itemArray = $item;
-                    $result[$stringKey] = self::normalizeXmlArray($itemArray);
-                } else {
-                    $result[$stringKey] = $item;
-                }
             }
         }
 
@@ -501,20 +490,21 @@ final class XmlParser
             return is_string($obj) ? $obj : null;
         }
 
+        // A blank message is skipped so the search goes on to the next one.
         // Direct errorMessage property
-        if (isset($obj['errorMessage'])) {
-            return is_scalar($obj['errorMessage']) ? (string) $obj['errorMessage'] : null;
+        if (($text = self::nonBlank($obj['errorMessage'] ?? null)) !== null) {
+            return $text;
         }
 
         // errorMessage in @ attributes
         $atSign = $obj['@'] ?? null;
-        if (is_array($atSign) && isset($atSign['errorMessage'])) {
-            return is_scalar($atSign['errorMessage']) ? (string) $atSign['errorMessage'] : null;
+        if (is_array($atSign) && ($text = self::nonBlank($atSign['errorMessage'] ?? null)) !== null) {
+            return $text;
         }
 
         // Check mesaj (Romanian for "message")
-        if (isset($obj['mesaj'])) {
-            return is_scalar($obj['mesaj']) ? (string) $obj['mesaj'] : null;
+        if (($text = self::nonBlank($obj['mesaj'] ?? null)) !== null) {
+            return $text;
         }
 
         // Search all keys
@@ -522,8 +512,8 @@ final class XmlParser
             $stringKey = is_string($key) ? $key : (string) $key;
 
             // Check if key is or ends with errorMessage
-            if ($stringKey === 'errorMessage' || str_ends_with($stringKey, 'errorMessage')) {
-                return is_scalar($value) ? (string) $value : null;
+            if (($stringKey === 'errorMessage' || str_ends_with($stringKey, 'errorMessage')) && ($text = self::nonBlank($value)) !== null) {
+                return $text;
             }
 
             // Recursively search nested objects
@@ -536,5 +526,10 @@ final class XmlParser
         }
 
         return null;
+    }
+
+    private static function nonBlank(mixed $value): ?string
+    {
+        return is_scalar($value) && ! is_bool($value) && trim((string) $value) !== '' ? (string) $value : null;
     }
 }
