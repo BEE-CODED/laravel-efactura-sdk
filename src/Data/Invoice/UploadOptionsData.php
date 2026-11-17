@@ -17,7 +17,7 @@ class UploadOptionsData extends Data
     public function __construct(
         /** Document standard type (UBL, CN, CII, RASP) */
         public ?StandardType $standard = null,
-        /** External invoice (B2B outside e-Factura system) */
+        /** The buyer is not a Romanian entity (sends extern=DA) */
         public bool $extern = false,
         /** Self-billed invoice (autofactura) - invoice issued by buyer on behalf of supplier */
         public bool $selfBilled = false,

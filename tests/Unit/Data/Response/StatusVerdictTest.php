@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Enums\StatusVerdict;
+use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use Carbon\Carbon;
@@ -68,4 +69,12 @@ it('keeps ANAF errors next to a status in both forms', function (array|string $b
     'JSON nok' => [['stare' => 'nok', 'Errors' => 'Nu aveti dreptul'], StatusVerdict::RejectedWithoutDownloadId, ['Nu aveti dreptul']],
     'XML nok' => ['<?xml version="1.0"?><header xmlns="mfp:anaf:dgti:efactura:stareMesajFactura:v1" stare="nok"><Errors errorMessage="Nu aveti dreptul"/></header>', StatusVerdict::RejectedWithoutDownloadId, ['Nu aveti dreptul']],
     'XML ok with a blank Errors' => ['<?xml version="1.0"?><header xmlns="mfp:anaf:dgti:efactura:stareMesajFactura:v1" stare="ok" id_descarcare="3001234567"><Errors errorMessage=" "/></header>', StatusVerdict::Ready, null],
+    'XML Raspuns nok' => ['<?xml version="1.0"?><Raspuns><stare>nok</stare><Error><mesaj>Nu aveti dreptul</mesaj></Error></Raspuns>', StatusVerdict::RejectedWithoutDownloadId, ['Nu aveti dreptul']],
 ]);
+
+it('refuses a status answer that declares a DOCTYPE', function () {
+    Http::fake(['*' => Http::response('<!DOCTYPE header><header stare="ok" id_descarcare="3001234567"/>', 200, ['Content-Type' => 'application/xml'])]);
+
+    expect(fn () => (new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->getStatusMessage('5001234567'))
+        ->toThrow(ApiException::class);
+});

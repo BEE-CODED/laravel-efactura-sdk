@@ -26,6 +26,7 @@ use BeeCoded\EFacturaSdk\Exceptions\RequestNotSentException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use BeeCoded\EFacturaSdk\Support\AnafValue;
+use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use BeeCoded\EFacturaSdk\Support\XmlParser;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
@@ -76,7 +77,8 @@ use Psr\Log\LoggerInterface;
 class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 {
     /**
-     * Buffer time in seconds before token expiration to trigger refresh.
+     * The floor of the buffer before token expiration that triggers a refresh; isTokenValid()
+     * raises it to (retry_times - 1) x (ceil(timeout) + retry_delay) + 30 when that is longer.
      */
     private const int TOKEN_EXPIRY_BUFFER_SECONDS = 120;
 
@@ -158,17 +160,22 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * The metering of the in-flight logical call: its global unit and its
      * endpoint-specific bucket, if any.
      *
-     * Armed by meterCall() and replayed by onRetryAttempt() so that each extra HTTP
-     * request a retry makes is metered against the same buckets as the first.
+     * Armed by meterCall() and replayed by onRetryAttempt() so that a retry after an
+     * attempt that may have reached ANAF is metered against the same buckets as the first.
      *
      * @var (Closure(bool): void)|null
      */
     private ?Closure $retryQuotaConsumer = null;
 
     /**
+     * The canonical CIF (VatNumberValidator::canonical()): the refresh-lock key, the RASP bucket and the upload cif.
+     */
+    private readonly string $vatNumber;
+
+    /**
      * Create a new EFacturaClient instance.
      *
-     * @param  string  $vatNumber  The VAT number (CIF) for API operations
+     * @param  string  $vatNumber  The VAT number (CIF): a CUI or CNP, spaces and an RO prefix allowed
      * @param  string  $accessToken  The OAuth access token
      * @param  string  $refreshToken  The OAuth refresh token for auto-refresh
      * @param  CarbonInterface|null  $expiresAt  Token expiration time (normalised to a mutable Carbon)
@@ -178,8 +185,10 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *                                                             only after acquiring the refresh lock, so a
      *                                                             worker that lost the race adopts the winner's
      *                                                             rotated tokens instead of spending its own
-     *                                                             (now dead) refresh token. Strongly recommended
-     *                                                             for multi-worker deployments.
+     *                                                             (now dead) refresh token. It must read the
+     *                                                             primary store (no read replica, no cache): a
+     *                                                             lagging copy hands back a spent refresh token.
+     *                                                             Strongly recommended for multi-worker deployments.
      * @param  (Closure(OAuthTokensData): mixed)|null  $tokenPersister  Optional callback that stores the
      *                                                                  tokens a refresh just minted. Called
      *                                                                  inside the refresh lock, right after a
@@ -188,16 +197,20 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      *                                                                  refresh token first. An exception it throws
      *                                                                  reaches the caller; the client keeps the
      *                                                                  new tokens and wasTokenRefreshed() is true.
+     *
+     * @throws ValidationException When the VAT number is blank or not a CUI or CNP, before any quota, refresh or request
      */
     public function __construct(
-        private readonly string $vatNumber,
-        string $accessToken,
-        string $refreshToken,
+        string $vatNumber,
+        #[\SensitiveParameter] string $accessToken,
+        #[\SensitiveParameter] string $refreshToken,
         ?CarbonInterface $expiresAt = null,
         ?AnafAuthenticatorInterface $authenticator = null,
         ?Closure $tokenReloader = null,
         ?Closure $tokenPersister = null,
     ) {
+        $this->vatNumber = self::requireCif($vatNumber);
+
         parent::__construct();
 
         $this->accessToken = $accessToken;
@@ -224,8 +237,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * Get the authenticator, resolving it lazily if needed.
-     *
-     * @throws AuthenticationException If OAuth is not configured when token refresh is needed
      */
     private function getAuthenticator(): AnafAuthenticatorInterface
     {
@@ -239,11 +250,14 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     /**
      * Create client from OAuthTokensData.
      *
-     * @param  string  $vatNumber  The VAT number (CIF) for API operations
+     * @param  string  $vatNumber  The VAT number (CIF): a CUI or CNP, spaces and an RO prefix allowed
      * @param  OAuthTokensData  $tokens  The OAuth tokens
      * @param  AnafAuthenticatorInterface|null  $authenticator  Optional authenticator for token refresh
-     * @param  (Closure(): ?OAuthTokensData)|null  $tokenReloader  Optional callback re-reading persisted tokens
+     * @param  (Closure(): ?OAuthTokensData)|null  $tokenReloader  Optional callback re-reading persisted tokens from the
+     *                                                             primary store (no read replica, no cache)
      * @param  (Closure(OAuthTokensData): mixed)|null  $tokenPersister  Optional callback storing refreshed tokens under the lock
+     *
+     * @throws ValidationException When the VAT number is blank or not a CUI or CNP
      */
     public static function fromTokens(
         string $vatNumber,
@@ -303,22 +317,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     }
 
     /**
-     * {@inheritdoc}
-     */
-    protected function getRetryDelay(): int
-    {
-        return (int) (config('efactura-sdk.http.retry_delay') ?? self::RETRY_DELAY);
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    protected function getMaxTryCount(): int
-    {
-        return (int) (config('efactura-sdk.http.retry_times') ?? self::MAX_TRY_COUNT);
-    }
-
-    /**
      * Get the maximum time to wait for lock acquisition in seconds.
      * Can be overridden in tests for faster execution.
      */
@@ -331,16 +329,22 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * {@inheritdoc}
      *
      * ANAF meters every cap per HTTP request, but the public methods here check
-     * once per logical call. Each retry fires another real request, so it must
-     * consume another unit of EVERY bucket the call draws on -- the global cap and
-     * the per-message/per-CUI one -- or those buckets under-count by the retry
-     * factor. That is how ANAF comes to trip "limita de descarcare depasita" for
-     * 24h while getRemainingQuota() still reports headroom.
+     * once per logical call. A retry after an attempt that may have reached ANAF
+     * fires another counted request, so it must consume another unit of EVERY
+     * bucket the call draws on -- the global cap and the per-message/per-CUI one --
+     * or those buckets under-count by the retry factor. That is how ANAF comes to
+     * trip "limita de descarcare depasita" for 24h while getRemainingQuota() still
+     * reports headroom. An attempt that provably never left was never counted at
+     * ANAF, so its retry spends nothing: an outage cannot burn a day's quota.
      *
      * @throws RateLimitExceededException When the retry would exceed a cap
      */
-    protected function onRetryAttempt(): void
+    protected function onRetryAttempt(bool $previousAttemptDelivered): void
     {
+        if (! $previousAttemptDelivered) {
+            return;
+        }
+
         if ($this->retryQuotaConsumer === null) {
             $this->rateLimiter->checkGlobal();
 
@@ -352,7 +356,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * Consume one quota unit for a logical call, and arm the retry hook to consume
-     * the same buckets again for every extra HTTP request a retry makes.
+     * the same buckets again for a retry after an attempt that may have reached ANAF.
      *
      * A refused call or retry spends nothing: the access token is obtained first, so a
      * failed refresh counts nothing; the endpoint bucket is peeked first, and the global
@@ -413,8 +417,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function uploadDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
     {
@@ -422,8 +424,8 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->validateXmlContent($xml);
 
         // Check RASP-specific rate limit when uploading RASP documents. An upload is
-        // never retried on a response, but a pre-send transport failure does retry
-        // (see PRE_SEND_CURL_ERRORS), and that fires another real request.
+        // retried only after a pre-send transport failure (see PRE_SEND_CURL_ERRORS),
+        // which never reached ANAF, so a retry spends nothing (see onRetryAttempt()).
         $standard = $options?->getStandard() ?? StandardType::UBL;
         if ($standard === StandardType::RASP) {
             $this->meterCall(
@@ -447,15 +449,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function uploadB2CDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData
     {
         // Validate first - fail fast without consuming rate limit quota
         $this->validateXmlContent($xml);
 
-        // See uploadDocument() for why the RASP bucket is armed for retries.
+        // Metered as in uploadDocument().
         $standard = $options?->getStandard() ?? StandardType::UBL;
         if ($standard === StandardType::RASP) {
             $this->meterCall(
@@ -481,8 +481,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
      * @param  bool  $useProviderLimit  Count this read, and each of its retries, against ANAF's own
      *                                  status ceiling instead of the SDK's lower limit (same
      *                                  per-message counter). Concrete class only, not on the interface.
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function getStatusMessage(string $uploadId, bool $useProviderLimit = false): StatusResponseData
     {
@@ -503,15 +501,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $route = '/stareMesaj?'.http_build_query($queryParams);
 
-        $response = $this->authenticatedRequest($route, 'GET');
+        $response = $this->authenticatedRequest($route);
 
         return $this->parseStatusResponse($response);
     }
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function downloadDocument(string $downloadId): DownloadResponseData
     {
@@ -529,7 +525,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $route = '/descarcare?'.http_build_query($queryParams);
 
-        $response = $this->authenticatedRequest($route, 'GET', expectBinary: true);
+        $response = $this->authenticatedRequest($route, expectBinary: true);
 
         $this->guardDownloadBody($response);
 
@@ -596,22 +592,20 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData
     {
         // Validate first - fail fast without consuming rate limit quota
-        $this->validateCif($params->cif);
+        $cif = self::requireCif($params->cif);
         $this->validateDays($params->days);
 
         $this->meterCall(
-            fn () => $this->rateLimiter->checkSimpleList($params->cif),
-            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::SimpleList, $params->cif),
+            fn () => $this->rateLimiter->checkSimpleList($cif),
+            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::SimpleList, $cif),
         );
 
         $queryParams = [
-            'cif' => $params->cif,
+            'cif' => $cif,
             'zile' => $params->days,
         ];
 
@@ -621,7 +615,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $route = '/listaMesajeFactura?'.http_build_query($queryParams);
 
-        $response = $this->authenticatedRequest($route, 'GET');
+        $response = $this->authenticatedRequest($route);
 
         return ListMessagesResponseData::fromAnafResponse(
             $this->decodeJsonObject($response, 'Unable to parse message list response')
@@ -630,23 +624,21 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData
     {
         // Validate first - fail fast without consuming rate limit quota
-        $this->validateCif($params->cif);
+        $cif = self::requireCif($params->cif);
         $this->validateTimeRange($params->startTime, $params->endTime);
         $this->validatePage($params->page);
 
         $this->meterCall(
-            fn () => $this->rateLimiter->checkPaginatedList($params->cif),
-            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::PaginatedList, $params->cif),
+            fn () => $this->rateLimiter->checkPaginatedList($cif),
+            fn () => $this->rateLimiter->ensureAvailable(RateLimitScope::PaginatedList, $cif),
         );
 
         $queryParams = [
-            'cif' => $params->cif,
+            'cif' => $cif,
             'startTime' => $params->startTime,
             'endTime' => $params->endTime,
             'pagina' => $params->page,
@@ -658,7 +650,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         $route = '/listaMesajePaginatieFactura?'.http_build_query($queryParams);
 
-        $response = $this->authenticatedRequest($route, 'GET');
+        $response = $this->authenticatedRequest($route);
 
         return PaginatedMessagesResponseData::fromAnafResponse(
             $this->decodeJsonObject($response, 'Unable to parse paginated message list response')
@@ -667,21 +659,19 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function validateXml(string $xml, DocumentStandardType $standard): ValidationResultData
     {
         // Validate first - fail fast without consuming rate limit quota
         $this->validateXmlContent($xml);
 
-        // Metered globally only, so this also disarms any previous call's bucket.
-        $this->meterCall();
-
         $validateUrl = config('efactura-sdk.endpoints.services.validate');
         if (empty($validateUrl)) {
             throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.validate');
         }
+
+        // Metered globally only, so this also disarms any previous call's bucket.
+        $this->meterCall();
 
         $url = $validateUrl.'/'.$standard->value;
 
@@ -692,8 +682,6 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function verifySignature(string $xml, string $signature): ValidationResultData
     {
@@ -701,13 +689,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         $this->validateXmlContent($xml);
         $this->validateXmlContent($signature);
 
-        // Metered globally only - see validateXml().
-        $this->meterCall();
-
         $verifyUrl = config('efactura-sdk.endpoints.services.verify_signature');
         if (empty($verifyUrl)) {
             throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.verify_signature');
         }
+
+        // Metered globally only - see validateXml().
+        $this->meterCall();
 
         // ANAF reads two multipart files: "file" (the invoice XML) and "signature" (the XML
         // holding its signature), both from the descarcare archive.
@@ -733,21 +721,19 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
-     *
-     * @throws RateLimitExceededException When rate limit is exceeded
      */
     public function convertXmlToPdf(string $xml, DocumentStandardType $standard, bool $validate = false): string
     {
         // Validate first - fail fast without consuming rate limit quota
         $this->validateXmlContent($xml);
 
-        // Metered globally only - see validateXml().
-        $this->meterCall();
-
         $transformUrl = config('efactura-sdk.endpoints.services.transform');
         if (empty($transformUrl)) {
             throw new ValidationException('Missing configuration: efactura-sdk.endpoints.services.transform');
         }
+
+        // Metered globally only - see validateXml().
+        $this->meterCall();
         $endpoint = $validate ? $standard->value : "{$standard->value}/DA";
 
         $url = $transformUrl.'/'.$endpoint;
@@ -810,10 +796,24 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
     /**
      * {@inheritdoc}
+     *
+     * The canonical CIF: digits only, without the RO prefix or spaces.
      */
     public function getVatNumber(): string
     {
         return $this->vatNumber;
+    }
+
+    /**
+     * The refresh lock of a company's grant, with the SDK's key and TTL: the TTL outlives the
+     * refresh request's HTTP timeout. A caller that refreshes outside the client takes this
+     * same lock, so the two never spend one rotating refresh token twice.
+     *
+     * @param  string  $vatNumber  The canonical CIF (getVatNumber()); it is not canonicalised here
+     */
+    public static function tokenRefreshLock(string $vatNumber): Lock
+    {
+        return Cache::lock("efactura:token_refresh:{$vatNumber}", (int) ceil(static::getTimeoutDuration()) + self::TOKEN_REFRESH_LOCK_MARGIN_SECONDS);
     }
 
     /**
@@ -856,13 +856,12 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
 
         // Use distributed lock to prevent concurrent token refresh attempts
         // This is critical because ANAF invalidates refresh tokens after use
-        $lockKey = "efactura:token_refresh:{$this->vatNumber}";
 
         // Acquired outside the try/finally below: a lock we never got is not released.
         try {
             // The lock must outlive the refresh request: one that expires mid-request
             // lets another worker spend the same rotating refresh token.
-            $lock = Cache::lock($lockKey, (int) ceil(static::getTimeoutDuration()) + self::TOKEN_REFRESH_LOCK_MARGIN_SECONDS);
+            $lock = self::tokenRefreshLock($this->vatNumber);
             $lock->block($this->getLockWaitSeconds());
         } catch (LockTimeoutException $e) {
             // Only our own lock wait: a persister's LockTimeoutException must reach
@@ -1012,8 +1011,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
             return true;
         }
 
-        // Add buffer to catch tokens about to expire
-        return $this->expiresAt->copy()->subSeconds(self::TOKEN_EXPIRY_BUFFER_SECONDS)->isFuture();
+        // The bearer is fixed once per call, so it must outlive every retry the call may make.
+        $buffer = max(
+            self::TOKEN_EXPIRY_BUFFER_SECONDS,
+            ($this->getMaxTryCount() - 1) * ((int) ceil($this->getRequestTimeout()) + $this->getRetryDelay()) + 30
+        );
+
+        return $this->expiresAt->copy()->subSeconds($buffer)->isFuture();
     }
 
     /**
@@ -1058,29 +1062,24 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     }
 
     /**
-     * Make an authenticated request to the API.
+     * Make an authenticated GET request to the API.
      *
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
      */
-    private function authenticatedRequest(
-        string $route,
-        string $method,
-        bool $expectBinary = false
-    ): Response {
+    private function authenticatedRequest(string $route, bool $expectBinary = false): Response
+    {
         $token = $this->getValidAccessToken();
 
-        // GET requests should not include Content-Type (no request body)
-        $headers = strtolower($method) === 'get'
-            ? ['Authorization' => 'Bearer '.$token]
-            : array_merge($this->getHeaders(), ['Authorization' => 'Bearer '.$token]);
+        // A GET has no body, so no Content-Type.
+        $headers = ['Authorization' => 'Bearer '.$token];
 
         if ($expectBinary) {
             $headers['Accept'] = 'application/octet-stream, application/zip, application/json';
         }
 
         try {
-            return $this->call($route, $method, [], $headers);
+            return $this->call($route, 'get', [], $headers);
         } catch (ApiException $e) {
             throw $this->authenticationFailure($e);
         }
@@ -1096,7 +1095,7 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
         string $route,
         string $method,
         string $xmlBody,
-        bool $idempotent = true
+        bool $idempotent
     ): Response {
         $token = $this->getValidAccessToken();
 
@@ -1331,15 +1330,13 @@ class EFacturaClient extends BaseApiClient implements EFacturaClientInterface
     }
 
     /**
-     * Validate the CIF of a message list request.
+     * The canonical form of a CIF: the client's own VAT number or a message-list cif.
      *
-     * @throws ValidationException When the CIF is empty or blank
+     * @throws ValidationException When the CIF is blank or not a CUI or CNP
      */
-    private function validateCif(string $cif): void
+    private static function requireCif(string $cif): string
     {
-        if (trim($cif) === '') {
-            throw new ValidationException('CIF cannot be empty');
-        }
+        return VatNumberValidator::canonical($cif) ?? throw new ValidationException('CIF is not a valid Romanian CUI or CNP');
     }
 
     /**

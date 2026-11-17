@@ -11,8 +11,10 @@ use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Cache\Store;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter as LaravelRateLimiter;
 use Illuminate\Support\Facades\Schema;
+use Psr\Log\LoggerInterface;
 
 beforeEach(function () {
     // Clear any existing rate limits before each test
@@ -318,6 +320,43 @@ describe('getRemainingQuota', function () {
         expect((new RateLimiter)->getRemainingQuota('status', 'MSG123', true)['limit'])->toBe(100);
     });
 
+    it('reports each per-identifier quota on the counter its check spends', function (string $type, string $identifier, Closure $check, int $limit) {
+        $limiter = new RateLimiter;
+
+        $check($limiter);
+
+        expect($limiter->getRemainingQuota($type, $identifier)['remaining'])->toBe($limit - 1);
+    })->with([
+        'rasp_upload' => ['rasp_upload', '12345678', fn (RateLimiter $l) => $l->checkRaspUpload('12345678'), 500],
+        'status' => ['status', 'MSG123', fn (RateLimiter $l) => $l->checkStatusQuery('MSG123'), 50],
+        'simple_list' => ['simple_list', '12345678', fn (RateLimiter $l) => $l->checkSimpleList('12345678'), 750],
+        'paginated_list' => ['paginated_list', '12345678', fn (RateLimiter $l) => $l->checkPaginatedList('12345678'), 50000],
+        'download' => ['download', 'MSG123', fn (RateLimiter $l) => $l->checkDownload('MSG123'), 5],
+    ]);
+
+    // The client meters a per-CUI limit on the canonical CUI, so a host reading it with the
+    // CUI as it stores it (RO prefix, spaces) must see the same counter.
+    it('reads a per-CUI quota on the canonical CUI the client spends', function (string $type, Closure $check, int $limit) {
+        $limiter = new RateLimiter;
+
+        $check($limiter);
+
+        expect($limiter->getRemainingQuota($type, 'RO 1234 5678')['remaining'])->toBe($limit - 1);
+    })->with([
+        'rasp_upload' => ['rasp_upload', fn (RateLimiter $l) => $l->checkRaspUpload('12345678'), 500],
+        'simple_list' => ['simple_list', fn (RateLimiter $l) => $l->checkSimpleList('12345678'), 750],
+        'paginated_list' => ['paginated_list', fn (RateLimiter $l) => $l->checkPaginatedList('12345678'), 50000],
+    ]);
+
+    it('refuses a per-CUI pre-check under a prefixed spelling once the canonical counter is full', function () {
+        config(['efactura-sdk.rate_limits.simple_list_per_day_cui' => 1]);
+        $limiter = new RateLimiter;
+
+        $limiter->checkSimpleList('12345678');
+
+        $limiter->ensureAvailable(RateLimitScope::SimpleList, 'ro12345678');
+    })->throws(RateLimitExceededException::class);
+
     it('throws exception for unknown type', function () {
         $limiter = new RateLimiter;
 
@@ -448,6 +487,37 @@ describe('checkCompanyLookup', function () {
 
         expect(true)->toBeTrue();
     });
+});
+
+describe('retry after', function () {
+    it('reports a retryAfterSeconds of at least 1 at the very end of a window', function (string $configKey, Closure $check, string $end) {
+        config()->set("efactura-sdk.rate_limits.{$configKey}", 1);
+        $limiter = new RateLimiter;
+        Carbon::setTestNow(Carbon::parse('2026-11-16 10:00:00.700'));
+        $check($limiter);
+        Carbon::setTestNow(Carbon::parse($end));
+
+        expect(fn () => $check($limiter))
+            ->toThrow(fn (RateLimitExceededException $e) => expect($e->retryAfterSeconds)->toBe(1));
+    })->with([
+        'global' => ['global_per_minute', fn (RateLimiter $l) => $l->checkGlobal(), '2026-11-16 10:01:00.300'],
+        'download' => ['download_per_day_message', fn (RateLimiter $l) => $l->checkDownload('MSG123'), '2026-11-17 10:00:00.300'],
+    ]);
+});
+
+describe('cache store warning', function () {
+    it('judges the limiter store by its driver', function (array $config, int $warnings) {
+        config($config);
+        $logger = Mockery::mock(LoggerInterface::class);
+        $logger->shouldReceive('warning')->times($warnings);
+        Log::shouldReceive('channel')->andReturn($logger);
+
+        expect(new RateLimiter)->toBeInstanceOf(RateLimiter::class);
+    })->with([
+        'array limiter under a redis default' => [['cache.default' => 'redis', 'cache.limiter' => 'array'], 1],
+        'file driver under another store name' => [['cache.default' => 'local', 'cache.stores.local' => ['driver' => 'file', 'path' => sys_get_temp_dir()]], 1],
+        'array default but a redis limiter' => [['cache.default' => 'array', 'cache.limiter' => 'redis'], 0],
+    ]);
 });
 
 describe('exception scope', function () {

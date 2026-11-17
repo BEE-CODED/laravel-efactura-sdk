@@ -34,11 +34,6 @@ final class DateHelper
     private const ANAF_DATE_FORMAT = 'Y-m-d';
 
     /**
-     * Regular expression for ANAF date format.
-     */
-    private const ANAF_DATE_PATTERN = '/^\d{4}-\d{2}-\d{2}$/';
-
-    /**
      * Minimum days for message filtering.
      */
     private const MIN_DAYS = 1;
@@ -62,7 +57,7 @@ final class DateHelper
      */
     public static function formatForAnaf(CarbonInterface|string|int $date): string
     {
-        // If already in ANAF format, return as-is
+        // A real Y-m-d date is returned as-is
         if (is_string($date) && self::isValidAnafFormat($date)) {
             return $date;
         }
@@ -73,14 +68,45 @@ final class DateHelper
     }
 
     /**
-     * Check if a date string is in valid ANAF format (YYYY-MM-DD).
+     * Check if a date string is exactly YYYY-MM-DD and a real calendar date.
      *
      * @param  string  $date  The date string to validate
      * @return bool True if the format is valid
      */
     public static function isValidAnafFormat(string $date): bool
     {
-        return (bool) preg_match(self::ANAF_DATE_PATTERN, $date);
+        return self::exact($date, self::ANAF_DATE_FORMAT) !== null;
+    }
+
+    /**
+     * Read a date written exactly in $format, or null when it is not, or names no real date or time.
+     *
+     * Fields the format leaves out are zero (the `!` reset). Nothing is trimmed and nothing throws.
+     */
+    public static function exact(string $value, string $format, ?string $timezone = null): ?Carbon
+    {
+        $d = \DateTimeImmutable::createFromFormat('!'.$format, $value, $timezone !== null ? new \DateTimeZone($timezone) : null);
+
+        return $d !== false && $d->format($format) === $value ? Carbon::instance($d) : null;
+    }
+
+    /**
+     * Parse a date string like Carbon::parse(), refusing what Carbon would roll over.
+     *
+     * @throws InvalidArgumentException When the string is blank, unparseable or impossible (2024-02-30, 24:00)
+     */
+    public static function parse(string $value): Carbon
+    {
+        // timelib warns on day/month overflow and on 24:00 or :60; Carbon would roll them over.
+        if (trim($value) === '' || date_parse($value)['warnings'] !== []) {
+            throw new InvalidArgumentException('Invalid date provided: '.$value);
+        }
+
+        try {
+            return Carbon::parse($value);
+        } catch (\Exception $e) {
+            throw new InvalidArgumentException('Invalid date provided: '.$value, 0, $e);
+        }
     }
 
     /**
@@ -241,11 +267,6 @@ final class DateHelper
             return Carbon::createFromTimestamp($date, self::ANAF_TIMEZONE);
         }
 
-        // String date
-        try {
-            return Carbon::parse($date);
-        } catch (\Exception $e) {
-            throw new InvalidArgumentException('Invalid date provided: '.$date, 0, $e);
-        }
+        return self::parse($date);
     }
 }

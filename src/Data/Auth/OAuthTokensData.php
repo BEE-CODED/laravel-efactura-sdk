@@ -56,8 +56,8 @@ class OAuthTokensData extends Data
     public string $tokenType = 'Bearer';
 
     public function __construct(
-        string $accessToken,
-        string $refreshToken,
+        #[\SensitiveParameter] string $accessToken,
+        #[\SensitiveParameter] string $refreshToken,
         ?CarbonInterface $expiresAt = null,
         ?int $expiresIn = null,
         string $tokenType = 'Bearer',
@@ -89,8 +89,10 @@ class OAuthTokensData extends Data
      * this DTO's own is camelCase. The presence of 'access_token' picks the wire branch,
      * which keeps ANAF's expires_in -> expiresAt derivation exactly as it was.
      *
-     * Wire values are normalised, never taken verbatim: expires_in accepts an int or
-     * a digit string (anything else leaves both expiry fields null), a non-scalar
+     * Wire values are normalised, never taken verbatim: expires_in accepts an int, a whole
+     * float or a decimal integer string such as "3600" (surrounding whitespace and a leading
+     * minus are allowed; a plus sign, a leading zero or a value outside the int range is not);
+     * anything else leaves both expiry fields null. A non-scalar
      * token_type falls back to 'Bearer', and a missing or non-scalar token becomes
      * ''. AnafAuthenticator rejects a response without both tokens before this.
      *

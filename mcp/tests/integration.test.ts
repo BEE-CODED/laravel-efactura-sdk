@@ -1,77 +1,122 @@
-import { describe, it, expect } from "vitest";
-import { spawn } from "child_process";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { spawn, type ChildProcess } from "child_process";
+import { readFileSync } from "fs";
 import { join } from "path";
 import { createInterface } from "readline";
 
-function createJsonRpcClient(proc: ReturnType<typeof spawn>) {
+// These tests drive the built server (dist/index.js) over stdio, as a client does,
+// so run `npm run build` first.
+const packageRoot = join(import.meta.dirname, "..", "..");
+
+type ToolResult = { isError?: boolean; content: { type: string; text: string }[] };
+
+function startServer(proc: ChildProcess) {
   const rl = createInterface({ input: proc.stdout! });
-  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  const pending = new Map<number, (message: { result?: unknown; error?: unknown }) => void>();
+  let nextId = 1;
 
   rl.on("line", (line) => {
     try {
-      const msg = JSON.parse(line);
-      if (msg.id !== undefined && pending.has(msg.id)) {
-        pending.get(msg.id)!.resolve(msg);
-        pending.delete(msg.id);
-      }
-    } catch { /* ignore non-JSON lines */ }
+      const message = JSON.parse(line);
+      pending.get(message.id)?.(message);
+      pending.delete(message.id);
+    } catch {
+      /* not a JSON-RPC line */
+    }
   });
 
+  const request = (method: string, params: Record<string, unknown> = {}) =>
+    new Promise<{ result?: unknown; error?: unknown }>((resolve) => {
+      const id = nextId++;
+      pending.set(id, resolve);
+      proc.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+    });
+
   return {
-    request(method: string, params: Record<string, unknown> = {}, id: number = 1): Promise<unknown> {
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        const msg = JSON.stringify({ jsonrpc: "2.0", id, method, params });
-        proc.stdin!.write(msg + "\n");
-        setTimeout(() => {
-          if (pending.has(id)) {
-            pending.delete(id);
-            reject(new Error(`Timeout waiting for response to ${method}`));
-          }
-        }, 5000);
-      });
-    },
-    notify(method: string, params: Record<string, unknown> = {}) {
-      proc.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
-    },
+    request,
+    notify: (method: string) => proc.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method }) + "\n"),
+    call: async (name: string, args: Record<string, unknown> = {}) =>
+      (await request("tools/call", { name, arguments: args })).result as ToolResult,
   };
 }
 
-describe("MCP Server Integration", () => {
-  it("responds to initialize and lists all 5 tools", async () => {
-    const distPath = join(import.meta.dirname, "..", "dist", "index.js");
-    const proc = spawn("node", [distPath], { stdio: ["pipe", "pipe", "pipe"] });
-    // suppress stderr
+// H2/H3 heading lines outside code fences, read independently of the server.
+function headingLines(file: string): string[] {
+  let fenced = false;
+  return readFileSync(join(packageRoot, file), "utf8")
+    .split("\n")
+    .filter((line) => {
+      if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+      return !fenced && /^#{2,3} /.test(line);
+    });
+}
+
+const topicsFrom = (result: ToolResult): string[] => result.content[0].text.split("Topics: ")[1].split(", ");
+
+describe("MCP server", () => {
+  let proc: ChildProcess;
+  let client: ReturnType<typeof startServer>;
+
+  beforeAll(async () => {
+    proc = spawn("node", [join(import.meta.dirname, "..", "dist", "index.js")], { stdio: ["pipe", "pipe", "pipe"] });
     proc.stderr!.resume();
+    client = startServer(proc);
 
-    const client = createJsonRpcClient(proc);
+    const init = (await client.request("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "test", version: "1.0.0" },
+    })) as { result: { serverInfo: { name: string } } };
+    expect(init.result.serverInfo.name).toBe("efactura-sdk");
+    client.notify("notifications/initialized");
+  });
 
-    try {
-      // Initialize
-      const initResult = await client.request("initialize", {
-        protocolVersion: "2025-03-26",
-        capabilities: {},
-        clientInfo: { name: "test", version: "1.0.0" },
-      }) as { result: { serverInfo: { name: string } } };
-      expect(initResult.result.serverInfo.name).toBe("efactura-sdk");
+  afterAll(() => {
+    proc.kill();
+  });
 
-      // Send initialized notification
-      client.notify("notifications/initialized");
+  it("lists the three reader tools", async () => {
+    const { result } = (await client.request("tools/list")) as { result: { tools: { name: string }[] } };
 
-      // List tools
-      const toolsResult = await client.request("tools/list", {}, 2) as {
-        result: { tools: { name: string }[] }
-      };
-      const toolNames = toolsResult.result.tools.map((t) => t.name);
+    expect(result.tools.map((t) => t.name).sort()).toEqual(["get-changelog", "get-config-reference", "get-sdk-docs"]);
+  });
 
-      expect(toolNames).toContain("get-sdk-docs");
-      expect(toolNames).toContain("get-dto-structure");
-      expect(toolNames).toContain("get-enum-values");
-      expect(toolNames).toContain("get-config-reference");
-      expect(toolNames).toContain("get-api-reference");
-      expect(toolNames).toHaveLength(5);
-    } finally {
-      proc.kill();
+  it("serves every README H2/H3 section, and lists the topics for an unknown one", async () => {
+    const unknown = await client.call("get-sdk-docs", { topic: "no-such-topic" });
+    expect(unknown.isError).toBe(true);
+
+    const topics = topicsFrom(unknown);
+    const served: string[] = [];
+    for (const topic of topics) {
+      const result = await client.call("get-sdk-docs", { topic });
+      expect(result.isError, topic).toBeUndefined();
+      served.push(result.content[0].text.split("\n")[0]);
     }
+
+    expect(new Set(topics).size).toBe(topics.length);
+    expect(served).toEqual(headingLines("README.md"));
+    expect(topics).toContain("configuration");
+    expect(topics).toContain("generating-invoice-xml");
+  });
+
+  it("serves the whole CHANGELOG, and each of its sections", async () => {
+    const whole = await client.call("get-changelog");
+    expect(whole.content[0].text).toBe(readFileSync(join(packageRoot, "CHANGELOG.md"), "utf8"));
+
+    const topics = topicsFrom(await client.call("get-changelog", { section: "no-such-section" }));
+    const served: string[] = [];
+    for (const section of topics) {
+      served.push((await client.call("get-changelog", { section })).content[0].text.split("\n")[0]);
+    }
+
+    expect(served).toEqual(headingLines("CHANGELOG.md"));
+  });
+
+  it("serves every config file", async () => {
+    const result = await client.call("get-config-reference");
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("## config/efactura-sdk.php");
+    expect(result.content[0].text).toContain(readFileSync(join(packageRoot, "config", "efactura-sdk.php"), "utf8").trim());
   });
 });

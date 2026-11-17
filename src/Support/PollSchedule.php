@@ -32,7 +32,10 @@ final class PollSchedule
 
     /**
      * Seconds before the next try after the $attempt-th failed archive download
-     * (1-based): $first, doubling each attempt, at most $max.
+     * (1-based): $first, doubling each attempt, at most $max. With the defaults the sixth
+     * download comes about 2.6 h after the first, over the SDK's default cap of 5 downloads
+     * per message per day (rate_limits.download_per_day_message): reschedule on
+     * RateLimitExceededException after its retryAfterSeconds.
      */
     public static function archive(int $attempt, int $first = 300, int $max = 86400): int
     {

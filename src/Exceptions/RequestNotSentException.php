@@ -13,6 +13,9 @@ namespace BeeCoded\EFacturaSdk\Exceptions;
  * ANAF never saw the request, so an upload can be sent again without filing it
  * twice. Every other transport failure stays a plain ApiException(500): the
  * request may have been delivered.
+ *
+ * Also thrown, before the first attempt and without retries, when the cache store
+ * behind the SDK's rate limiter fails during metering (getPrevious() is the store error).
  */
 class RequestNotSentException extends ApiException
 {

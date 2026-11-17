@@ -8,25 +8,29 @@ return [
     'invoice_number_must_contain_digit' => 'Numărul facturii trebuie să conțină cel puțin un caracter numeric (BR-RO-010)',
     'invoice_number_max_length' => 'Numărul facturii nu trebuie să depășească 200 de caractere (BR-RO-L200)',
     'issue_date_required' => 'Data emiterii este obligatorie',
+    'issue_date_invalid' => 'Data emiterii (BT-2) ":date" nu este o dată validă',
+    'due_date_invalid' => 'Data scadentă (BT-9) ":date" nu este o dată validă',
+    'tax_point_date_invalid' => 'Data de exigibilitate a TVA (BT-7) ":date" nu este o dată validă',
     'at_least_one_line_required' => 'Este necesară cel puțin o linie de factură',
-    'lines_max_count' => 'O factură poate avea cel mult 999 de linii (BR-RO-A999)',
     'currency_code_invalid' => 'Codul monedei trebuie să fie format din trei litere mari (ISO 4217, BR-CL-04)',
     'due_date_required_for_positive_payable' => 'O factură cu o sumă de plată pozitivă trebuie să aibă o dată scadentă (BR-CO-25)',
 
     // Valori de intrare
     'amount_invalid' => ':field trebuie să fie o sumă finită cu cel mult :scale zecimale; o valoare float poate diferi de aceasta doar prin zgomotul reprezentării binare',
+    'element_blank' => 'Elementul :element ar fi transmis gol, iar ANAF îl respinge',
     'xml_text_invalid' => ':field conține UTF-8 invalid sau un caracter pe care XML nu îl poate transporta (caractere de control în afară de tab, linie nouă și retur de car, U+FFFE, U+FFFF)',
 
-    // Parte (folosește :role — Furnizor/Client/Livrare)
+    // Parte (:role din roles, la genitiv)
+    'roles' => ['Supplier' => 'furnizorului', 'Customer' => 'clientului', 'Delivery' => 'livrării'],
     'party_registration_name_required' => 'Denumirea :role este obligatorie',
     'party_registration_name_max_length' => 'Denumirea :role nu trebuie să depășească 200 de caractere (BR-RO-L200)',
-    'party_registration_number_max_length' => 'Numărul de înregistrare :role nu trebuie să depășească 1000 de caractere (BR-RO-L1000)',
+    'party_registration_number_max_length' => 'Numărul de înregistrare al :role nu trebuie să depășească 1000 de caractere (BR-RO-L1000)',
     'party_company_id_required' => 'CIF/CUI :role este obligatoriu',
-    'party_street_required' => 'Adresa stradale :role este obligatorie',
-    'party_street_max_length' => 'Adresa stradale :role nu trebuie să depășească 150 de caractere (BR-RO-L150)',
+    'party_street_required' => 'Adresa stradală a :role este obligatorie',
+    'party_street_max_length' => 'Adresa stradală a :role nu trebuie să depășească 150 de caractere (BR-RO-L150)',
     'party_city_required' => 'Localitatea :role este obligatorie',
     'party_city_max_length' => 'Localitatea :role nu trebuie să depășească 50 de caractere (BR-RO-L050)',
-    'party_postal_code_max_length' => 'Codul poștal :role nu trebuie să depășească 20 de caractere (BR-RO-L020)',
+    'party_postal_code_max_length' => 'Codul poștal al :role nu trebuie să depășească 20 de caractere (BR-RO-L020)',
     'party_county_required_ro' => 'Județul :role este obligatoriu pentru adresele din România (BR-RO-110)',
     'country_code_invalid' => 'Codul țării :role trebuie să fie format din două litere mari (ISO 3166-1 alpha-2, BR-CL-14)',
 
@@ -34,6 +38,8 @@ return [
     'line_item_name_required' => 'Linia :lineNum: Denumirea articolului este obligatorie',
     'line_item_name_max_length' => 'Linia :lineNum: Denumirea articolului nu trebuie să depășească 100 de caractere (BR-RO-L100)',
     'line_item_description_max_length' => 'Linia :lineNum: Descrierea articolului nu trebuie să depășească 200 de caractere (BR-RO-L200)',
+    'line_unit_code_invalid' => 'Linia :lineNum: Codul unității de măsură ":unitCode" nu este un cod UN/ECE Recomandarea 20/21 (BR-CL-23)',
+    'line_prefixed' => 'Linia :lineNum: :message',
     'line_quantity_cannot_be_zero' => 'Linia :lineNum: Cantitatea nu poate fi zero',
     'line_unit_price_not_negative' => 'Linia :lineNum: Prețul unitar nu poate fi negativ',
     'line_tax_percent_range' => 'Linia :lineNum: Procentul de taxă trebuie să fie între 0 și 100',
@@ -44,7 +50,7 @@ return [
     'explicit_category_supplier_must_be_vat_payer' => 'Liniile din categoria de TVA :category necesită un furnizor înregistrat în scopuri de TVA; categoria O nu poate fi combinată cu :category.',
     'explicit_category_tax_must_be_zero' => 'Liniile din categoria de TVA :category trebuie să declare o cotă și o valoare brută a TVA exact zero, înainte de rotunjire (BR-AE-05/09, BR-E-05/09, BR-G-05/09, BR-IC-05/09).',
     'tax_category_inconsistent' => 'Categoria explicită de TVA trebuie să corespundă statutului TVA al furnizorului și cotei liniei.',
-    'category_vat_identifier_required' => ':Role trebuie să fie înregistrat în scopuri de TVA și să furnizeze un identificator TVA utilizabil pentru categoria de TVA :category (BR-AE-02, BR-E-02, BR-G-02, BR-IC-02).',
+    'category_vat_identifier_required' => 'Pentru categoria de TVA :category este necesară înregistrarea în scopuri de TVA a :role și un identificator TVA utilizabil (BR-AE-02, BR-E-02, BR-G-02, BR-IC-02).',
     'zero_vat_group_tax_amount_must_be_zero' => 'Valoarea TVA a defalcării pentru categoria :category trebuie să fie exact zero după însumarea și rotunjirea liniilor (BR-Z-09, BR-O-09, BR-E-09, BR-G-09, BR-IC-09).',
     'intra_community_delivery_required' => 'O livrare intracomunitară (categoria de TVA K) necesită o livrare cu data efectivă a livrării și adresa de livrare (BR-IC-11, BR-IC-12).',
 

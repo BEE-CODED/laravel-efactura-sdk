@@ -19,6 +19,7 @@ describe('canonicalize', function () {
         'foreign without county' => [['city' => 'Berlin', 'countryCode' => 'DE'], ['county' => null, 'city' => 'Berlin']],
         'foreign empty county' => [['city' => 'Berlin', 'county' => '', 'countryCode' => 'DE'], ['county' => null, 'city' => 'Berlin']],
         'foreign blank county' => [['city' => 'Berlin', 'county' => '  ', 'countryCode' => 'DE'], ['county' => null, 'city' => 'Berlin']],
+        'NFD county' => [['city' => 'Brasov', 'county' => "Bras\u{0326}ov"], ['county' => 'RO-BV', 'city' => 'Brasov']],
     ]);
 
     it('refuses what ANAF would reject or what contradicts itself', function (array $address, string $message) {
@@ -88,7 +89,11 @@ describe('sanitizeCounty', function () {
         expect(AddressSanitizer::sanitizeCounty(''))->toBeNull();
     });
 
-    it('handles all Romanian counties', function () {
+    it('reads decomposed (NFD) diacritics', function () {
+        expect(AddressSanitizer::sanitizeCounty("Baca\u{0306}u"))->toBe('RO-BC');
+    });
+
+    it('maps a selection of counties', function () {
         // Test a selection of counties
         expect(AddressSanitizer::sanitizeCounty('Alba'))->toBe('RO-AB');
         expect(AddressSanitizer::sanitizeCounty('Arad'))->toBe('RO-AR');
@@ -208,14 +213,11 @@ describe('isBucharest', function () {
 });
 
 describe('getValidCountyCodes', function () {
-    it('returns array of unique ISO codes', function () {
-        $codes = AddressSanitizer::getValidCountyCodes();
+    it('returns exactly the 42 ISO 3166-2:RO codes ANAF accepts', function () {
+        $codes = array_values(AddressSanitizer::getValidCountyCodes());
+        sort($codes);
 
-        expect($codes)->toBeArray();
-        expect($codes)->toContain('RO-B');
-        expect($codes)->toContain('RO-CJ');
-        expect($codes)->toContain('RO-TM');
-        expect(count($codes))->toBe(count(array_unique($codes)));
+        expect($codes)->toBe(['RO-AB', 'RO-AG', 'RO-AR', 'RO-B', 'RO-BC', 'RO-BH', 'RO-BN', 'RO-BR', 'RO-BT', 'RO-BV', 'RO-BZ', 'RO-CJ', 'RO-CL', 'RO-CS', 'RO-CT', 'RO-CV', 'RO-DB', 'RO-DJ', 'RO-GJ', 'RO-GL', 'RO-GR', 'RO-HD', 'RO-HR', 'RO-IF', 'RO-IL', 'RO-IS', 'RO-MH', 'RO-MM', 'RO-MS', 'RO-NT', 'RO-OT', 'RO-PH', 'RO-SB', 'RO-SJ', 'RO-SM', 'RO-SV', 'RO-TL', 'RO-TM', 'RO-TR', 'RO-VL', 'RO-VN', 'RO-VS']);
     });
 });
 

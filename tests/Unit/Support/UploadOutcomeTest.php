@@ -207,7 +207,8 @@ describe('the SDK rate-limit metering', function () {
         Http::assertNothingSent();
     });
 
-    it('fails a retry of an unsent upload as not sent when its cache store fails', function () {
+    it('meters no retry of an unsent upload', function () {
+        // A second metering would fail: a retry after an attempt that never left spends nothing.
         $calls = 0;
         $this->rateLimiter->shouldReceive('checkGlobal')->andReturnUsing(function () use (&$calls) {
             if (++$calls > 1) {
@@ -221,8 +222,9 @@ describe('the SDK rate-limit metering', function () {
             ['errno' => 6, 'error' => 'Could not resolve host'],
         ))]);
 
-        expect(outcomeParts(uploadOutcome()))->toBe([UploadOutcomeKind::NotSent, UploadOutcomeReason::Transport, null, null, null]);
-        Http::assertSentCount(1);
+        expect(outcomeParts(uploadOutcome()))->toBe([UploadOutcomeKind::NotSent, UploadOutcomeReason::Transport, null, null, null])
+            ->and($calls)->toBe(1);
+        Http::assertSentCount(3);
     });
 
     it('reads a failed retry metering as possibly sent once ANAF answered an earlier attempt', function () {
@@ -265,7 +267,7 @@ describe('the SDK rate-limit metering', function () {
         expect($call)->toThrow(RequestNotSentException::class);
     })->with(['an upload' => 'upload', 'another read' => 'read']);
 
-    it('still reads a failed retry metering as not sent when no earlier attempt was delivered', function () {
+    it('meters no retry of a read when no earlier attempt was delivered', function () {
         $calls = 0;
         $this->rateLimiter->shouldReceive('checkGlobal')->andReturnUsing(function () use (&$calls) {
             if (++$calls > 1) {
@@ -281,8 +283,9 @@ describe('the SDK rate-limit metering', function () {
 
         $client = new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour());
 
-        expect(fn () => $client->getStatusMessage('12345'))->toThrow(RequestNotSentException::class);
-        Http::assertSentCount(1);
+        expect(fn () => $client->getStatusMessage('12345'))->toThrow(RequestNotSentException::class)
+            ->and($calls)->toBe(1);
+        Http::assertSentCount(3);
     });
 
     it('lets a programming error through as itself', function () {

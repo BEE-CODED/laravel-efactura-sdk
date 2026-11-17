@@ -193,7 +193,7 @@ describe('buildInvoiceXml', function () {
 
         $xml = $builder->buildInvoiceXml($invoice);
 
-        expect($xml)->not->toContain('PayeeFinancialAccount');
+        expect(ublXpath($xml, '/*/cac:PaymentMeans')->length)->toBe(0);
     });
 
     it('calculates tax totals correctly', function () {
@@ -590,25 +590,11 @@ describe('address sanitization', function () {
         $xml = $builder->buildInvoiceXml($invoice);
 
         // Should not contain CountrySubentity for GB address with null county
-        expect($xml)->toContain('<cbc:IdentificationCode>GB</cbc:IdentificationCode>');
+        expect(ublXpath($xml, '//cac:AccountingCustomerParty//cac:PostalAddress/cbc:CountrySubentity')->length)->toBe(0);
     });
 });
 
 describe('tax grouping floating-point handling', function () {
-    it('groups lines with slightly different float representations of same tax rate', function () {
-        $builder = new InvoiceBuilder;
-        $invoice = createTestInvoiceForBuilder([
-            // These represent the same 19% tax but as different float values
-            new InvoiceLineData(name: 'Product 1', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.0),
-            new InvoiceLineData(name: 'Product 2', quantity: 1, unitPrice: 100.00, taxAmount: 19.00, taxPercent: 19.00),
-        ]);
-
-        $xml = $builder->buildInvoiceXml($invoice);
-
-        // Should have only 1 TaxSubtotal element (19%) - 2 tags (open + close)
-        expect(substr_count($xml, 'TaxSubtotal'))->toBe(2);
-    });
-
     // 4.0 (X6): a rate is filed with 2 decimals, so a finer rate is refused instead of
     // being rounded into the 19% group; the same rate given as a string still groups.
     it('groups the same rate given as a float and a string, and refuses a finer rate', function () {
@@ -873,6 +859,7 @@ describe('VAT number normalization', function () {
         $xml = $builder->buildInvoiceXml($invoice);
 
         expect($xml)->not->toContain('RORO');
+        expect(ublText($xml, '//cac:AccountingSupplierParty//cac:PartyLegalEntity/cbc:CompanyID'))->toBe('12345678');
     });
 });
 
@@ -1072,17 +1059,6 @@ describe('BR-Z zero-rated schematron compliance', function () {
 
         $builder->buildInvoiceXml($invoice);
     })->throws(ValidationException::class, 'Line 1: A zero-rated line cannot carry a VAT amount (BR-Z-09)');
-
-    // The guard mirrors getTaxCategory()'s epsilon, so it must bind exactly when category Z is
-    // emitted — a rate below the 0.01 epsilon is filed as Z and is caught too.
-    it('rejects a sub-epsilon rate carrying a VAT amount', function () {
-        $builder = new InvoiceBuilder;
-        $invoice = createTestInvoiceForBuilder([
-            new InvoiceLineData(name: 'Product', quantity: 1, unitPrice: 100, taxAmount: 0.01, taxPercent: 0.001),
-        ]);
-
-        $builder->buildInvoiceXml($invoice);
-    })->throws(ValidationException::class);
 
     // Guard against over-fixing: a genuine zero-rated line must still build.
     it('accepts a zero-rated line declaring zero tax', function () {
@@ -1326,6 +1302,7 @@ describe('BR-RO-L string length validations', function () {
             street: 'Test Street',
             city: str_repeat('A', 51),
             postalZone: '010101',
+            county: 'Cluj',
         );
         $supplier = new PartyData(registrationName: 'Test', companyId: 'RO12345678', address: $address, isVatPayer: true);
         $invoice = createTestInvoiceForBuilder([], ['supplier' => $supplier]);
@@ -1520,7 +1497,7 @@ describe('BT-111 VAT total in the RON accounting currency', function () {
         $invoice = createTestInvoiceForBuilder([], ['currency' => 'RON', 'taxAmountRon' => 190.00]);
 
         (new InvoiceBuilder)->buildInvoiceXml($invoice);
-    })->throws(ValidationException::class);
+    })->throws(ValidationException::class, 'BR-CO-15');
 
     it('emits exactly one TaxTotal for a RON invoice (BR-CO-15)', function () {
         $xml = (new InvoiceBuilder)->buildInvoiceXml(createTestInvoiceForBuilder([], ['currency' => 'RON']));
@@ -1601,7 +1578,7 @@ describe('BT-111 VAT total in the RON accounting currency', function () {
         $invoice = createTestInvoiceForBuilder([], ['currency' => 'EUR', 'taxAmountRon' => -944.30]);
 
         (new InvoiceBuilder)->buildInvoiceXml($invoice);
-    })->throws(ValidationException::class);
+    })->throws(ValidationException::class, 'same sign');
 });
 
 describe('BT-9 payment due date on credit notes', function () {
@@ -1857,7 +1834,7 @@ describe('optional tax point date UBL ordering', function () {
     it('rejects invalid tax dates on the real builder path', function () {
         $invoice = createTestInvoiceForBuilder(overrides: ['taxPointDate' => 'not-a-date']);
         expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))
-            ->toThrow(InvalidArgumentException::class, 'Invalid tax point date format');
+            ->toThrow(ValidationException::class, 'BT-7');
     });
 });
 
@@ -1888,7 +1865,7 @@ describe('RON VAT sign and zero-rounding boundary', function () {
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData(name: 'Tax sign', quantity: $vat < 0 ? -1 : 1, unitPrice: $vat == 0.0 ? 0.01 : 0.05, taxAmount: $vat, taxPercent: 19),
         ], ['currency' => 'JPY', 'taxAmountRon' => $ron]);
-        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class, 'same sign');
     })->with([
         'positive to negative' => [0.01, -0.01],
         'negative to positive' => [-0.01, 0.01],
@@ -2071,19 +2048,24 @@ describe('explicit reverse-charge UBL', function () {
         'negative tax' => ['taxAmount', -0.000001, 'exactly zero raw'],
     ]);
 
-    it('requires usable VAT identifiers and actual VAT declarations for both parties', function (string $role, string $companyId, bool $isVatPayer) {
+    it('requires usable VAT identifiers and actual VAT declarations for both parties', function (string $role, string $companyId, bool $isVatPayer, string $message) {
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge),
         ]);
         $invoice->{$role}->companyId = $companyId;
         $invoice->{$role}->isVatPayer = $isVatPayer;
-        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
-    })->with(['supplier', 'customer'])->with([
-        'no identifier' => ['', true],
-        'whitespace' => ['   ', true],
-        'prefix only' => ['RO', true],
-        'punctuation' => ['RO!123', true],
-        'unregistered' => ['RO12345678', false],
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class, $message);
+    })->with([
+        'supplier no identifier' => ['supplier', '', true, 'Supplier company ID (CIF/CUI) is required'],
+        'customer no identifier' => ['customer', '', true, 'Customer company ID (CIF/CUI) is required'],
+        'supplier whitespace' => ['supplier', '   ', true, 'Supplier company ID (CIF/CUI) is required'],
+        'customer whitespace' => ['customer', '   ', true, 'Customer company ID (CIF/CUI) is required'],
+        'supplier prefix only' => ['supplier', 'RO', true, 'usable VAT identifier'],
+        'customer prefix only' => ['customer', 'RO', true, 'usable VAT identifier'],
+        'supplier punctuation' => ['supplier', 'RO!123', true, 'usable VAT identifier'],
+        'customer punctuation' => ['customer', 'RO!123', true, 'usable VAT identifier'],
+        'supplier unregistered' => ['supplier', 'RO12345678', false, 'require a supplier registered for VAT'],
+        'customer unregistered' => ['customer', 'RO12345678', false, 'Customer must be registered for VAT'],
     ]);
 
     it('normalizes party identifiers through the existing serializer path for AE', function () {
@@ -2097,7 +2079,7 @@ describe('explicit reverse-charge UBL', function () {
             ->and(ublText($xml, '/*/cac:AccountingCustomerParty/cac:Party/cac:PartyTaxScheme/cbc:CompanyID'))->toBe('RO87654321');
     });
 
-    it('rejects explicit legacy category contradictions and O combinations', function (TaxCategoryId $category, bool $vatPayer, float $rate, bool $withAe) {
+    it('rejects explicit legacy category contradictions and O combinations', function (TaxCategoryId $category, bool $vatPayer, float $rate, bool $withAe, string $message) {
         $invoice = createTestInvoiceForBuilder([
             new InvoiceLineData('Declared', 1, 100, 0, taxPercent: $rate, taxCategoryId: $category),
         ]);
@@ -2105,14 +2087,14 @@ describe('explicit reverse-charge UBL', function () {
         if ($withAe) {
             $invoice->lines[] = new InvoiceLineData('AE', 1, 100, 0, taxCategoryId: TaxCategoryId::ReverseCharge);
         }
-        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class);
+        expect(fn () => (new InvoiceBuilder)->buildInvoiceXml($invoice))->toThrow(ValidationException::class, $message);
     })->with([
-        'S at zero' => [TaxCategoryId::Standard, true, 0.0, false],
-        'Z at standard rate' => [TaxCategoryId::ZeroRated, true, 19.0, false],
-        'O at VAT payer' => [TaxCategoryId::NotSubject, true, 0.0, false],
-        'Z at nonpayer' => [TaxCategoryId::ZeroRated, false, 0.0, false],
-        'O and AE nonpayer' => [TaxCategoryId::NotSubject, false, 0.0, true],
-        'O and AE payer' => [TaxCategoryId::NotSubject, true, 0.0, true],
+        'S at zero' => [TaxCategoryId::Standard, true, 0.0, false, 'must agree'],
+        'Z at standard rate' => [TaxCategoryId::ZeroRated, true, 19.0, false, 'must agree'],
+        'O at VAT payer' => [TaxCategoryId::NotSubject, true, 0.0, false, 'must agree'],
+        'Z at nonpayer' => [TaxCategoryId::ZeroRated, false, 0.0, false, 'must agree'],
+        'O and AE nonpayer' => [TaxCategoryId::NotSubject, false, 0.0, true, 'require a supplier registered for VAT'],
+        'O and AE payer' => [TaxCategoryId::NotSubject, true, 0.0, true, 'must agree'],
     ]);
 
     it('keeps complete legacy XML unchanged for omitted null and matching explicit categories', function (bool $vatPayer, float $rate, float $tax, TaxCategoryId $category) {

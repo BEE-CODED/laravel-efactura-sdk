@@ -170,7 +170,7 @@ describe('the failure kind', function () {
         Http::fake(['*' => Http::response(['found' => [], 'notFound' => [18547290]], 200)]);
         $client = new class extends AnafDetailsClient
         {
-            protected function request(string $route, array|string $data = [], string $method = 'get', array $headers = [], array|Closure $context = [], ?string $contentType = null): Response
+            protected function request(string $route, array|string $data = [], string $method = 'get', array $headers = [], array|Closure $context = [], ?string $contentType = null, bool $idempotent = true): Response
             {
                 throw new UnexpectedValueException('unreadable');
             }
@@ -201,6 +201,47 @@ describe('the failure kind', function () {
         'only invalid codes' => [['abc', 'RO']],
         'too many codes' => [array_map(fn (int $i) => (string) (10000000 + $i), range(1, 101))],
     ]);
+
+    it('names an unreadable answer when the batch also had an invalid code', function () {
+        Http::fake(['*' => Http::response('{}', 200)]);
+
+        $result = (new AnafDetailsClient)->batchGetCompanyData(['RO18547290', 'abc']);
+
+        expect($result->success)->toBeFalse()
+            ->and($result->failureKind)->toBe(CompanyLookupFailureKind::InvalidResponse)
+            ->and($result->invalidCodes)->toBe(['abc']);
+    });
+
+    it('round-trips a found company through the DTO', function () {
+        Http::fake(['*' => Http::response(['found' => [array_merge(foundCompany(18547290, ['data_inregistrare' => '1993-03-02'], ['dataReactivare' => '2019-05-01']), [
+            'inregistrare_scop_Tva' => [
+                'scpTVA' => true,
+                'perioade_TVA' => [
+                    ['data_inceput_ScpTVA' => '2007-07-01', 'data_sfarsit_ScpTVA' => '2018-08-01', 'data_anul_imp_ScpTVA' => '2018-08-01', 'mesaj_ScpTVA' => 'Anulare'],
+                ],
+            ],
+            'inregistrare_RTVAI' => [
+                'dataInceputTvaInc' => '2013-01-01', 'dataSfarsitTvaInc' => '2018-08-01', 'tipActTvaInc' => 'Radiere',
+                'statusTvaIncasare' => false, 'dataActualizareTvaInc' => '2018-08-01', 'dataPublicareTvaInc' => '2018-08-02',
+            ],
+            'inregistrare_SplitTVA' => ['dataInceputSplitTVA' => '2018-01-01', 'dataAnulareSplitTVA' => '2019-01-01', 'statusSplitTVA' => false],
+            'adresa_sediu_social' => [
+                'sdenumire_Strada' => 'Str. Brâncoveanu Vodă', 'snumar_Strada' => '2A', 'sdenumire_Localitate' => 'Mun. Ploieşti',
+                'scod_Localitate' => '133', 'sdenumire_Judet' => 'PRAHOVA', 'scod_Judet' => '29', 'scod_JudetAuto' => 'PH',
+                'stara' => '', 'sdetalii_Adresa' => '', 'scod_Postal' => '100400',
+            ],
+            'adresa_domiciliu_fiscal' => [
+                'ddenumire_Strada' => 'Str. Brâncoveanu Vodă', 'dnumar_Strada' => '2A', 'ddenumire_Localitate' => 'Mun. Ploieşti',
+                'dcod_Localitate' => '133', 'ddenumire_Judet' => 'PRAHOVA', 'dcod_Judet' => '29', 'dcod_JudetAuto' => 'PH',
+                'dtara' => '', 'ddetalii_Adresa' => '', 'dcod_Postal' => '100400',
+            ],
+        ])], 'notFound' => []], 200)]);
+
+        $result = (new AnafDetailsClient)->getCompanyData('RO18547290');
+
+        expect($result->first()?->cui)->toBe('18547290')
+            ->and(CompanyLookupResultData::from($result->toArray())->toArray())->toBe($result->toArray());
+    });
 
     it('round-trips through the DTO', function () {
         $result = CompanyLookupResultData::failure('down', [], CompanyLookupFailureKind::Transport);

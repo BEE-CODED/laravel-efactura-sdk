@@ -16,9 +16,9 @@ class MessageDetailsData extends Data
 {
     public function __construct(
         /**
-         * Download ID. Null when ANAF sent none (missing, empty or not an
-         * id-shaped value): such a message cannot be downloaded or told apart
-         * from another, so skip it rather than key anything on it.
+         * Download ID. Null when ANAF sent no usable value (missing, blank, or not a
+         * string/integer); any other string is kept trimmed, so check ctype_digit
+         * before downloading or keying on it.
          */
         public ?string $id,
 

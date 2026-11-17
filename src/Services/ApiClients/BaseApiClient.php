@@ -99,12 +99,12 @@ abstract class BaseApiClient implements HasLogger
     abstract protected function getHeaders(): array;
 
     /**
-     * Get the retry delay in seconds.
-     * Can be overridden in subclasses for custom behavior.
+     * Seconds between retries: efactura-sdk.http.retry_delay (normalised at boot), else RETRY_DELAY.
      */
     protected function getRetryDelay(): int
     {
-        return static::RETRY_DELAY;
+        // Floored again for a runtime config()->set(): a -1 would make sleep() throw ValueError.
+        return max(0, (int) (config('efactura-sdk.http.retry_delay') ?? static::RETRY_DELAY));
     }
 
     /**
@@ -116,12 +116,11 @@ abstract class BaseApiClient implements HasLogger
     }
 
     /**
-     * Get the max retry count.
-     * Can be overridden in subclasses for custom behavior.
+     * Attempts per call: efactura-sdk.http.retry_times (normalised at boot), else MAX_TRY_COUNT; at least 1.
      */
     protected function getMaxTryCount(): int
     {
-        return static::MAX_TRY_COUNT;
+        return max(1, (int) (config('efactura-sdk.http.retry_times') ?? static::MAX_TRY_COUNT));
     }
 
     /**
@@ -152,6 +151,7 @@ abstract class BaseApiClient implements HasLogger
      * @param  array<string, mixed>|string  $data
      * @param  array<string, string>  $headers
      * @param  array<string, mixed>|Closure  $context
+     * @param  bool  $idempotent  False for anything that files a document: it then never follows a redirect
      *
      * @throws ConnectionException
      */
@@ -159,14 +159,19 @@ abstract class BaseApiClient implements HasLogger
         string $route,
         array|string $data = [],
         string $method = 'get',
-        array $headers = [],
+        #[\SensitiveParameter] array $headers = [],
         array|Closure $context = [],
-        ?string $contentType = null
+        ?string $contentType = null,
+        bool $idempotent = true
     ): Response {
         $url = $this->getRequestUrl($route);
 
         $startTime = Carbon::now();
         $request = Http::timeout($this->getRequestTimeout());
+        if (! $idempotent) {
+            // A redirect hides that the first hop reached ANAF: a failure on a later hop would read as "not sent".
+            $request->withoutRedirecting();
+        }
 
         $request->withHeaders($this->getDefaultHeaders() + $headers);
 
@@ -241,7 +246,7 @@ abstract class BaseApiClient implements HasLogger
         string $route,
         string $method = 'get',
         array $data = [],
-        array $customHeaders = [],
+        #[\SensitiveParameter] array $customHeaders = [],
         bool $idempotent = true,
         int $tryCount = 0
     ): Response {
@@ -264,7 +269,7 @@ abstract class BaseApiClient implements HasLogger
         string $method,
         string $body,
         string $contentType,
-        array $customHeaders = [],
+        #[\SensitiveParameter] array $customHeaders = [],
         bool $idempotent = true,
         int $tryCount = 0
     ): Response {
@@ -288,7 +293,7 @@ abstract class BaseApiClient implements HasLogger
         string $method,
         array|string $data,
         ?string $contentType,
-        array $customHeaders,
+        #[\SensitiveParameter] array $customHeaders,
         bool $idempotent,
         int $tryCount,
         array $describe
@@ -312,8 +317,12 @@ abstract class BaseApiClient implements HasLogger
                 $method,
                 empty($customHeaders) ? $this->getHeaders() : $customHeaders,
                 $context,
-                $contentType
+                $contentType,
+                $idempotent
             );
+        } catch (\LogicException $exception) {
+            // A programming error while the request was built, before any I/O: never a transport failure to retry.
+            throw $exception;
         } catch (Exception $exception) {
             // Calculate duration for failed requests so logging is accurate
             $this->lastRequestDurationMilliseconds = $startTime->diffInMilliseconds(Carbon::now());
@@ -323,11 +332,12 @@ abstract class BaseApiClient implements HasLogger
                 $context()
             );
 
-            $this->attemptDelivered = $this->attemptDelivered || ! $this->wasNotSent($exception);
+            $sent = ! self::wasNotSent($exception);
+            $this->attemptDelivered = $this->attemptDelivered || $sent;
 
             if ($tryCount < $this->getMaxTryCount() && $this->isRetryableException($exception, $idempotent)) {
                 sleep($this->getRetryDelay());
-                $this->onRetryAttempt();
+                $this->onRetryAttempt($sent);
 
                 return $this->attempt($route, $method, $data, $contentType, $customHeaders, $idempotent, $tryCount, $describe);
             }
@@ -342,7 +352,7 @@ abstract class BaseApiClient implements HasLogger
             // non-idempotent call must never be re-sent -- even on a 5xx.
             if ($tryCount < $this->getMaxTryCount() && $idempotent && $this->isRetryable($response)) {
                 sleep($this->getRetryDelay());
-                $this->onRetryAttempt();
+                $this->onRetryAttempt(true);
 
                 return $this->attempt($route, $method, $data, $contentType, $customHeaders, $idempotent, $tryCount, $describe);
             }
@@ -400,7 +410,7 @@ abstract class BaseApiClient implements HasLogger
      */
     protected function isRetryableException(\Throwable $exception, bool $idempotent): bool
     {
-        return $idempotent || $this->wasNotSent($exception);
+        return $idempotent || self::wasNotSent($exception);
     }
 
     /**
@@ -410,10 +420,12 @@ abstract class BaseApiClient implements HasLogger
      * handler context proves the connect phase never finished: no transfer had
      * started (pretransfer_time 0) and no request bytes were issued (request_size
      * 0). A timeout without that evidence may have delivered the request.
+     *
+     * @internal Also read by AnafAuthenticator for the token request.
      */
-    private function wasNotSent(\Throwable $exception): bool
+    public static function wasNotSent(\Throwable $exception): bool
     {
-        $errno = $this->extractCurlErrno($exception);
+        $errno = self::extractCurlErrno($exception);
 
         if ($errno !== null && in_array($errno, static::PRE_SEND_CURL_ERRORS, true)) {
             return true;
@@ -477,7 +489,7 @@ abstract class BaseApiClient implements HasLogger
      *
      * @return int|null The cURL errno, or null when the failure cannot be classified
      */
-    private function extractCurlErrno(\Throwable $exception): ?int
+    private static function extractCurlErrno(\Throwable $exception): ?int
     {
         for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
             if (method_exists($current, 'getHandlerContext')) {
@@ -503,8 +515,11 @@ abstract class BaseApiClient implements HasLogger
      * ANAF meters every HTTP request, but a client's quota checks run once per
      * logical call. Subclasses override this to consume a quota unit for the
      * extra request a retry is about to make.
+     *
+     * @param  bool  $previousAttemptDelivered  Whether the attempt being retried may have reached
+     *                                          ANAF: false only when wasNotSent() proves it never left
      */
-    protected function onRetryAttempt(): void
+    protected function onRetryAttempt(bool $previousAttemptDelivered): void
     {
         // No-op by default.
     }
@@ -522,17 +537,24 @@ abstract class BaseApiClient implements HasLogger
     {
         $data = static::decodeJson($response);
         $data = is_array($data) ? $data : [];
-        // Each candidate counts only when it is non-blank text (same rule as XmlParser), so a
-        // blank, boolean or non-scalar value falls through to the next one; a literal "0" counts.
-        $message = static fn (mixed $value): ?string => is_bool($value) || trim((string) AnafValue::text($value)) === ''
-            ? null
-            : AnafValue::text($value);
 
-        return $message($data['message'] ?? null)
-            ?? $message($data['eroare'] ?? null)
-            ?? $message($data['error'] ?? null)
-            ?? $message(XmlParser::extractErrorMessage(AnafValue::withoutBom($response->body())))
+        return self::errorText($data['message'] ?? null)
+            ?? self::errorText($data['eroare'] ?? null)
+            ?? self::errorText($data['error'] ?? null)
+            ?? self::errorText(XmlParser::extractErrorMessage(AnafValue::withoutBom($response->body())))
             ?? self::NO_ERROR_MESSAGE;
+    }
+
+    /**
+     * An error field's text, or null so the next candidate is read: it counts only when it is
+     * non-blank text (same rule as XmlParser), so a blank, boolean or non-scalar value falls
+     * through; a literal "0" counts.
+     *
+     * @internal Also read by AnafAuthenticator for the token endpoint's errors.
+     */
+    public static function errorText(mixed $value): ?string
+    {
+        return is_bool($value) || trim((string) AnafValue::text($value)) === '' ? null : AnafValue::text($value);
     }
 
     /**

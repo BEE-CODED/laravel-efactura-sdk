@@ -19,7 +19,7 @@ class DownloadResponseData extends Data
         /** Content type (e.g., application/zip) */
         public string $contentType,
 
-        /** Suggested filename from Content-Disposition header */
+        /** Base name suggested by the Content-Disposition header (untrusted; null when absent or empty) */
         public ?string $filename = null,
 
         /** Content length in bytes */
@@ -47,7 +47,9 @@ class DownloadResponseData extends Data
             $contentDisposition = $contentDisposition[0] ?? null;
         }
         if ($contentDisposition && preg_match('/filename[^;=\n]*=([\"\']?)([^\"\';\n]*)/', $contentDisposition, $matches)) {
-            $filename = $matches[2];
+            // ANAF's suggestion is untrusted: never let it name a path.
+            $name = basename(str_replace('\\', '/', $matches[2]));
+            $filename = in_array($name, ['', '.', '..'], true) ? null : $name;
         }
 
         return new self(

@@ -8,6 +8,7 @@ use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
 use BeeCoded\EFacturaSdk\Data\Auth\AuthUrlSettingsData;
 use BeeCoded\EFacturaSdk\Data\Auth\OAuthTokensData;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Services\ApiClients\BaseApiClient;
 use BeeCoded\EFacturaSdk\Support\AnafValue;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Response;
@@ -21,8 +22,8 @@ use Illuminate\Support\Facades\Log;
  * - Token exchange via POST to token endpoint
  * - Token refresh flow
  *
- * This service is stateless and returns OAuthTokensData to the caller.
- * Token storage is handled by a separate TokenRepository.
+ * This service is stateless and returns OAuthTokensData; the caller stores the tokens
+ * (for example the laravel-efactura wrapper's TokenService).
  */
 class AnafAuthenticator implements AnafAuthenticatorInterface
 {
@@ -38,6 +39,9 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
     private readonly int $timeout;
 
+    /** Whether a token request that provably never left may be sent once more (http.retry_times > 1). */
+    private readonly bool $retryUnsent;
+
     /**
      * @param  array<string, mixed>  $config
      */
@@ -45,13 +49,13 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
         private readonly HttpFactory $http,
         array $config,
     ) {
-        $this->validateConfig($config);
-
-        $this->clientId = $config['oauth']['client_id'];
-        $this->clientSecret = $config['oauth']['client_secret'];
-        $this->redirectUri = $config['oauth']['redirect_uri'];
-        $this->authorizeUrl = $config['endpoints']['oauth']['authorize'];
-        $this->tokenUrl = $config['endpoints']['oauth']['token'];
+        // Checked on first use, so resolving the service never throws and decodeState() needs no OAuth configuration.
+        $this->clientId = $config['oauth']['client_id'] ?? '';
+        $this->clientSecret = $config['oauth']['client_secret'] ?? '';
+        $this->redirectUri = $config['oauth']['redirect_uri'] ?? '';
+        $this->authorizeUrl = $config['endpoints']['oauth']['authorize'] ?? '';
+        $this->tokenUrl = $config['endpoints']['oauth']['token'] ?? '';
+        $this->retryUnsent = (int) ($config['http']['retry_times'] ?? 3) > 1;
         // env() yields a string; an empty or zero value would be Guzzle's "no timeout".
         $timeout = (float) ($config['http']['timeout'] ?? 30);
         $this->timeout = $timeout > 0 ? max(1, (int) ceil($timeout)) : 30;
@@ -59,9 +63,13 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
     /**
      * Build the OAuth authorization URL for redirecting users to ANAF login.
+     *
+     * @throws AuthenticationException When the OAuth configuration is missing (code 0)
      */
     public function getAuthorizationUrl(?AuthUrlSettingsData $settings = null): string
     {
+        $this->validateConfig();
+
         $params = [
             'response_type' => 'code',
             'client_id' => $this->clientId,
@@ -85,10 +93,12 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
     /**
      * Exchange an authorization code for access and refresh tokens.
      *
-     * @throws AuthenticationException When the code exchange fails
+     * @throws AuthenticationException When the code exchange fails or the OAuth configuration is missing (code 0)
      */
-    public function exchangeCodeForToken(string $code): OAuthTokensData
+    public function exchangeCodeForToken(#[\SensitiveParameter] string $code): OAuthTokensData
     {
+        $this->validateConfig();
+
         if (empty($code)) {
             throw new AuthenticationException('Authorization code is required');
         }
@@ -106,10 +116,12 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
     /**
      * Refresh an expired access token using a refresh token.
      *
-     * @throws AuthenticationException When the token refresh fails
+     * @throws AuthenticationException When the token refresh fails or the OAuth configuration is missing (code 0)
      */
-    public function refreshAccessToken(string $refreshToken): OAuthTokensData
+    public function refreshAccessToken(#[\SensitiveParameter] string $refreshToken): OAuthTokensData
     {
+        $this->validateConfig();
+
         if (empty($refreshToken)) {
             throw new AuthenticationException('Refresh token is required');
         }
@@ -126,29 +138,7 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
     /**
      * Decode the state parameter returned from OAuth callback.
      *
-     * IMPORTANT: For CSRF protection, you MUST validate the state parameter
-     * in your OAuth callback handler. Compare the decoded state with what
-     * you originally stored in the session before redirecting to ANAF.
-     *
-     * Example usage in callback:
-     * ```php
-     * public function handleCallback(Request $request)
-     * {
-     *     $state = $request->get('state');
-     *     $code = $request->get('code');
-     *
-     *     // Decode and validate state
-     *     $decodedState = EFacturaSdkAuth::decodeState($state);
-     *
-     *     // Verify against session-stored state (CSRF protection)
-     *     if ($decodedState['csrf_token'] !== session('efactura_csrf_token')) {
-     *         throw new \Exception('Invalid state parameter - possible CSRF attack');
-     *     }
-     *
-     *     // Now safe to exchange code for tokens
-     *     $tokens = EFacturaSdkAuth::exchangeCodeForToken($code);
-     * }
-     * ```
+     * See {@see AnafAuthenticatorInterface::decodeState()} for the CSRF check the caller must make.
      *
      * @param  string  $encodedState  The base64-encoded state from the callback
      * @return array<string, mixed> The decoded state data
@@ -185,20 +175,16 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
     }
 
     /**
-     * Validate the configuration array.
-     *
-     * @param  array<string, mixed>  $config
+     * Refuse an OAuth call when the configuration is missing.
      *
      * Code 0, not 401: a deployment mistake is not a refused grant, and re-authorising cannot fix it.
      *
      * @throws AuthenticationException When required configuration is missing
      */
-    private function validateConfig(array $config): void
+    private function validateConfig(): void
     {
-        $requiredOauthKeys = ['client_id', 'client_secret', 'redirect_uri'];
-
-        foreach ($requiredOauthKeys as $key) {
-            if (empty($config['oauth'][$key])) {
+        foreach (['client_id' => $this->clientId, 'client_secret' => $this->clientSecret, 'redirect_uri' => $this->redirectUri] as $key => $value) {
+            if (empty($value)) {
                 throw new AuthenticationException(
                     "Missing required OAuth configuration: {$key}. Please check your efactura-sdk.php config.",
                     0
@@ -206,14 +192,14 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             }
         }
 
-        if (empty($config['endpoints']['oauth']['authorize'])) {
+        if (empty($this->authorizeUrl)) {
             throw new AuthenticationException(
                 'Missing required OAuth authorize endpoint. Please check your efactura-sdk.php config.',
                 0
             );
         }
 
-        if (empty($config['endpoints']['oauth']['token'])) {
+        if (empty($this->tokenUrl)) {
             throw new AuthenticationException(
                 'Missing required OAuth token endpoint. Please check your efactura-sdk.php config.',
                 0
@@ -244,11 +230,15 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
     /**
      * Post a form-urlencoded request to the token endpoint.
      *
+     * A request that provably never left (BaseApiClient::wasNotSent()) is sent once more at once,
+     * when retry_times allows retries: ANAF never saw it, so the refresh token is not spent. No
+     * sleep, so the refresh lock's TTL still covers it.
+     *
      * @param  array<string, string>  $data
      *
      * @throws AuthenticationException When the HTTP request fails
      */
-    private function postTokenRequest(array $data): Response
+    private function postTokenRequest(#[\SensitiveParameter] array $data, bool $retried = false): Response
     {
         try {
             $response = $this->http
@@ -262,6 +252,10 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
 
             return $response;
         } catch (\Throwable $e) {
+            if (! $retried && $this->retryUnsent && BaseApiClient::wasNotSent($e)) {
+                return $this->postTokenRequest($data, true);
+            }
+
             $this->logError(
                 'ANAF OAuth token request failed',
                 [
@@ -375,17 +369,18 @@ class AnafAuthenticator implements AnafAuthenticatorInterface
             return "HTTP {$statusCode} error";
         }
 
+        // The API error extractor's rule: a blank, boolean or non-scalar field falls through.
         // OAuth 2.0 standard error response
-        $error = AnafValue::text($data['error'] ?? null);
+        $error = BaseApiClient::errorText($data['error'] ?? null);
         if ($error !== null) {
-            $description = AnafValue::text($data['error_description'] ?? null);
+            $description = BaseApiClient::errorText($data['error_description'] ?? null);
 
             return $description !== null ? "{$error}: {$description}" : $error;
         }
 
         // ANAF-specific error formats
-        return AnafValue::text($data['eroare'] ?? null)
-            ?? AnafValue::text($data['mesaj'] ?? null)
+        return BaseApiClient::errorText($data['eroare'] ?? null)
+            ?? BaseApiClient::errorText($data['mesaj'] ?? null)
             ?? "HTTP {$statusCode} error";
     }
 }

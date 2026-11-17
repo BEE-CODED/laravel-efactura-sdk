@@ -8,17 +8,23 @@ use BeeCoded\EFacturaSdk\Data\Invoice\ListMessagesParamsData;
 use BeeCoded\EFacturaSdk\Data\Invoice\PaginatedMessagesParamsData;
 use BeeCoded\EFacturaSdk\Data\Invoice\UploadOptionsData;
 use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Enums\StandardType;
+use BeeCoded\EFacturaSdk\Enums\UploadOutcomeKind;
+use BeeCoded\EFacturaSdk\Enums\UploadOutcomeReason;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Exceptions\RequestNotSentException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
 use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Support\UploadOutcome;
 use Carbon\Carbon;
 use Carbon\CarbonImmutable;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Request;
+use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
@@ -248,27 +254,97 @@ describe('EFacturaClient', function () {
         })->throws(ValidationException::class, 'Days must be between 1 and 60');
     });
 
-    describe('message list CIF validation', function () {
-        it('throws ValidationException for a blank CIF before any request', function (Closure $call) {
-            Http::fake(['*' => Http::response(['mesaje' => []])]);
-            $this->rateLimiter->shouldNotReceive('checkSimpleList', 'checkPaginatedList', 'ensureAvailable');
+    describe('the client VAT number', function () {
+        it('refuses a malformed VAT number before anything is spent', function (Closure $build) {
+            Http::fake();
+            $this->rateLimiter->shouldNotReceive('checkGlobal', 'checkRaspUpload', 'ensureAvailable');
 
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'token',
-                refreshToken: 'refresh',
-                expiresAt: Carbon::now()->addHour(),
-            );
-
-            expect(fn () => $call($client))->toThrow(ValidationException::class, 'CIF cannot be empty');
+            try {
+                $build();
+                $this->fail('Expected ValidationException');
+            } catch (ValidationException $e) {
+                expect($e->getMessage())->toBe('CIF is not a valid Romanian CUI or CNP')
+                    ->and(UploadOutcome::fromThrowable($e)->kind)->toBe(UploadOutcomeKind::Refused)
+                    ->and(UploadOutcome::fromThrowable($e)->reason)->toBe(UploadOutcomeReason::LocalRefusal);
+            }
             Http::assertNothingSent();
         })->with([
-            'simple list' => fn (EFacturaClient $client) => $client->getMessages(new ListMessagesParamsData(cif: '', days: 10)),
-            'paginated list' => fn (EFacturaClient $client) => $client->getMessagesPaginated(new PaginatedMessagesParamsData(
+            'blank' => fn () => new EFacturaClient('', 'token', 'refresh', Carbon::now()->addHour()),
+            'leading zero' => fn () => new EFacturaClient('0123', 'token', 'refresh', Carbon::now()->addHour()),
+            'prefix only' => fn () => new EFacturaClient('RO', 'token', 'refresh', Carbon::now()->addHour()),
+            'fromTokens' => fn () => EFacturaClient::fromTokens('  ', new OAuthTokensData('token', 'refresh', Carbon::now()->addHour())),
+        ]);
+
+        it('keeps the canonical CIF', function () {
+            expect((new EFacturaClient('RO 1234 5678', 'token', 'refresh', Carbon::now()->addHour()))->getVatNumber())->toBe('12345678');
+        });
+
+        it('builds the refresh lock with the SDK key and TTL', function () {
+            config()->set('efactura-sdk.http.timeout', 29.5);
+            $lock = Mockery::mock(Lock::class);
+            Cache::shouldReceive('lock')->once()->with('efactura:token_refresh:12345678', 60)->andReturn($lock);
+
+            expect(EFacturaClient::tokenRefreshLock('12345678'))->toBe($lock);
+        });
+    });
+
+    describe('input validation before quota', function () {
+        it('refuses invalid input before refreshing the token or counting quota', function (Closure $call, string $message) {
+            Http::fake();
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+            $this->rateLimiter->shouldNotReceive('checkGlobal', 'checkRaspUpload', 'checkStatusQuery', 'checkDownload', 'checkSimpleList', 'checkPaginatedList', 'ensureAvailable');
+
+            $client = new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->subMinute());
+
+            expect(fn () => $call($client))->toThrow(ValidationException::class, $message);
+            Http::assertNothingSent();
+        })->with([
+            'blank simple-list CIF' => [fn (EFacturaClient $c) => $c->getMessages(new ListMessagesParamsData(cif: '', days: 10)), 'CIF is not a valid Romanian CUI or CNP'],
+            'blank paginated CIF' => [fn (EFacturaClient $c) => $c->getMessagesPaginated(new PaginatedMessagesParamsData(
                 cif: '   ',
                 startTime: Carbon::now()->subDay()->getTimestampMs(),
                 endTime: Carbon::now()->getTimestampMs(),
-            )),
+            )), 'CIF is not a valid Romanian CUI or CNP'],
+            'leading-zero CIF' => [fn (EFacturaClient $c) => $c->getMessages(new ListMessagesParamsData(cif: 'RO0123', days: 10)), 'CIF is not a valid Romanian CUI or CNP'],
+            'blank upload' => [fn (EFacturaClient $c) => $c->uploadDocument(''), 'XML content cannot be empty'],
+            'blank B2C upload' => [fn (EFacturaClient $c) => $c->uploadB2CDocument(' '), 'XML content cannot be empty'],
+            'non-numeric upload id' => [fn (EFacturaClient $c) => $c->getStatusMessage('abc'), 'Upload ID must be a numeric string'],
+            'non-numeric download id' => [fn (EFacturaClient $c) => $c->downloadDocument('x'), 'Download ID must be a numeric string'],
+            'zero days' => [fn (EFacturaClient $c) => $c->getMessages(new ListMessagesParamsData(cif: '12345678', days: 0)), 'Days must be between 1 and 60'],
+            'page zero' => [fn (EFacturaClient $c) => $c->getMessagesPaginated(new PaginatedMessagesParamsData(
+                cif: '12345678',
+                startTime: Carbon::now()->subDay()->getTimestampMs(),
+                endTime: Carbon::now()->getTimestampMs(),
+                page: 0,
+            )), 'Page number must be at least 1'],
+            '61-day range' => [fn (EFacturaClient $c) => $c->getMessagesPaginated(new PaginatedMessagesParamsData(
+                cif: '12345678',
+                startTime: Carbon::now()->subDays(61)->getTimestampMs(),
+                endTime: Carbon::now()->getTimestampMs(),
+            )), 'Time range cannot exceed 60 days'],
+            'blank validate' => [fn (EFacturaClient $c) => $c->validateXml('', DocumentStandardType::FACT1), 'XML content cannot be empty'],
+            'blank PDF' => [fn (EFacturaClient $c) => $c->convertXmlToPdf('', DocumentStandardType::FACT1), 'XML content cannot be empty'],
+        ]);
+
+        it('meters and queries a message list on the canonical CIF', function (Closure $call, string $check, RateLimitScope $scope, string $route) {
+            Http::fake(['*' => Http::response(['mesaje' => []])]);
+            $this->rateLimiter->shouldReceive($check)->once()->with('12345678');
+            $this->rateLimiter->shouldReceive('ensureAvailable')->once()->with($scope, '12345678');
+
+            $call(new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()));
+
+            Http::assertSent(function ($request) use ($route) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
+
+                return str_contains($request->url(), $route) && $query['cif'] === '12345678';
+            });
+        })->with([
+            'simple list' => [fn (EFacturaClient $c) => $c->getMessages(new ListMessagesParamsData(cif: 'RO 1234 5678', days: 10)), 'checkSimpleList', RateLimitScope::SimpleList, '/listaMesajeFactura?'],
+            'paginated list' => [fn (EFacturaClient $c) => $c->getMessagesPaginated(new PaginatedMessagesParamsData(
+                cif: 'RO 1234 5678',
+                startTime: Carbon::now()->subDay()->getTimestampMs(),
+                endTime: Carbon::now()->getTimestampMs(),
+            )), 'checkPaginatedList', RateLimitScope::PaginatedList, '/listaMesajePaginatieFactura?'],
         ]);
     });
 
@@ -363,49 +439,22 @@ describe('EFacturaClient', function () {
         })->throws(ValidationException::class, 'Page number must be at least 1');
     });
 
-    describe('validateXml validation', function () {
-        it('throws ValidationException for missing validation endpoint config', function () {
-            config()->set('efactura-sdk.endpoints.services.validate', null);
+    describe('service endpoint configuration', function () {
+        it('refuses a missing endpoint before refreshing the token or counting quota', function (string $key, Closure $call) {
+            config()->set("efactura-sdk.endpoints.services.{$key}", null);
+            $this->authenticator->shouldNotReceive('refreshAccessToken');
+            $this->rateLimiter->shouldNotReceive('checkGlobal');
+            Http::fake();
 
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'token',
-                refreshToken: 'refresh',
-                expiresAt: Carbon::now()->addHour(),
-            );
+            $client = new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->subMinute());
 
-            $client->validateXml('<xml/>', DocumentStandardType::FACT1);
-        })->throws(ValidationException::class, 'Missing configuration');
-    });
-
-    describe('verifySignature validation', function () {
-        it('throws ValidationException for missing verify_signature endpoint config', function () {
-            config()->set('efactura-sdk.endpoints.services.verify_signature', null);
-
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'token',
-                refreshToken: 'refresh',
-                expiresAt: Carbon::now()->addHour(),
-            );
-
-            $client->verifySignature('<xml/>', '<ds:Signature/>');
-        })->throws(ValidationException::class, 'Missing configuration');
-    });
-
-    describe('convertXmlToPdf validation', function () {
-        it('throws ValidationException for missing transform endpoint config', function () {
-            config()->set('efactura-sdk.endpoints.services.transform', null);
-
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'token',
-                refreshToken: 'refresh',
-                expiresAt: Carbon::now()->addHour(),
-            );
-
-            $client->convertXmlToPdf('<xml/>', DocumentStandardType::FACT1);
-        })->throws(ValidationException::class, 'Missing configuration');
+            expect(fn () => $call($client))->toThrow(ValidationException::class, 'Missing configuration');
+            Http::assertNothingSent();
+        })->with([
+            'validateXml' => ['validate', fn (EFacturaClient $c) => $c->validateXml('<xml/>', DocumentStandardType::FACT1)],
+            'verifySignature' => ['verify_signature', fn (EFacturaClient $c) => $c->verifySignature('<xml/>', '<ds:Signature/>')],
+            'convertXmlToPdf' => ['transform', fn (EFacturaClient $c) => $c->convertXmlToPdf('<xml/>', DocumentStandardType::FACT1)],
+        ]);
     });
 
     describe('RASP rate limiting', function () {
@@ -807,6 +856,34 @@ describe('EFacturaClient', function () {
             expect($attempts)->toBe(3);
         });
 
+        it('meters a retry only after an attempt that may have reached ANAF', function (array $answers, int $metered, bool $succeeds) {
+            $attempt = 0;
+            Http::fake(function () use (&$attempt, $answers) {
+                $answer = $answers[$attempt++];
+                if ($answer === 'dns') {
+                    throw curlFailure(6, 'Could not resolve host: api.anaf.ro');
+                }
+
+                return $answer === 500
+                    ? Http::response('Server Error', 500)
+                    : Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="1"/>', 200);
+            });
+            $this->rateLimiter->shouldReceive('checkGlobal')->times($metered)->andReturn(null);
+            $this->rateLimiter->shouldReceive('checkStatusQuery')->times($metered)->with('12345')->andReturn(null);
+
+            $client = new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour());
+
+            if ($succeeds) {
+                expect($client->getStatusMessage('12345')->idDescarcare)->toBe('1');
+            } else {
+                expect(fn () => $client->getStatusMessage('12345'))->toThrow(RequestNotSentException::class);
+            }
+            expect($attempt)->toBe(3);
+        })->with([
+            'dns x3' => [['dns', 'dns', 'dns'], 1, false],
+            '500, dns, ok' => [[500, 'dns', 'ok'], 2, true],
+        ]);
+
         it('does not leak one call\'s endpoint bucket into the next call\'s retries', function () {
             // The retry hook has to be re-armed per logical call. A status poll that
             // retried must not keep charging checkStatusQuery while a later
@@ -905,8 +982,6 @@ describe('EFacturaClient', function () {
                 '*' => Http::response(['error' => 'Unauthorized'], 401),
             ]);
 
-            // We need to test that the context is preserved, but the rateLimiter mock
-            // interferes. Instead, we verify the behavior through exception catching.
             $client = new EFacturaClient(
                 vatNumber: '12345678',
                 accessToken: 'token',
@@ -922,7 +997,9 @@ describe('EFacturaClient', function () {
                 expect($e->getPrevious())->toBeInstanceOf(ApiException::class)
                     // The message should indicate auth failure
                     ->and($e->getMessage())->toContain('Authentication failed')
-                    ->and($e->getCode())->toBe(401);
+                    ->and($e->getCode())->toBe(401)
+                    ->and($e->context)->toBe($e->getPrevious()->context)
+                    ->and($e->context)->toHaveKey('route');
             }
         })->with([
             'status (call)' => [fn (EFacturaClient $client) => $client->getStatusMessage('12345')],
@@ -932,70 +1009,28 @@ describe('EFacturaClient', function () {
     });
 
     describe('UploadOptionsData integration', function () {
-        it('uses default standard when options is null', function () {
-            Http::fake([
-                '*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="12345"/>', 200),
-            ]);
+        it('sends the upload to its route with exactly the expected query', function (string $method, ?UploadOptionsData $options, string $route, array $query) {
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="12345"/>', 200)]);
 
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'token',
-                refreshToken: 'refresh',
-                expiresAt: Carbon::now()->addHour(),
-            );
+            (new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->{$method}('<Invoice/>', $options);
 
-            $result = $client->uploadDocument('<Invoice/>');
+            Http::assertSent(function ($request) use ($route, $query) {
+                parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $sent);
 
-            Http::assertSent(function ($request) {
-                return str_contains($request->url(), 'standard=UBL');
+                return parse_url($request->url(), PHP_URL_PATH) === '/test/FCTEL/rest/'.$route && $sent === $query;
             });
-        });
-
-        it('includes extern parameter when set', function () {
-            Http::fake([
-                '*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="12345"/>', 200),
-            ]);
-
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'token',
-                refreshToken: 'refresh',
-                expiresAt: Carbon::now()->addHour(),
-            );
-
-            $options = new UploadOptionsData(extern: true);
-
-            $result = $client->uploadDocument('<Invoice/>', $options);
-
-            Http::assertSent(function ($request) {
-                return str_contains($request->url(), 'extern=DA');
-            });
-        });
-
-        it('includes selfBilled parameter when set', function () {
-            Http::fake([
-                '*' => Http::response('<?xml version="1.0"?><header ExecutionStatus="0" index_incarcare="12345"/>', 200),
-            ]);
-
-            $client = new EFacturaClient(
-                vatNumber: '12345678',
-                accessToken: 'token',
-                refreshToken: 'refresh',
-                expiresAt: Carbon::now()->addHour(),
-            );
-
-            $options = new UploadOptionsData(selfBilled: true);
-
-            $result = $client->uploadDocument('<Invoice/>', $options);
-
-            Http::assertSent(function ($request) {
-                return str_contains($request->url(), 'autofactura=DA');
-            });
-        });
+        })->with([
+            'upload, no options' => ['uploadDocument', null, 'upload', ['standard' => 'UBL', 'cif' => '12345678']],
+            'B2C, no options' => ['uploadB2CDocument', null, 'uploadb2c', ['standard' => 'UBL', 'cif' => '12345678']],
+            'upload, every option' => ['uploadDocument', new UploadOptionsData(standard: StandardType::RASP, extern: true, selfBilled: true, executare: true), 'upload',
+                ['standard' => 'RASP', 'cif' => '12345678', 'extern' => 'DA', 'autofactura' => 'DA', 'executare' => 'DA']],
+            'B2C, every option' => ['uploadB2CDocument', new UploadOptionsData(standard: StandardType::RASP, extern: true, selfBilled: true, executare: true), 'uploadb2c',
+                ['standard' => 'RASP', 'cif' => '12345678', 'extern' => 'DA', 'autofactura' => 'DA', 'executare' => 'DA']],
+        ]);
     });
 
     describe('convertXmlToPdf error handling', function () {
-        it('throws ApiException with details when JSON response contains error', function () {
+        it("surfaces ANAF's eroare from a non-2xx PDF answer", function () {
             // Configure the transform endpoint
             config()->set('efactura-sdk.endpoints.services.transform', 'https://api.example.com/transform');
 
@@ -1110,8 +1145,10 @@ describe('EFacturaClient', function () {
                 expiresAt: Carbon::now()->addHour(),
             );
 
-            $client->downloadDocument('12345');
-        })->throws(ApiException::class, 'Nu existe niciun mesaj cu id-ul=12345');
+            expect(fn () => $client->downloadDocument('12345'))
+                ->toThrow(fn (ApiException $e) => expect($e->getMessage())->toContain('Nu existe niciun mesaj cu id-ul=12345')
+                    ->and($e->statusCode)->toBe(200));
+        });
 
         it('reads ANAF\'s message from a BOM-prefixed JSON error body', function () {
             Http::fake(['*' => Http::response("\u{FEFF}{\"eroare\":\"Id_descarcare cu BOM\"}", 200, ['Content-Type' => 'application/json'])]);
@@ -1199,8 +1236,10 @@ describe('EFacturaClient', function () {
                 expiresAt: Carbon::now()->addHour(),
             );
 
-            $client->downloadDocument('12345');
-        })->throws(ApiException::class, 'did not return a ZIP archive');
+            expect(fn () => $client->downloadDocument('12345'))
+                ->toThrow(fn (ApiException $e) => expect($e->getMessage())->toContain('did not return a ZIP archive')
+                    ->and($e->statusCode)->toBe(200));
+        });
 
         it('returns the download when the body is a real ZIP', function () {
             // "PK\x03\x04" - the local file header signature every ZIP starts with.
@@ -1225,6 +1264,18 @@ describe('EFacturaClient', function () {
             expect($result->content)->toBe($zip);
             expect($result->filename)->toBe('12345.zip');
         });
+
+        it('keeps only the base name of the suggested filename', function (string $header, ?string $expected) {
+            Http::fake(['*' => Http::response("PK\x03\x04zip", 200, ['Content-Type' => 'application/zip', 'Content-Disposition' => "attachment; filename=\"{$header}\""])]);
+
+            expect((new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->downloadDocument('12345')->filename)->toBe($expected);
+        })->with([
+            'parent path' => ['../../.env', '.env'],
+            'windows path' => ['..\\..\\x.zip', 'x.zip'],
+            'dot dot' => ['..', null],
+            'root' => ['/', null],
+            'plain name' => ['document.zip', 'document.zip'],
+        ]);
 
         it('accepts an empty ZIP archive', function () {
             // "PK\x05\x06" - end-of-central-directory, i.e. a valid empty archive.
@@ -1417,6 +1468,14 @@ describe('EFacturaClient', function () {
             'a long answer' => [$long = '{"r":"'.str_repeat('a', 493).'ș'.str_repeat('b', 100).'"}', substr($long, 0, 499)],
         ]);
 
+        it('throws for a verifySignature answer that is not a JSON object', function () {
+            Http::fake(['*' => Http::response('Semnatura valida', 200, ['Content-Type' => 'text/plain'])]);
+
+            expect(fn () => (new EFacturaClient('12345678', 'token', 'refresh', Carbon::now()->addHour()))->verifySignature('<Invoice/>', '<ds:Signature/>'))
+                ->toThrow(fn (ApiException $e) => expect($e->getMessage())->toBe('Unable to parse validation response')
+                    ->and($e->statusCode)->toBe(200));
+        });
+
         it('reads a verifySignature answer in a validare shape with the validare parser', function () {
             Http::fake(['*' => Http::response(['Messages' => [['message' => 'E: semnatura invalida']]], 200)]);
 
@@ -1519,6 +1578,21 @@ describe('EFacturaClient', function () {
             $result = $client->getStatusMessage('12345');
 
             expect($client->wasTokenRefreshed())->toBeTrue();
+        });
+
+        it('refreshes a token that would expire before the last retry is sent', function () {
+            // 2 retries x (60 s timeout + 5 s delay) + 30 s: a 160 s buffer.
+            config()->set('efactura-sdk.http.timeout', 60);
+            config()->set('efactura-sdk.http.retry_times', 3);
+            config()->set('efactura-sdk.http.retry_delay', 5);
+            $this->authenticator->shouldReceive('refreshAccessToken')->once()->andReturn(new OAuthTokensData('new-access-token', 'new-refresh-token', Carbon::now()->addHour()));
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200)]);
+
+            $client = new EFacturaClient('12345678', 'old-access-token', 'refresh', Carbon::now()->addSeconds(150));
+            $client->getStatusMessage('12345');
+
+            expect($client->wasTokenRefreshed())->toBeTrue();
+            Http::assertSent(fn ($request) => $request->header('Authorization') === ['Bearer new-access-token']);
         });
 
         it('does not refresh when its own token is still valid', function () {
@@ -2112,8 +2186,10 @@ describe('EFacturaClient', function () {
                 refreshToken: 'refresh',
                 expiresAt: Carbon::now()->addHour(),
             );
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200)]);
 
-            expect($client->getVatNumber())->toBe('12345678');
+            expect($client->getVatNumber())->toBe('12345678')
+                ->and($client->getStatusMessage('12345')->idDescarcare)->toBe('12345');
         });
 
         it('accepts explicit authenticator in constructor', function () {
@@ -2131,16 +2207,23 @@ describe('EFacturaClient', function () {
         });
 
         it('accepts explicit authenticator in fromTokens', function () {
+            app()->forgetInstance(AnafAuthenticatorInterface::class);
+            app()->bind(AnafAuthenticatorInterface::class, fn () => throw new AuthenticationException('container used'));
             $mockAuthenticator = Mockery::mock(AnafAuthenticatorInterface::class);
+            $mockAuthenticator->shouldReceive('refreshAccessToken')->once()->with('refresh-token')
+                ->andReturn(new OAuthTokensData('new-access-token', 'new-refresh-token', Carbon::now()->addHour()));
+            Http::fake(['*' => Http::response('<?xml version="1.0"?><header stare="ok" id_descarcare="12345"/>', 200)]);
             $tokens = new OAuthTokensData(
                 accessToken: 'access-token',
                 refreshToken: 'refresh-token',
-                expiresAt: Carbon::now()->addHour(),
+                expiresAt: Carbon::now()->subMinute(),
             );
 
             $client = EFacturaClient::fromTokens('12345678', $tokens, $mockAuthenticator);
+            $client->getStatusMessage('12345');
 
-            expect($client->getVatNumber())->toBe('12345678');
+            expect($client->wasTokenRefreshed())->toBeTrue()
+                ->and($client->getTokens()->accessToken)->toBe('new-access-token');
         });
 
         it('resolves authenticator lazily when token refresh is needed', function () {

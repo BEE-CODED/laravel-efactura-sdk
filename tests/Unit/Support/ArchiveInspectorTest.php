@@ -181,6 +181,13 @@ describe('content', function () {
 
         expect(archiveFailure(fn () => $this->inspector->verify($archive, UBL_INVOICE)))->toBeInstanceOf(ArchiveMismatchException::class);
     });
+
+    it('accepts an archive holding the upload byte for byte when a number is not a plain decimal', function (string $doc) {
+        $this->inspector->verify(zipOf(['a.xml' => $doc]), $doc);
+    })->with([
+        'plus sign' => str_replace('>297.50<', '>+297.50<', UBL_INVOICE),
+        'padded' => str_replace('>297.50<', '> 297.50 <', UBL_INVOICE),
+    ])->throwsNoExceptions();
 });
 
 describe('UblDocumentComparator', function () {

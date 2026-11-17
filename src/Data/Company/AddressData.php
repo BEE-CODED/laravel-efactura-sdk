@@ -57,6 +57,11 @@ class AddressData extends Data
      */
     public static function fromHeadquartersResponse(array $data): self
     {
+        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
+        if (! array_key_exists('sdenumire_Strada', $data) && array_key_exists('street', $data)) {
+            return self::factory()->withoutMagicalCreation()->from($data);
+        }
+
         return new self(
             street: AnafValue::text($data['sdenumire_Strada'] ?? null),
             streetNumber: AnafValue::text($data['snumar_Strada'] ?? null),
@@ -78,6 +83,11 @@ class AddressData extends Data
      */
     public static function fromFiscalDomicileResponse(array $data): self
     {
+        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
+        if (! array_key_exists('ddenumire_Strada', $data) && array_key_exists('street', $data)) {
+            return self::factory()->withoutMagicalCreation()->from($data);
+        }
+
         return new self(
             street: AnafValue::text($data['ddenumire_Strada'] ?? null),
             streetNumber: AnafValue::text($data['dnumar_Strada'] ?? null),

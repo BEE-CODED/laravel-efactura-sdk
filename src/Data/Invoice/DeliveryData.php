@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
+use BeeCoded\EFacturaSdk\Support\DateHelper;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Spatie\LaravelData\Data;
@@ -60,7 +61,7 @@ class DeliveryData extends Data
     /**
      * Return the actual delivery date as a copy, or null if omitted.
      *
-     * @throws \InvalidArgumentException If the date string cannot be parsed
+     * @throws \InvalidArgumentException If the date string is blank, unparseable or impossible (2024-02-30, 24:00)
      */
     public function getActualDeliveryDateAsCarbon(): ?Carbon
     {
@@ -69,11 +70,7 @@ class DeliveryData extends Data
         }
 
         try {
-            if (trim($this->actualDeliveryDate) === '') {
-                throw new \InvalidArgumentException('An actual delivery date cannot be empty.');
-            }
-
-            return Carbon::parse($this->actualDeliveryDate);
+            return DateHelper::parse($this->actualDeliveryDate);
         } catch (\Exception $e) {
             throw new \InvalidArgumentException("Invalid actual delivery date format: {$this->actualDeliveryDate}", 0, $e);
         }

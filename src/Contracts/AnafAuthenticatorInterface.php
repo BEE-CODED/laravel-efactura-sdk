@@ -23,6 +23,8 @@ interface AnafAuthenticatorInterface
      *
      * @param  AuthUrlSettingsData|null  $settings  Optional settings including scope and state data
      * @return string The full authorization URL
+     *
+     * @throws AuthenticationException When the OAuth configuration is missing (code 0)
      */
     public function getAuthorizationUrl(?AuthUrlSettingsData $settings = null): string;
 
@@ -32,9 +34,9 @@ interface AnafAuthenticatorInterface
      * @param  string  $code  The authorization code received from ANAF callback
      * @return OAuthTokensData The token data containing access and refresh tokens
      *
-     * @throws AuthenticationException When the code exchange fails
+     * @throws AuthenticationException When the code exchange fails or the OAuth configuration is missing (code 0)
      */
-    public function exchangeCodeForToken(string $code): OAuthTokensData;
+    public function exchangeCodeForToken(#[\SensitiveParameter] string $code): OAuthTokensData;
 
     /**
      * Refresh an expired access token using a refresh token.
@@ -42,16 +44,18 @@ interface AnafAuthenticatorInterface
      * @param  string  $refreshToken  The refresh token to use
      * @return OAuthTokensData New token data with refreshed access token
      *
-     * @throws AuthenticationException When the token refresh fails
+     * @throws AuthenticationException When the token refresh fails or the OAuth configuration is missing (code 0)
      */
-    public function refreshAccessToken(string $refreshToken): OAuthTokensData;
+    public function refreshAccessToken(#[\SensitiveParameter] string $refreshToken): OAuthTokensData;
 
     /**
      * Decode the state parameter returned from OAuth callback.
      *
      * IMPORTANT: For CSRF protection, you MUST validate the state parameter
      * in your OAuth callback handler. The decoded state should match
-     * what you originally provided to getAuthorizationUrl().
+     * what you originally provided to getAuthorizationUrl(): compare the decoded
+     * token with hash_equals against the server-side copy, which also holds the company.
+     * The README's OAuth steps show the whole callback.
      *
      * @param  string  $encodedState  The base64-encoded state from the callback
      * @return array<string, mixed> The decoded state data

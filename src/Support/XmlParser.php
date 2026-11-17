@@ -121,6 +121,12 @@ final class XmlParser
             return null;
         }
 
+        if (preg_match('/<!\s*(DOCTYPE|ENTITY)/i', $xml) === 1) {
+            self::$lastParseException = new XmlParsingException('The response declares a DOCTYPE or entity', $xml);
+
+            return null;
+        }
+
         try {
             $reader = new Reader;
             $reader->xml($xml);
@@ -416,20 +422,21 @@ final class XmlParser
             /** @var array<string, mixed> $content */
             $content = isset($raspuns[0]) && is_array($raspuns[0]) ? $raspuns[0] : $raspuns;
 
+            $errorDetail = $content['Error'] ?? $content['eroare'] ?? null;
+            $errorMessage = $errorDetail === null ? null : (is_array($errorDetail) && isset($errorDetail['mesaj'])
+                ? self::extractTextValue($errorDetail['mesaj'])
+                : self::extractTextValue($errorDetail));
+
             if (isset($content['id_descarcare']) || isset($content['stare'])) {
                 return [
                     'stare' => isset($content['stare']) ? self::extractTextValue($content['stare']) : null,
                     'idDescarcare' => isset($content['id_descarcare']) ? self::extractTextValue($content['id_descarcare']) : null,
-                    'errors' => null,
+                    // Kept next to a verdict, as in the <header> form; a blank one is dropped.
+                    'errors' => AnafValue::errors($errorMessage),
                 ];
             }
 
-            $errorDetail = $content['Error'] ?? $content['eroare'] ?? null;
             if ($errorDetail !== null) {
-                $errorMessage = is_array($errorDetail) && isset($errorDetail['mesaj'])
-                    ? self::extractTextValue($errorDetail['mesaj'])
-                    : self::extractTextValue($errorDetail);
-
                 return [
                     'stare' => null,
                     'idDescarcare' => null,

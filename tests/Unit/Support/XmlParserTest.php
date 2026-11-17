@@ -367,3 +367,17 @@ XML;
         expect(XmlParser::extractErrorMessage($xml))->toBe('Nested error found');
     });
 });
+
+describe('DOCTYPE and entity declarations', function () {
+    it('refuses a response that declares a DOCTYPE or an entity', function (string $xml) {
+        expect(fn () => XmlParser::parseUploadResponse($xml))->toThrow(XmlParsingException::class)
+            ->and(fn () => XmlParser::parseStatusResponse($xml))->toThrow(XmlParsingException::class);
+    })->with([
+        'entity' => '<!DOCTYPE h [<!ENTITY a "1">]><header ExecutionStatus="0" index_incarcare="&a;"/>',
+        'doctype' => '<!DOCTYPE header><header stare="ok"/>',
+    ]);
+
+    it('reads no error message from a response that declares a DOCTYPE', function () {
+        expect(XmlParser::extractErrorMessage('<!DOCTYPE h><header><Errors errorMessage="x"/></header>'))->toBeNull();
+    });
+});

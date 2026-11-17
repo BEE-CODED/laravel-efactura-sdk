@@ -28,28 +28,15 @@ class SplitVatData extends Data
      */
     public static function fromAnafResponse(array $data): self
     {
+        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
+        if (! array_key_exists('statusSplitTVA', $data) && array_key_exists('cancelDate', $data)) {
+            return self::factory()->withoutMagicalCreation()->from($data);
+        }
+
         return new self(
             isActive: AnafValue::flag($data['statusSplitTVA'] ?? null),
-            startDate: self::parseDate($data['dataInceputSplitTVA'] ?? null),
-            cancelDate: self::parseDate($data['dataAnulareSplitTVA'] ?? null),
+            startDate: AnafValue::date($data['dataInceputSplitTVA'] ?? null),
+            cancelDate: AnafValue::date($data['dataAnulareSplitTVA'] ?? null),
         );
-    }
-
-    /**
-     * Parse a date string from ANAF response.
-     */
-    private static function parseDate(mixed $date): ?Carbon
-    {
-        $date = AnafValue::text($date);
-
-        if ($date === null || trim($date) === '') {
-            return null;
-        }
-
-        try {
-            return Carbon::parse($date);
-        } catch (\Exception) {
-            return null;
-        }
     }
 }

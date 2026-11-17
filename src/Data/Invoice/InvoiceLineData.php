@@ -166,7 +166,8 @@ class InvoiceLineData extends Data
         return $this->exactLineTotal()->plus($this->exactTaxAmount())->toFloat();
     }
 
-    private function exactLineTotal(): BigDecimal
+    /** @internal The line net exactly as cbc:LineExtensionAmount files it. */
+    public function exactLineTotal(): BigDecimal
     {
         return Amount::parse($this->quantity, 6, 'quantity')
             ->multipliedBy(Amount::parse($this->unitPrice, 6, 'unitPrice'))

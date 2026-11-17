@@ -12,7 +12,8 @@ use Spatie\LaravelData\Data;
 class AuthUrlSettingsData extends Data
 {
     /**
-     * @param  array<string, mixed>|null  $state  State data to encode in the authorization URL
+     * @param  array<string, mixed>|null  $state  Encoded into the authorization URL; readable and editable by the user.
+     *                                            Put only a random CSRF token here.
      * @param  string|null  $scope  OAuth scope
      */
     public function __construct(

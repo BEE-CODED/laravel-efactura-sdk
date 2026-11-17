@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Support;
 
+use Carbon\Carbon;
+
 /**
  * Normalises raw ANAF values before they reach a typed DTO property.
  *
@@ -67,7 +69,9 @@ final class AnafValue
     }
 
     /**
-     * A whole number: an int, a whole float or a string of digits (optionally signed).
+     * A whole number: an int, a whole float or a decimal integer string such as "3600"
+     * (surrounding whitespace and a leading minus are allowed; a plus sign, a leading zero
+     * or a value outside the int range is not). Anything else is null.
      */
     public static function int(mixed $value): ?int
     {
@@ -84,6 +88,14 @@ final class AnafValue
         }
 
         return null;
+    }
+
+    /**
+     * An ANAF calendar date, exactly Y-m-d or d.m.Y, at midnight in the app timezone; anything else is null.
+     */
+    public static function date(mixed $value): ?Carbon
+    {
+        return is_string($value) ? (DateHelper::exact($value, 'Y-m-d') ?? DateHelper::exact($value, 'd.m.Y')) : null;
     }
 
     /**

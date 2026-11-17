@@ -43,31 +43,18 @@ class VatPeriodData extends Data
      */
     public static function fromAnafResponse(array $data): self
     {
+        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
+        if (! array_key_exists('data_inceput_ScpTVA', $data) && array_key_exists('startDate', $data)) {
+            return self::factory()->withoutMagicalCreation()->from($data);
+        }
+
         $message = $data['mesaj_ScpTVA'] ?? null;
 
         return new self(
-            startDate: self::parseDate($data['data_inceput_ScpTVA'] ?? null),
-            endDate: self::parseDate($data['data_sfarsit_ScpTVA'] ?? null),
-            cancellationDate: self::parseDate($data['data_anul_imp_ScpTVA'] ?? null),
+            startDate: AnafValue::date($data['data_inceput_ScpTVA'] ?? null),
+            endDate: AnafValue::date($data['data_sfarsit_ScpTVA'] ?? null),
+            cancellationDate: AnafValue::date($data['data_anul_imp_ScpTVA'] ?? null),
             message: is_string($message) && trim($message) !== '' ? $message : null,
         );
-    }
-
-    /**
-     * Parse a date string from ANAF response.
-     */
-    private static function parseDate(mixed $date): ?Carbon
-    {
-        $date = AnafValue::text($date);
-
-        if ($date === null || trim($date) === '') {
-            return null;
-        }
-
-        try {
-            return Carbon::parse($date);
-        } catch (\Exception) {
-            return null;
-        }
     }
 }

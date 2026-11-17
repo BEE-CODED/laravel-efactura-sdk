@@ -183,6 +183,10 @@ describe('getIssueDateAsCarbon exception handling', function () {
             expect($e->getPrevious())->not->toBeNull();
         }
     });
+
+    it('rejects a blank issue date instead of reading it as now', function (string $blank) {
+        createTestInvoice([], ['issueDate' => $blank])->getIssueDateAsCarbon();
+    })->with(['', '   '])->throws(InvalidArgumentException::class, 'Invalid issue date format');
 });
 
 describe('getInvoiceTypeCode', function () {

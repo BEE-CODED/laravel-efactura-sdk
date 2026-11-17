@@ -30,30 +30,17 @@ class InactiveStatusData extends Data
      */
     public static function fromAnafResponse(array $data): self
     {
+        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
+        if (! array_key_exists('statusInactivi', $data) && array_key_exists('isInactive', $data)) {
+            return self::factory()->withoutMagicalCreation()->from($data);
+        }
+
         return new self(
             isInactive: AnafValue::flag($data['statusInactivi'] ?? null),
-            inactiveDate: self::parseDate($data['dataInactivare'] ?? null),
-            reactivationDate: self::parseDate($data['dataReactivare'] ?? null),
-            publishDate: self::parseDate($data['dataPublicare'] ?? null),
-            deregistrationDate: self::parseDate($data['dataRadiere'] ?? null),
+            inactiveDate: AnafValue::date($data['dataInactivare'] ?? null),
+            reactivationDate: AnafValue::date($data['dataReactivare'] ?? null),
+            publishDate: AnafValue::date($data['dataPublicare'] ?? null),
+            deregistrationDate: AnafValue::date($data['dataRadiere'] ?? null),
         );
-    }
-
-    /**
-     * Parse a date string from ANAF response.
-     */
-    private static function parseDate(mixed $date): ?Carbon
-    {
-        $date = AnafValue::text($date);
-
-        if ($date === null || trim($date) === '') {
-            return null;
-        }
-
-        try {
-            return Carbon::parse($date);
-        } catch (\Exception) {
-            return null;
-        }
     }
 }

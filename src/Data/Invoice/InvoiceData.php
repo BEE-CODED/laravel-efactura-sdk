@@ -7,6 +7,7 @@ namespace BeeCoded\EFacturaSdk\Data\Invoice;
 use BeeCoded\EFacturaSdk\Enums\InvoiceTypeCode;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 use BeeCoded\EFacturaSdk\Support\Amount;
+use BeeCoded\EFacturaSdk\Support\DateHelper;
 use Brick\Math\BigDecimal;
 use Brick\Math\RoundingMode;
 use Carbon\Carbon;
@@ -102,8 +103,8 @@ class InvoiceData extends Data
      * also make this library's rounding authoritative over the caller's ledger,
      * which already holds the BNR-rate figure that must be declared.
      *
-     * Supplied in the same positive sense as the per-line tax amounts; the
-     * builder sign-flips it for credit notes alongside them.
+     * Supplied with the same sign as the per-line taxAmount values; the builder
+     * sign-flips it for credit notes alongside them.
      */
     public float|string|null $taxAmountRon = null;
 
@@ -256,7 +257,7 @@ class InvoiceData extends Data
     /**
      * Return the caller's VAT applicability date as a copy, or null if omitted.
      *
-     * @throws \InvalidArgumentException If the date string cannot be parsed
+     * @throws \InvalidArgumentException If the date string is blank, unparseable or impossible (2024-02-30, 24:00)
      */
     public function getTaxPointDateAsCarbon(): ?Carbon
     {
@@ -269,11 +270,7 @@ class InvoiceData extends Data
         }
 
         try {
-            if (trim($this->taxPointDate) === '') {
-                throw new \InvalidArgumentException('A tax point date cannot be empty.');
-            }
-
-            return Carbon::parse($this->taxPointDate);
+            return DateHelper::parse($this->taxPointDate);
         } catch (\Exception $e) {
             throw new \InvalidArgumentException(
                 "Invalid tax point date format: {$this->taxPointDate}",
@@ -287,7 +284,7 @@ class InvoiceData extends Data
      * Get the issue date as a Carbon instance.
      * Returns a copy to prevent mutation of the original date.
      *
-     * @throws \InvalidArgumentException If the date string cannot be parsed
+     * @throws \InvalidArgumentException If the date string is blank, unparseable or impossible (2024-02-30, 24:00)
      */
     public function getIssueDateAsCarbon(): Carbon
     {
@@ -296,7 +293,7 @@ class InvoiceData extends Data
         }
 
         try {
-            return Carbon::parse($this->issueDate);
+            return DateHelper::parse($this->issueDate);
         } catch (\Exception $e) {
             throw new \InvalidArgumentException(
                 "Invalid issue date format: {$this->issueDate}",
@@ -310,7 +307,7 @@ class InvoiceData extends Data
      * Get the due date as a Carbon instance (or null if not set).
      * Returns a copy to prevent mutation of the original date.
      *
-     * @throws \InvalidArgumentException If the date string is blank or cannot be parsed
+     * @throws \InvalidArgumentException If the date string is blank, unparseable or impossible (2024-02-30, 24:00)
      */
     public function getDueDateAsCarbon(): ?Carbon
     {
@@ -323,11 +320,7 @@ class InvoiceData extends Data
         }
 
         try {
-            if (trim($this->dueDate) === '') {
-                throw new \InvalidArgumentException('A due date cannot be empty.');
-            }
-
-            return Carbon::parse($this->dueDate);
+            return DateHelper::parse($this->dueDate);
         } catch (\Exception $e) {
             throw new \InvalidArgumentException(
                 "Invalid due date format: {$this->dueDate}",
@@ -464,7 +457,7 @@ class InvoiceData extends Data
     {
         $total = BigDecimal::zero();
         foreach ($this->lines as $line) {
-            $total = $total->plus(Amount::parse($line->quantity, 6, 'quantity')->multipliedBy(Amount::parse($line->unitPrice, 6, 'unitPrice'))->toScale(2, RoundingMode::HalfUp));
+            $total = $total->plus($line->exactLineTotal());
         }
 
         return $total;

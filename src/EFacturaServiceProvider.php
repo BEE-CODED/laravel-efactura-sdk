@@ -13,6 +13,7 @@ use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use BeeCoded\EFacturaSdk\Services\UblBuilder;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Support\Arr;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -54,10 +55,11 @@ final class EFacturaServiceProvider extends ServiceProvider
             'efactura-sdk'
         );
 
+        $this->normaliseConfig();
+
         // Authenticator for OAuth flow (stateless - returns tokens to caller)
-        // Note: The AnafAuthenticator constructor validates all OAuth credentials (client_id,
-        // client_secret, redirect_uri) and throws AuthenticationException if any are missing.
-        // Only resolve this service when you need OAuth functionality.
+        // Resolving it never throws: the OAuth credentials (client_id, client_secret,
+        // redirect_uri) and endpoints are checked on first use, so it can be injected anywhere.
         $this->app->singleton(AnafAuthenticatorInterface::class, function ($app) {
             return new AnafAuthenticator(
                 http: $app->make(HttpFactory::class),
@@ -91,6 +93,47 @@ final class EFacturaServiceProvider extends ServiceProvider
         $this->app->alias(AnafAuthenticatorInterface::class, 'efactura-sdk.auth');
         $this->app->alias(AnafDetailsClientInterface::class, 'efactura-sdk.anaf-details');
         $this->app->alias(UblBuilderInterface::class, 'efactura-sdk.ubl');
+    }
+
+    /**
+     * Turn the raw env() values into what the readers expect, once at register (also with a
+     * cached config, which skips mergeConfigFrom). Idempotent. A missing key falls back to its
+     * reader's own default, so a blank or malformed value is removed rather than defaulted here.
+     * A config()->set() after register() is not normalised; the readers' own guards cover it.
+     */
+    private function normaliseConfig(): void
+    {
+        $config = $this->app->make('config');
+        $sdk = (array) $config->get('efactura-sdk', []);
+
+        // A blank env line must not select production or turn limiting off: only false or 0 does.
+        foreach (['sandbox', 'rate_limits.enabled'] as $key) {
+            Arr::set($sdk, $key, ! in_array(Arr::get($sdk, $key), [false, 0, '0'], true));
+        }
+
+        // A blank retry_times used to mean one attempt; a negative retry_delay made sleep() throw.
+        foreach (['http.retry_times' => 1, 'http.retry_delay' => 0] as $key => $min) {
+            $value = filter_var(Arr::get($sdk, $key), FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE);
+            if ($value === null) {
+                Arr::forget($sdk, $key);
+            } else {
+                Arr::set($sdk, $key, max($min, $value));
+            }
+        }
+
+        // Only a blank or non-integer limit is removed; 0 and negatives stay so the limiter refuses them.
+        foreach ((array) Arr::get($sdk, 'rate_limits', []) as $name => $limit) {
+            if ($name !== 'enabled' && filter_var($limit, FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE) === null) {
+                Arr::forget($sdk, "rate_limits.{$name}");
+            }
+        }
+
+        // Log::channel('') builds the emergency logger on every call; null is the host's default channel.
+        if (Arr::get($sdk, 'logging.channel') === '') {
+            Arr::set($sdk, 'logging.channel', null);
+        }
+
+        $config->set('efactura-sdk', $sdk);
     }
 
     /**

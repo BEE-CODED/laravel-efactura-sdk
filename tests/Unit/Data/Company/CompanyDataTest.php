@@ -136,15 +136,18 @@ describe('CompanyData', function () {
             expect($company->deregistrationDate)->toBeNull();
         });
 
-        it('sets isDeregistered false when deregistration date is invalid', function () {
+        it('sets isDeregistered false when deregistration date is invalid', function (string $date) {
             $company = CompanyData::fromAnafResponse([
                 'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
-                'stare_inactiv' => ['dataRadiere' => 'not-a-date'],
+                'stare_inactiv' => ['dataRadiere' => $date],
             ]);
 
             expect($company->isDeregistered)->toBeFalse();
             expect($company->deregistrationDate)->toBeNull();
-        });
+        })->with([
+            'not a date' => ['not-a-date'],
+            'no such day' => ['2024-02-31'],
+        ]);
 
         it('sets isDeregistered false when stare_inactiv is missing', function () {
             $company = CompanyData::fromAnafResponse([
@@ -192,6 +195,7 @@ describe('CompanyData', function () {
             'ISO' => ['RADIERE din data 2024-03-29', '2024-03-29'],
             'dotted' => ['RADIERE din data 29.03.2024', '2024-03-29'],
             'not a date' => ['RADIERE din data 31.02.2024', null],
+            'upper case' => ['RADIERE DIN DATA 29.03.2024', '2024-03-29'],
         ]);
 
         it('parses INREGISTRAT status as registered and active', function () {
@@ -363,6 +367,34 @@ describe('CompanyData', function () {
             ]);
 
             expect($company->vatRegistrationDate->format('Y-m-d'))->toBe('2020-01-15');
+        });
+
+        it('reads a period date only when it is an exact calendar date', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+                'inregistrare_scop_Tva' => [
+                    'perioade_TVA' => [
+                        ['data_inceput_ScpTVA' => '2024-02-31', 'data_sfarsit_ScpTVA' => 'tomorrow'],
+                    ],
+                ],
+            ]);
+
+            expect($company->vatPeriods[0]->startDate)->toBeNull()
+                ->and($company->vatPeriods[0]->endDate)->toBeNull()
+                ->and($company->vatRegistrationDate)->toBeNull();
+        });
+
+        it('reads a dotted period date', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+                'inregistrare_scop_Tva' => [
+                    'perioade_TVA' => [
+                        ['data_inceput_ScpTVA' => '15.03.2024'],
+                    ],
+                ],
+            ]);
+
+            expect($company->vatRegistrationDate?->format('Y-m-d'))->toBe('2024-03-15');
         });
 
         it('defaults to empty vatPeriods when absent', function () {
@@ -604,6 +636,17 @@ describe('CompanyLookupResultData', function () {
 
             expect($result->getByCui('RO12345678'))->not->toBeNull();
             expect($result->getByCui('ro12345678'))->not->toBeNull();
+        });
+
+        it('finds a spaced CUI and refuses one the lookup refuses', function () {
+            $company = CompanyData::fromAnafResponse([
+                'date_generale' => ['cui' => '12345678', 'denumire' => 'Test'],
+            ]);
+
+            $result = CompanyLookupResultData::success([$company]);
+
+            expect($result->getByCui(' RO 1234 5678 '))->toBe($company)
+                ->and($result->getByCui('012345678'))->toBeNull();
         });
 
         it('returns null when not found', function () {

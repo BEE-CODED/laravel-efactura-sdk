@@ -7,22 +7,17 @@ namespace BeeCoded\EFacturaSdk\Services;
 use BeeCoded\EFacturaSdk\Enums\RateLimitScope;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\RateLimitStore;
+use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Rate limiter for ANAF e-Factura API.
  *
  * Uses Laravel's native RateLimiter counters to enforce limits at multiple levels:
- * - Global: 500/minute (ANAF limit: 1000)
- * - Per endpoint/CUI/message combinations
+ * global, and per endpoint/CUI/message combinations.
  *
- * Defaults are set to 50% of ANAF's actual limits for safety, with one exception:
- * company_lookup_per_second is 1, which is 100% of ANAF's 1 req/sec cap. A 50%
- * margin is unrepresentable as an integer limit over a 1-second window. That one
- * lookup is counted over a 2-second window, so stores that expire keys at whole
- * seconds (database, file, memcached) still keep lookups at least 1 s apart.
- * status_per_day_message_provider (default 100) is ANAF's full status limit on purpose:
- * it applies only to status reads that opt in with $useProviderLimit.
+ * The defaults, the fixed windows and the invalid-value rule are described once, in
+ * the rate_limits comment of config/efactura-sdk.php.
  *
  * Note: counts with increment-then-check (RateLimitStore::attemptOrFail()), so
  * concurrent workers cannot both take the last unit on a cache store with an atomic
@@ -132,8 +127,8 @@ class RateLimiter
     }
 
     /**
-     * Validate cache driver is suitable for rate limiting.
-     * Logs warnings for drivers that may not work correctly.
+     * Warn when the store behind Laravel's rate limiter (cache.limiter, else cache.default)
+     * cannot hold the limits across processes.
      */
     private function validateCacheDriver(): void
     {
@@ -141,16 +136,18 @@ class RateLimiter
             return;
         }
 
-        $cacheDriver = config('cache.default');
+        // Judge the limiter's own store by its driver, not the default store by its name.
+        $store = config('cache.limiter') ?? config('cache.default');
+        $driver = config("cache.stores.{$store}.driver", $store);
 
-        // Warn about drivers that don't persist across requests/processes
-        if (in_array($cacheDriver, ['null', 'array'], true)) {
+        // null/array are not shared between processes; file increments without a lock, so concurrent workers can overshoot.
+        if (in_array($driver, ['null', 'array', 'file'], true)) {
             try {
                 Log::channel(config('efactura-sdk.logging.channel', 'efactura-sdk'))->warning(
-                    "EFactura SDK rate limiting may not work correctly with '{$cacheDriver}' cache driver. ".
-                    'Rate limits will not persist across requests. '.
-                    'Consider using redis, memcached, or database cache driver for production.',
-                    ['cache_driver' => $cacheDriver]
+                    "EFactura SDK rate limits may not hold on the '{$store}' cache store ({$driver} driver): ".
+                    'its counters are not shared or not incremented atomically across processes. '.
+                    'Use a redis, memcached or database store for production.',
+                    ['cache_store' => $store, 'cache_driver' => $driver]
                 );
             } catch (\Throwable) {
                 // A failing log handler must never stop the client from being built.
@@ -184,7 +181,8 @@ class RateLimiter
             throw new RateLimitExceededException(
                 "Global rate limit exceeded ({$this->globalPerMinute}/minute). Please wait before retrying.",
                 remaining: 0,
-                retryAfterSeconds: $this->minuteStore->availableIn($key),
+                // A window in its last fraction of a second reports availableIn=0; never return a 0 wait.
+                retryAfterSeconds: max($this->minuteStore->availableIn($key), 1),
                 scope: RateLimitScope::Global,
             );
         }
@@ -214,8 +212,7 @@ class RateLimiter
             throw new RateLimitExceededException(
                 "Company lookup rate limit exceeded ({$this->companyLookupPerSecond} per 2 seconds). Please wait before retrying.",
                 remaining: 0,
-                // A freshly-tripped window can report availableIn=0; clamp to 1
-                // so retryAfterSeconds is never the misleading 0.
+                // A window in its last fraction of a second reports availableIn=0; never return a 0 wait.
                 retryAfterSeconds: max($this->secondStore->availableIn($key), 1),
                 scope: RateLimitScope::CompanyLookup,
             );
@@ -334,6 +331,11 @@ class RateLimiter
     {
         $statusLimit = $useProviderLimit ? $this->statusPerDayMessageProvider : $this->statusPerDayMessage;
 
+        // The client meters a per-CUI limit on the canonical CUI, so every spelling of it shares that counter.
+        if (in_array($scope, [RateLimitScope::RaspUpload, RateLimitScope::SimpleList, RateLimitScope::PaginatedList], true)) {
+            $identifier = VatNumberValidator::canonical($identifier) ?? $identifier;
+        }
+
         [$label, $key, $limit, $message] = match ($scope) {
             RateLimitScope::RaspUpload => ['CUI', "rasp_upload:{$identifier}", $this->raspUploadPerDayCui,
                 "RASP upload limit exceeded for CUI {$identifier} ({$this->raspUploadPerDayCui}/day)."],
@@ -363,7 +365,8 @@ class RateLimiter
         throw new RateLimitExceededException(
             $message,
             remaining: 0,
-            retryAfterSeconds: $this->dailyStore->availableIn($key),
+            // A window in its last fraction of a second reports availableIn=0; never return a 0 wait.
+            retryAfterSeconds: max($this->dailyStore->availableIn($key), 1),
             scope: $scope,
         );
     }
@@ -373,7 +376,8 @@ class RateLimiter
      *
      * @param  string  $type  The rate limit type ('global', 'company_lookup', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download')
      * @param  string  $identifier  The identifier (CUI or message ID) - required for all types
-     *                              except 'global' and 'company_lookup', which are single buckets
+     *                              except 'global' and 'company_lookup', which are single buckets;
+     *                              a CUI is read as its canonical digits (spaces and an RO prefix ignored)
      * @param  bool  $useProviderLimit  For 'status' only: report the same counter against ANAF's own
      *                                  ceiling (status_per_day_message_provider); other types ignore it
      * @return array{limit: int, remaining: int, resetsIn: int}
@@ -382,60 +386,36 @@ class RateLimiter
      */
     public function getRemainingQuota(string $type, string $identifier = '', bool $useProviderLimit = false): array
     {
-        // Validate type first
-        $validTypes = ['global', 'company_lookup', 'rasp_upload', 'status', 'simple_list', 'paginated_list', 'download'];
-        if (! in_array($type, $validTypes, true)) {
-            throw new \InvalidArgumentException("Unknown rate limit type: {$type}");
-        }
+        $scope = RateLimitScope::tryFrom($type) ?? throw new \InvalidArgumentException("Unknown rate limit type: {$type}");
 
-        // Validate identifier for types that require it. 'global' and
-        // 'company_lookup' are single buckets - the limit is per request, not per
-        // CUI or message - so they take no identifier.
-        $singleBucketTypes = ['global', 'company_lookup'];
-        if (! in_array($type, $singleBucketTypes, true) && trim($identifier) === '') {
-            throw new \InvalidArgumentException(
-                "Identifier is required for rate limit type: {$type}"
-            );
-        }
-
-        $statusLimit = $useProviderLimit ? $this->statusPerDayMessageProvider : $this->statusPerDayMessage;
-
-        return match ($type) {
-            'global' => [
+        // 'global' and 'company_lookup' are single buckets: the limit is per request, not per CUI or message.
+        if ($scope === RateLimitScope::Global) {
+            return [
                 'limit' => $this->globalPerMinute,
                 'remaining' => $this->minuteStore->getRemaining('global', $this->globalPerMinute),
                 'resetsIn' => $this->minuteStore->availableIn('global'),
-            ],
-            'company_lookup' => [
+            ];
+        }
+
+        if ($scope === RateLimitScope::CompanyLookup) {
+            return [
                 'limit' => $this->companyLookupPerSecond,
                 'remaining' => $this->secondStore->getRemaining('company_lookup', $this->companyLookupPerSecond),
                 'resetsIn' => $this->secondStore->availableIn('company_lookup'),
-            ],
-            'rasp_upload' => [
-                'limit' => $this->raspUploadPerDayCui,
-                'remaining' => $this->dailyStore->getRemaining("rasp_upload:{$identifier}", $this->raspUploadPerDayCui),
-                'resetsIn' => $this->dailyStore->availableIn("rasp_upload:{$identifier}"),
-            ],
-            'status' => [
-                'limit' => $statusLimit,
-                'remaining' => $this->dailyStore->getRemaining("status:{$identifier}", $statusLimit),
-                'resetsIn' => $this->dailyStore->availableIn("status:{$identifier}"),
-            ],
-            'simple_list' => [
-                'limit' => $this->simpleListPerDayCui,
-                'remaining' => $this->dailyStore->getRemaining("list_simple:{$identifier}", $this->simpleListPerDayCui),
-                'resetsIn' => $this->dailyStore->availableIn("list_simple:{$identifier}"),
-            ],
-            'paginated_list' => [
-                'limit' => $this->paginatedListPerDayCui,
-                'remaining' => $this->dailyStore->getRemaining("list_paginated:{$identifier}", $this->paginatedListPerDayCui),
-                'resetsIn' => $this->dailyStore->availableIn("list_paginated:{$identifier}"),
-            ],
-            'download' => [
-                'limit' => $this->downloadPerDayMessage,
-                'remaining' => $this->dailyStore->getRemaining("download:{$identifier}", $this->downloadPerDayMessage),
-                'resetsIn' => $this->dailyStore->availableIn("download:{$identifier}"),
-            ],
-        };
+            ];
+        }
+
+        if (trim($identifier) === '') {
+            throw new \InvalidArgumentException("Identifier is required for rate limit type: {$type}");
+        }
+
+        // The same key and limit the check spends, so the two can never diverge.
+        [$key, $limit] = $this->endpointBucket($scope, $identifier, $useProviderLimit);
+
+        return [
+            'limit' => $limit,
+            'remaining' => $this->dailyStore->getRemaining($key, $limit),
+            'resetsIn' => $this->dailyStore->availableIn($key),
+        ];
     }
 }

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use BeeCoded\EFacturaSdk\Enums\CompanyLookupFailureKind;
 use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
@@ -80,6 +81,16 @@ describe('AnafDetailsClient', function () {
 
             expect($client->exposedRetryDelay())->toBe(5);
             expect($client->exposedMaxTryCount())->toBe(3);
+        });
+
+        it('makes its own try count of attempts over the configured retry_times', function () {
+            config()->set('efactura-sdk.http.retry_times', 3);
+            config()->set('efactura-sdk.http.retry_delay', 0);
+            Http::fake(['*' => Http::response('Server Error', 500)]);
+
+            (new AnafDetailsClient(tries: 1))->getCompanyData('RO18547290');
+
+            Http::assertSentCount(1);
         });
     });
 
@@ -301,6 +312,20 @@ describe('AnafDetailsClient', function () {
             expect($result->invalidCodes)->toContain('abc123');
         });
 
+        it('sends each canonical CUI once and reports every other element as invalid', function () {
+            $sent = [];
+            Http::fake(function ($request) use (&$sent) {
+                $sent = $request->data();
+
+                return Http::response(['found' => [], 'notFound' => [18547290, 12]], 200);
+            });
+
+            $result = (new AnafDetailsClient)->batchGetCompanyData([18547290, 'RO 1854 7290', '99999999999', '018547290', '0000000000012', '12', null]);
+
+            expect(array_column($sent, 'cui'))->toBe([18547290, 12])
+                ->and($result->invalidCodes)->toBe(['99999999999', '018547290', '0000000000012', 'null']);
+        });
+
         it('fails when all codes are invalid', function () {
             Http::preventStrayRequests();
 
@@ -422,6 +447,20 @@ describe('rate limiting', function () {
 
         expect(fn () => (new AnafDetailsClient)->getCompanyData('12345678'))
             ->toThrow(RateLimitExceededException::class);
+    });
+
+    it('reports a limiter store failure before sending as a transport failure', function () {
+        $rateLimiter = Mockery::mock(RateLimiter::class);
+        $rateLimiter->shouldReceive('checkCompanyLookup')->andThrow(new RuntimeException('cache store down'));
+        app()->instance(RateLimiter::class, $rateLimiter);
+
+        Http::fake();
+
+        $result = (new AnafDetailsClient)->getCompanyData('RO18547290');
+
+        expect($result->success)->toBeFalse()
+            ->and($result->failureKind)->toBe(CompanyLookupFailureKind::Transport);
+        Http::assertNothingSent();
     });
 
     it('consumes a lookup token for every HTTP attempt, including retries', function () {

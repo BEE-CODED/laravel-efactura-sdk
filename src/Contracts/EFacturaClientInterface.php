@@ -17,6 +17,7 @@ use BeeCoded\EFacturaSdk\Data\Response\ValidationResultData;
 use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
+use BeeCoded\EFacturaSdk\Exceptions\RateLimitExceededException;
 use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
 
 /**
@@ -28,7 +29,8 @@ use BeeCoded\EFacturaSdk\Exceptions\ValidationException;
  *
  * Token Management:
  * - Tokens are passed in via constructor (stateless design)
- * - Auto-refresh occurs when tokens are expired (with 120-second buffer)
+ * - Auto-refresh occurs when tokens are about to expire: at least 120 seconds before, more when
+ *   http.timeout, retry_times or retry_delay make one call's retries outlast that
  * - Use wasTokenRefreshed() to check if tokens were refreshed
  * - Use getTokens() to get the current (potentially refreshed) tokens
  */
@@ -41,9 +43,10 @@ interface EFacturaClientInterface
      * @param  UploadOptionsData|null  $options  Optional upload options (standard, extern, selfBilled, executare)
      * @return UploadResponseData Contains the upload index whenever ANAF took the document in
      *
-     * @throws ValidationException When XML content is empty or invalid
+     * @throws ValidationException When XML content is empty or whitespace only
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function uploadDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData;
 
@@ -56,9 +59,10 @@ interface EFacturaClientInterface
      * @param  UploadOptionsData|null  $options  Optional upload options
      * @return UploadResponseData Contains the upload index whenever ANAF took the document in
      *
-     * @throws ValidationException When XML content is empty or invalid
+     * @throws ValidationException When XML content is empty or whitespace only
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function uploadB2CDocument(string $xml, ?UploadOptionsData $options = null): UploadResponseData;
 
@@ -74,6 +78,7 @@ interface EFacturaClientInterface
      * @throws ValidationException When upload ID is empty or invalid
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function getStatusMessage(string $uploadId): StatusResponseData;
 
@@ -88,6 +93,7 @@ interface EFacturaClientInterface
      * @throws ValidationException When download ID is empty or invalid
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function downloadDocument(string $downloadId): DownloadResponseData;
 
@@ -103,6 +109,7 @@ interface EFacturaClientInterface
      * @throws ValidationException When parameters are invalid
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails, or the 2xx body is not a JSON object
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function getMessages(ListMessagesParamsData $params): ListMessagesResponseData;
 
@@ -117,6 +124,7 @@ interface EFacturaClientInterface
      * @throws ValidationException When parameters are invalid
      * @throws AuthenticationException When authentication fails
      * @throws ApiException When API call fails, or the 2xx body is not a JSON object
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function getMessagesPaginated(PaginatedMessagesParamsData $params): PaginatedMessagesResponseData;
 
@@ -129,9 +137,10 @@ interface EFacturaClientInterface
      * @param  DocumentStandardType  $standard  Document standard (FACT1 for invoice, FCN for credit note)
      * @return ValidationResultData Contains validation result and any errors
      *
-     * @throws ValidationException When XML content is empty
+     * @throws ValidationException When XML content is empty or endpoints.services.validate is not configured
      * @throws AuthenticationException When authentication fails
-     * @throws ApiException When API call fails
+     * @throws ApiException When the call fails, or the 2xx body is not JSON or is a bare JSON scalar
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function validateXml(string $xml, DocumentStandardType $standard): ValidationResultData;
 
@@ -139,16 +148,20 @@ interface EFacturaClientInterface
      * Verify the Ministry of Finance signature on an invoice (ANAF's validate/signature service).
      *
      * Both files come from the archive downloadDocument() returns.
-     * ANAF documents no answer: it is read like a validation answer, and when nothing
-     * in it is read, details holds its first 500 bytes.
+     * ANAF documents no answer, so it is read like a validation answer.
+     * A JSON object or array in another shape reads as valid: false (not proof of a bad signature);
+     * when nothing in it is read, details holds its first 500 bytes.
+     * A 2xx body that is not JSON, or is a bare JSON scalar, throws ApiException
+     * (ANAF's statusCode, typically 200), as validateXml() does.
      *
      * @param  string  $xml  The invoice XML
      * @param  string  $signature  The XML holding the signature applied to that invoice
      * @return ValidationResultData Contains signature verification result
      *
-     * @throws ValidationException When either XML is empty
+     * @throws ValidationException When either XML is empty or endpoints.services.verify_signature is not configured
      * @throws AuthenticationException When authentication fails
-     * @throws ApiException When API call fails
+     * @throws ApiException When the call fails, or the 2xx body is not JSON or is a bare JSON scalar
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function verifySignature(string $xml, string $signature): ValidationResultData;
 
@@ -156,16 +169,18 @@ interface EFacturaClientInterface
      * Convert XML invoice to PDF format.
      *
      * Transforms the UBL XML invoice into a human-readable PDF document.
-     * Includes validation before conversion.
+     * ANAF validates the XML first only when $validate is true; the default posts to {standard}/DA,
+     * which skips validation.
      *
      * @param  string  $xml  The XML content to convert
      * @param  DocumentStandardType  $standard  Document standard (FACT1 for invoice, FCN for credit note)
      * @param  bool  $validate  Whether to validate before conversion (default: false)
      * @return string Binary PDF content
      *
-     * @throws ValidationException When XML content is empty or validation fails
+     * @throws ValidationException When XML content is empty or endpoints.services.transform is not configured
      * @throws AuthenticationException When authentication fails
-     * @throws ApiException When API call fails
+     * @throws ApiException When ANAF refuses the document (a JSON error), answers with something other than a PDF, or the call fails
+     * @throws RateLimitExceededException When an SDK rate limit is exhausted (not an ApiException: catch it first)
      */
     public function convertXmlToPdf(string $xml, DocumentStandardType $standard, bool $validate = false): string;
 

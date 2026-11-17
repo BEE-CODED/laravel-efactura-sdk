@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace BeeCoded\EFacturaSdk\Data\Company;
 
 use BeeCoded\EFacturaSdk\Enums\CompanyLookupFailureKind;
+use BeeCoded\EFacturaSdk\Support\Validators\VatNumberValidator;
 use Spatie\LaravelData\Data;
 
 /**
@@ -101,17 +102,13 @@ class CompanyLookupResultData extends Data
     }
 
     /**
-     * Get company by CUI.
+     * Get company by CUI, read through VatNumberValidator::canonical(); null for a CUI the lookup refuses.
      */
     public function getByCui(string $cui): ?CompanyData
     {
-        // Remove RO prefix case-insensitively (proper prefix removal, not character set)
-        if (str_starts_with(strtoupper($cui), 'RO')) {
-            $cui = substr($cui, 2);
-        }
+        $cui = VatNumberValidator::canonical($cui);
 
-        // Guard against empty CUI after prefix removal (e.g., input was just "RO")
-        if ($cui === '') {
+        if ($cui === null) {
             return null;
         }
 

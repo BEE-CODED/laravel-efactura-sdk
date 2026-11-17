@@ -52,6 +52,14 @@ describe('formatForAnaf', function () {
     it('throws exception for invalid date string', function () {
         DateHelper::formatForAnaf('not-a-date');
     })->throws(InvalidArgumentException::class, 'Invalid date provided');
+
+    it('refuses a blank string, an impossible date or an impossible clock time instead of rolling it over', function (string $date) {
+        DateHelper::formatForAnaf($date);
+    })->with(['2024-02-31', '2024-13-45', '', '2024-01-01 24:00:00'])->throws(InvalidArgumentException::class, 'Invalid date provided');
+
+    it('reads a Y-m-d date with a trailing newline as that date', function () {
+        expect(DateHelper::formatForAnaf("2024-01-15\n"))->toBe('2024-01-15');
+    });
 });
 
 describe('isValidAnafFormat', function () {
@@ -66,6 +74,11 @@ describe('isValidAnafFormat', function () {
         expect(DateHelper::isValidAnafFormat('15-03-2024'))->toBeFalse();
         expect(DateHelper::isValidAnafFormat('invalid'))->toBeFalse();
         expect(DateHelper::isValidAnafFormat(''))->toBeFalse();
+    });
+
+    it('returns false for an impossible date or a trailing newline', function () {
+        expect(DateHelper::isValidAnafFormat('2024-02-31'))->toBeFalse()
+            ->and(DateHelper::isValidAnafFormat("2024-01-15\n"))->toBeFalse();
     });
 });
 
@@ -108,6 +121,10 @@ describe('getDayRange', function () {
         expect($range['start'])->toBe($startOfDay->getTimestamp() * 1000);
         expect($range['end'])->toBe($endOfDay->getTimestamp() * 1000 + 999);
     });
+
+    it('refuses a day that does not exist', function () {
+        DateHelper::getDayRange('2024-02-30');
+    })->throws(InvalidArgumentException::class, 'Invalid date provided');
 });
 
 describe('isValidDaysParameter', function () {

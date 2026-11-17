@@ -72,11 +72,6 @@ class InvoiceBuilder
     private const DEFAULT_COUNTRY_CODE = 'RO';
 
     /**
-     * Default unit code (each).
-     */
-    private const DEFAULT_UNIT_CODE = 'EA';
-
-    /**
      * VAT tax scheme ID.
      */
     private const VAT_SCHEME_ID = 'VAT';
@@ -296,7 +291,7 @@ class InvoiceBuilder
         //
         // The instruction is therefore emitted for a due date OR an IBAN, not for
         // an IBAN alone; otherwise a credit note's due date is silently dropped.
-        $iban = $input->paymentIban !== null && $input->paymentIban !== '' ? $input->paymentIban : null;
+        $iban = $this->filled($input->paymentIban);
         $paymentDueDate = $isCreditNote ? $input->getDueDateAsCarbon() : null;
 
         if ($iban !== null || $paymentDueDate !== null) {
@@ -376,21 +371,16 @@ class InvoiceBuilder
             throw new ValidationException(__('efactura-sdk::validation.currency_code_invalid'));
         }
 
-        $this->validateParty($input->supplier, 'Supplier');
-        $this->validateParty($input->customer, 'Customer');
+        $this->validateParty($input->supplier, __('efactura-sdk::validation.roles.Supplier'));
+        $this->validateParty($input->customer, __('efactura-sdk::validation.roles.Customer'));
 
         // BR-RO-L1000: seller additional legal information (BT-33)
         if ($input->supplier->registrationNumber !== null && mb_strlen($input->supplier->registrationNumber) > 1000) {
-            throw new ValidationException(__('efactura-sdk::validation.party_registration_number_max_length', ['role' => 'Supplier']));
+            throw new ValidationException(__('efactura-sdk::validation.party_registration_number_max_length', ['role' => __('efactura-sdk::validation.roles.Supplier')]));
         }
 
         if ($input->lines === []) {
             throw new ValidationException(__('efactura-sdk::validation.at_least_one_line_required'));
-        }
-
-        // BR-RO-A999: at most 999 lines
-        if (count($input->lines) > 999) {
-            throw new ValidationException(__('efactura-sdk::validation.lines_max_count'));
         }
 
         foreach ($input->lines as $index => $line) {
@@ -407,6 +397,19 @@ class InvoiceBuilder
         $dueDateMissing = $input->dueDate === null || (is_string($input->dueDate) && trim($input->dueDate) === '');
         if (! $input->getInvoiceTypeCode()->isCreditNote() && $dueDateMissing && $input->getTotalIncludingVat() > 0) {
             throw new ValidationException(__('efactura-sdk::validation.due_date_required_for_positive_payable'));
+        }
+
+        // Read every header date here, so a blank, unparseable or impossible one is a translated refusal like BT-26/BT-72.
+        foreach ([
+            'issue_date_invalid' => [$input->issueDate, $input->getIssueDateAsCarbon(...)],
+            'due_date_invalid' => [$input->dueDate, $input->getDueDateAsCarbon(...)],
+            'tax_point_date_invalid' => [$input->taxPointDate, $input->getTaxPointDateAsCarbon(...)],
+        ] as $key => [$value, $read]) {
+            try {
+                $read();
+            } catch (\InvalidArgumentException $e) {
+                throw new ValidationException(__('efactura-sdk::validation.'.$key, ['date' => (string) $value]), previous: $e);
+            }
         }
     }
 
@@ -460,7 +463,7 @@ class InvoiceBuilder
             foreach ($roles as $role => $party) {
                 $vatNumber = VatNumberValidator::withCountryPrefix($party->companyId, $party->address->countryCode);
                 if (! $party->isVatPayer || preg_match('/^[A-Z]{2}[A-Z0-9]+$/D', $vatNumber) !== 1) {
-                    throw new ValidationException(__('efactura-sdk::validation.category_vat_identifier_required', ['role' => $role, 'category' => $category]));
+                    throw new ValidationException(__('efactura-sdk::validation.category_vat_identifier_required', ['role' => __('efactura-sdk::validation.roles.'.$role), 'category' => $category]));
                 }
             }
         }
@@ -583,7 +586,7 @@ class InvoiceBuilder
         $this->actualDeliveryDate($input);
         if ($input->delivery?->address !== null) {
             // A deliver-to address needs a street, city and county for every country.
-            $this->validateAddress($input->delivery->address, 'Delivery', requireCounty: true);
+            $this->validateAddress($input->delivery->address, __('efactura-sdk::validation.roles.Delivery'), requireCounty: true);
         }
     }
 
@@ -679,15 +682,6 @@ class InvoiceBuilder
             throw new ValidationException(__('efactura-sdk::validation.party_street_max_length', ['role' => $role]));
         }
 
-        if (trim($address->city) === '') {
-            throw new ValidationException(__('efactura-sdk::validation.party_city_required', ['role' => $role]));
-        }
-
-        // BR-RO-L050: City name max 50 characters
-        if (mb_strlen($address->city) > 50) {
-            throw new ValidationException(__('efactura-sdk::validation.party_city_max_length', ['role' => $role]));
-        }
-
         // BR-RO-L020: Postal code max 20 characters (optional field)
         if ($address->postalZone !== null && $address->postalZone !== '' && mb_strlen($address->postalZone) > 20) {
             throw new ValidationException(__('efactura-sdk::validation.party_postal_code_max_length', ['role' => $role]));
@@ -706,6 +700,15 @@ class InvoiceBuilder
             if ($address->countryCode === self::DEFAULT_COUNTRY_CODE) {
                 throw new ValidationException(__('efactura-sdk::validation.party_county_required_ro', ['role' => $role]));
             }
+        }
+
+        // BR-RO-L050 measures the CityName as filed: a Bucharest address files SECTORn whatever city was given.
+        $city = AddressSanitizer::canonicalize($address)['city'];
+        if (trim($city) === '') {
+            throw new ValidationException(__('efactura-sdk::validation.party_city_required', ['role' => $role]));
+        }
+        if (mb_strlen($city) > 50) {
+            throw new ValidationException(__('efactura-sdk::validation.party_city_max_length', ['role' => $role]));
         }
     }
 
@@ -726,7 +729,11 @@ class InvoiceBuilder
         $unitPrice = Amount::parse($line->unitPrice, self::QUANTITY_PRECISION, "lines.$index.unitPrice");
         $taxAmount = Amount::parse($line->taxAmount, self::QUANTITY_PRECISION, "lines.$index.taxAmount");
         $taxPercent = Amount::parse($line->taxPercent, self::AMOUNT_PRECISION, "lines.$index.taxPercent");
-        $line->getTaxCategory($isSupplierVatPayer);
+        try {
+            $line->getTaxCategory($isSupplierVatPayer);
+        } catch (ValidationException $e) {
+            throw new ValidationException(__('efactura-sdk::validation.line_prefixed', ['lineNum' => $lineNum, 'message' => $e->getMessage()]), previous: $e);
+        }
 
         if (trim($line->name) === '') {
             throw new ValidationException(__('efactura-sdk::validation.line_item_name_required', ['lineNum' => $lineNum]));
@@ -740,6 +747,12 @@ class InvoiceBuilder
         // BR-RO-L200: Item description max 200 characters
         if ($line->description !== null && mb_strlen($line->description) > 200) {
             throw new ValidationException(__('efactura-sdk::validation.line_item_description_max_length', ['lineNum' => $lineNum]));
+        }
+
+        // BR-CL-23: the shape of every UN/ECE Rec. 20/21 code in ANAF's list; the list itself is ANAF's to check.
+        // An empty code is refused too: guessing a unit would file the wrong quantity.
+        if (preg_match('/^[A-Z0-9]{2,3}$/D', $line->unitCode) !== 1) {
+            throw new ValidationException(__('efactura-sdk::validation.line_unit_code_invalid', ['lineNum' => $lineNum, 'unitCode' => $line->unitCode]));
         }
 
         // Allow negative quantities for credit notes, but not zero
@@ -880,9 +893,7 @@ class InvoiceBuilder
      */
     private function calculateLineExtension(InvoiceLineData $line, bool $isCreditNote = false): BigDecimal
     {
-        $amount = Amount::parse($line->quantity, self::QUANTITY_PRECISION, 'quantity')
-            ->multipliedBy(Amount::parse($line->unitPrice, self::QUANTITY_PRECISION, 'unitPrice'))
-            ->toScale(self::AMOUNT_PRECISION, RoundingMode::HalfUp);
+        $amount = $line->exactLineTotal();
 
         return $isCreditNote ? $amount->negated() : $amount;
     }
@@ -907,10 +918,22 @@ class InvoiceBuilder
     }
 
     /**
+     * @throws ValidationException When the value is blank
+     */
+    private function refuseBlank(string $element, string $value): void
+    {
+        // ANAF rejects an element filed blank; every value is written through the two helpers below.
+        if (trim($value) === '') {
+            throw new ValidationException(__('efactura-sdk::validation.element_blank', ['element' => $element]));
+        }
+    }
+
+    /**
      * Write a simple element with a namespace.
      */
     private function writeElement(Writer $writer, string $namespace, string $localName, string $value): void
     {
+        $this->refuseBlank($localName, $value);
         $writer->writeElement('{'.$namespace.'}'.$localName, $value);
     }
 
@@ -926,8 +949,10 @@ class InvoiceBuilder
         string $value,
         array $attributes
     ): void {
+        $this->refuseBlank($localName, $value);
         $writer->startElement('{'.$namespace.'}'.$localName);
         foreach ($attributes as $attrName => $attrValue) {
+            $this->refuseBlank($localName.'/@'.$attrName, $attrValue);
             $writer->writeAttribute($attrName, $attrValue);
         }
         $writer->text($value);
@@ -992,8 +1017,8 @@ class InvoiceBuilder
         $this->writeElement($writer, self::NS_CBC, 'StreetName', $address->street);
         $this->writeElement($writer, self::NS_CBC, 'CityName', $city);
 
-        if ($address->postalZone !== null && $address->postalZone !== '') {
-            $this->writeElement($writer, self::NS_CBC, 'PostalZone', $address->postalZone);
+        if ($this->filled($address->postalZone) !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'PostalZone', (string) $address->postalZone);
         }
 
         if ($county !== null) {
@@ -1269,13 +1294,12 @@ class InvoiceBuilder
 
         // Invoiced/Credited quantity — negate for credit notes (ANAF treats CN as inherently negative)
         $quantity = Amount::parse($line->quantity, self::QUANTITY_PRECISION, 'quantity');
-        $unitCode = $line->unitCode ?: self::DEFAULT_UNIT_CODE;
         $this->writeElementWithAttributes(
             $writer,
             self::NS_CBC,
             $quantityElement,
             $this->formatQuantity($isCreditNote ? $quantity->negated() : $quantity),
-            ['unitCode' => $unitCode]
+            ['unitCode' => $line->unitCode]
         );
 
         // Line extension amount
@@ -1291,8 +1315,8 @@ class InvoiceBuilder
         // Item
         $writer->startElement('{'.self::NS_CAC.'}Item');
 
-        if ($line->description !== null && $line->description !== '') {
-            $this->writeElement($writer, self::NS_CBC, 'Description', $line->description);
+        if ($this->filled($line->description) !== null) {
+            $this->writeElement($writer, self::NS_CBC, 'Description', (string) $line->description);
         }
 
         $this->writeElement($writer, self::NS_CBC, 'Name', $line->name);

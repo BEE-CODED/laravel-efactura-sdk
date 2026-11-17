@@ -9,7 +9,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Set to true to use the ANAF sandbox/test environment.
-    | Set to false for production.
+    | Set to false (or 0) for production. A blank or any other value keeps the sandbox.
     |
     */
     'sandbox' => env('EFACTURA_SANDBOX', true),
@@ -35,6 +35,15 @@ return [
     |--------------------------------------------------------------------------
     |
     | Configuration for the HTTP client used to communicate with ANAF.
+    | A blank or non-integer retry value uses the default. retry_times below 1
+    | counts as 1, and a negative retry_delay counts as 0.
+    |
+    | retry_times: on an e-Factura call, a retry after an attempt that may have
+    | reached ANAF spends one unit of every limit the call draws on (global plus
+    | per-message or per-CUI); a retry after a provably unsent attempt spends
+    | nothing. A company lookup retry always spends one lookup unit. AnafAuthenticator
+    | uses the setting only to allow one immediate extra token request (when it
+    | is above 1) after a request that provably never left.
     |
     */
     'http' => [
@@ -57,6 +66,8 @@ return [
     |     'level' => 'debug',
     |     'days' => 30,
     | ],
+    |
+    | A blank channel logs to your default channel.
     |
     */
     'logging' => [
@@ -103,6 +114,16 @@ return [
     | status_per_day_message_provider is ANAF's full status limit on purpose: only
     | reads that opt in with useProviderLimit: true are checked against it.
     |
+    | Each window is fixed: it starts at the first counted call and does not slide
+    | (60 s global, 24 h per day, 2 s company lookup). Calls at the end of one window
+    | and the start of the next can add up to twice a limit, so the 50% defaults are
+    | the highest values that keep that worst case within ANAF's figures.
+    | status_per_day_message_provider at ANAF's full figure can reach 200 reads
+    | across a boundary.
+    |
+    | Only false or 0 turns limiting off. A blank or non-integer limit uses the
+    | default. 0 or a negative limit is refused when the client is built.
+    |
     | ANAF Official Limits:
     | - Global: 1000 calls/minute
     | - RASP upload: 1000/day/CUI
@@ -142,7 +163,7 @@ return [
         // This is the one default that is NOT halved: 1 is already ANAF's own cap,
         // and any lower integer would disable lookups entirely. It is counted over a
         // 2-second window so cache stores that expire keys at whole seconds
-        // (database, file, memcached) still keep lookups at least 1 s apart. A value N
+        // (database, file, memcached) still keep lookups at least 1 s apart (on Redis, 2 s). A value N
         // above 1 therefore allows N lookups per 2 s, not per second.
         'company_lookup_per_second' => env('EFACTURA_RATE_LIMIT_COMPANY_LOOKUP', 1),
     ],

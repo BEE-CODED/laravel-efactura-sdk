@@ -133,8 +133,9 @@ class StatusResponseData extends Data
 
     /**
      * What this answer means for the document. Ready and Rejected require a download id
-     * of 1 to 64 digits; with any other id (or none) they are ...WithoutDownloadId, which
-     * is no verdict on the document.
+     * of 1 to 64 digits; with any other id (or none) they are ...WithoutDownloadId:
+     * RejectedWithoutDownloadId is no verdict on the document; ReadyWithoutDownloadId is an
+     * ok without an archive, which the caller records as accepted or parks.
      */
     public function verdict(): StatusVerdict
     {

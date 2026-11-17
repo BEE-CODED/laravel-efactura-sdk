@@ -81,21 +81,10 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
     /**
      * {@inheritdoc}
-     *
-     * Reads the same efactura-sdk.http.* config as the timeout above. Company
-     * lookups are reads, so retrying them is always safe.
-     */
-    protected function getRetryDelay(): int
-    {
-        return (int) (config('efactura-sdk.http.retry_delay') ?? self::RETRY_DELAY);
-    }
-
-    /**
-     * {@inheritdoc}
      */
     protected function getMaxTryCount(): int
     {
-        return $this->tries ?? (int) (config('efactura-sdk.http.retry_times') ?? self::MAX_TRY_COUNT);
+        return $this->tries ?? parent::getMaxTryCount();
     }
 
     /**
@@ -117,9 +106,11 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
      * every attempt inside that same window, so counting the retries as a single
      * lookup puts the SDK over a hard cap it believes it is respecting.
      *
+     * Every retry is charged, sent or not: this bucket is ANAF's full cap with no margin, so it stays conservative.
+     *
      * @throws RateLimitExceededException When the retry would exceed the 1 req/sec cap
      */
-    protected function onRetryAttempt(): void
+    protected function onRetryAttempt(bool $previousAttemptDelivered): void
     {
         $this->rateLimiter->checkCompanyLookup();
     }
@@ -158,6 +149,8 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
     /**
      * {@inheritdoc}
      *
+     * @param  array<mixed>  $vatCodes
+     *
      * @throws RateLimitExceededException When the 1 req/sec lookup limit is exceeded
      */
     public function batchGetCompanyData(array $vatCodes): CompanyLookupResultData
@@ -172,24 +165,20 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
         $invalidCodes = [];
 
         foreach ($vatCodes as $vatCode) {
-            if (empty($vatCode) || strlen(trim($vatCode)) < 2) {
-                $invalidCodes[] = $vatCode;
+            $cui = is_int($vatCode) || is_string($vatCode) ? VatNumberValidator::canonical($vatCode) : null;
+
+            if ($cui === null) {
+                $invalidCodes[] = is_int($vatCode) || is_string($vatCode) ? (string) $vatCode : get_debug_type($vatCode);
 
                 continue;
             }
 
-            $cuiNumber = $this->extractCuiNumber($vatCode);
-            if ($cuiNumber === null) {
-                $invalidCodes[] = $vatCode;
-
-                continue;
-            }
-
-            // Each CUI once (RO prefix already stripped): ANAF answers per entry, and the
-            // strict check needs every requested CUI answered exactly once.
-            if (! in_array($cuiNumber, array_column($validatedPayload, 'cui'), true)) {
+            // Each CUI once, deduped on its canonical form: ANAF answers per entry, and the
+            // strict check needs every requested CUI answered exactly once. canonical() keeps
+            // the length at 10 digits or a CNP shape, so the int cast is exact.
+            if (! in_array((int) $cui, array_column($validatedPayload, 'cui'), true)) {
                 $validatedPayload[] = [
-                    'cui' => $cuiNumber,
+                    'cui' => (int) $cui,
                     'data' => $requestDate,
                 ];
             }
@@ -219,12 +208,10 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             $requestDate
         ));
 
-        // Enforce ANAF's 1 req/sec limit. Outside the try/catch below so a breach
-        // propagates as RateLimitExceededException (consistent with EFacturaClient),
-        // rather than being swallowed into a failure() result.
-        $this->rateLimiter->checkCompanyLookup();
-
         try {
+            // Enforce ANAF's 1 req/sec limit.
+            $this->rateLimiter->checkCompanyLookup();
+
             // Make the API call - the endpoint URL is the base URL itself
             // Use callRaw because the ANAF API expects a JSON array body, not key-value pairs
             $jsonBody = json_encode($validatedPayload);
@@ -253,10 +240,9 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
 
             return $this->resultFrom($data, array_column($validatedPayload, 'cui'), $requestDate, $invalidCodes, false);
         } catch (RateLimitExceededException $e) {
-            // onRetryAttempt() consumes the lookup bucket from INSIDE this try block,
-            // so unlike the pre-flight check above, a breach raised mid-retry would be
-            // swallowed by the catch-all below and reported as a lookup failure.
-            // Rethrow so a rate limit always surfaces as one, wherever it is tripped.
+            // The limiter runs inside this try (first attempt and retries alike): a refusal is
+            // rethrown so it always surfaces as a rate limit; a failing store falls to the
+            // catch-all as a Transport failure, nothing sent.
             throw $e;
         } catch (ApiException $e) {
             // ANAF's own overload refusal: a rate limit, not a lookup failure. ANAF sends no
@@ -289,16 +275,6 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
                 $e->getMessage(),
                 $e->statusCode
             ));
-
-            // Handle specific error cases
-            if (str_contains(strtolower($e->getMessage()), 'network') ||
-                str_contains(strtolower($e->getMessage()), 'connection')) {
-                return CompanyLookupResultData::failure(
-                    'Network error: Could not connect to ANAF service.',
-                    $invalidCodes,
-                    CompanyLookupFailureKind::Transport
-                );
-            }
 
             return CompanyLookupResultData::failure(
                 'An error occurred while contacting the ANAF service: '.$e->getMessage(),
@@ -380,7 +356,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             foreach (['dataInactivare', 'dataReactivare', 'dataPublicare', 'dataRadiere'] as $field) {
                 $value = $inactive[$field] ?? null;
 
-                if ($value !== null && $value !== '' && (! is_string($value) || ! self::isValidDate($value))) {
+                if ($value !== null && $value !== '' && AnafValue::date($value) === null) {
                     return false;
                 }
             }
@@ -410,20 +386,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
             return false;
         }
 
-        return ! isset($matches[1]) || self::isValidDate($matches[1]);
-    }
-
-    private static function isValidDate(string $date): bool
-    {
-        foreach (['Y-m-d', 'd.m.Y'] as $format) {
-            $parsed = \DateTimeImmutable::createFromFormat('!'.$format, $date);
-
-            if ($parsed !== false && $parsed->format($format) === $date) {
-                return true;
-            }
-        }
-
-        return false;
+        return ! isset($matches[1]) || AnafValue::date($matches[1]) !== null;
     }
 
     /**
@@ -432,48 +395,6 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
     public function isValidVatCode(string $vatCode): bool
     {
         return VatNumberValidator::isValid($vatCode);
-    }
-
-    /**
-     * Extract the numeric CUI from a VAT code string.
-     *
-     * Handles both formats:
-     * - With RO prefix: "RO12345678"
-     * - Without prefix: "12345678"
-     *
-     * @param  string  $vatCode  The VAT code to extract CUI from
-     * @return int|null The numeric CUI or null if invalid
-     */
-    private function extractCuiNumber(string $vatCode): ?int
-    {
-        $vatCode = trim($vatCode);
-
-        if ($vatCode === '') {
-            return null;
-        }
-
-        // Use the validator to strip the RO prefix if present
-        $cuiString = VatNumberValidator::stripPrefix($vatCode);
-
-        // Validate the remaining string is numeric
-        if (! ctype_digit($cuiString)) {
-            return null;
-        }
-
-        // Special case: ANAF allows all-zeros CNP (0000000000000) as valid identifier
-        // This is used for anonymous/placeholder entries in e-Factura
-        if ($cuiString === '0000000000000') {
-            return 0;
-        }
-
-        $cuiNumber = (int) $cuiString;
-
-        // CUI must be positive (except for the ANAF zero CNP handled above)
-        if ($cuiNumber <= 0) {
-            return null;
-        }
-
-        return $cuiNumber;
     }
 
     /**
@@ -521,7 +442,7 @@ class AnafDetailsClient extends BaseApiClient implements AnafDetailsClientInterf
         }
 
         // Handle case where nothing was found and nothing in notfound
-        if (empty($companies) && empty($notFound) && empty($invalidCodes)) {
+        if (empty($companies) && empty($notFound)) {
             // Check if response has unexpected structure
             if (! isset($response['found']) && ! isset($response['notFound']) && ! isset($response['notfound'])) {
                 return CompanyLookupResultData::failure(

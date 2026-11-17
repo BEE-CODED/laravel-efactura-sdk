@@ -31,31 +31,18 @@ class VatRegistrationData extends Data
      */
     public static function fromAnafResponse(array $data): self
     {
+        // laravel-data sends ::from($dto->toArray()) here too: hand its own shape to the normal pipeline.
+        if (! array_key_exists('statusTvaIncasare', $data) && array_key_exists('actType', $data)) {
+            return self::factory()->withoutMagicalCreation()->from($data);
+        }
+
         return new self(
             isActive: AnafValue::flag($data['statusTvaIncasare'] ?? null),
-            startDate: self::parseDate($data['dataInceputTvaInc'] ?? null),
-            endDate: self::parseDate($data['dataSfarsitTvaInc'] ?? null),
-            updateDate: self::parseDate($data['dataActualizareTvaInc'] ?? null),
-            publishDate: self::parseDate($data['dataPublicareTvaInc'] ?? null),
+            startDate: AnafValue::date($data['dataInceputTvaInc'] ?? null),
+            endDate: AnafValue::date($data['dataSfarsitTvaInc'] ?? null),
+            updateDate: AnafValue::date($data['dataActualizareTvaInc'] ?? null),
+            publishDate: AnafValue::date($data['dataPublicareTvaInc'] ?? null),
             actType: AnafValue::text($data['tipActTvaInc'] ?? null),
         );
-    }
-
-    /**
-     * Parse a date string from ANAF response.
-     */
-    private static function parseDate(mixed $date): ?Carbon
-    {
-        $date = AnafValue::text($date);
-
-        if ($date === null || trim($date) === '') {
-            return null;
-        }
-
-        try {
-            return Carbon::parse($date);
-        } catch (\Exception) {
-            return null;
-        }
     }
 }

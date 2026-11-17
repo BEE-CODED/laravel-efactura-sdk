@@ -104,8 +104,10 @@ jobs:
         working-directory: mcp
       - run: npx vitest run
         working-directory: mcp
+      - run: npm run typecheck
+        working-directory: mcp
       # dist/index.js is committed and shipped to consumers. If it drifts from
-      # src/, users get documentation that does not match this release.
+      # src/, users run a reader that does not match this release.
       - name: Verify committed bundle matches src
         working-directory: mcp
         run: |

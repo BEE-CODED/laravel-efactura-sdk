@@ -15,8 +15,8 @@ use Illuminate\Support\Facades\Facade;
  * This is a public API that doesn't require authentication.
  *
  * @method static CompanyLookupResultData getCompanyData(string $vatCode) Get company data for a single VAT code
- * @method static CompanyLookupResultData batchGetCompanyData(array<string> $vatCodes) Get company data for multiple VAT codes
- * @method static bool isValidVatCode(string $vatCode) Check if VAT code format is valid
+ * @method static CompanyLookupResultData batchGetCompanyData(array<int|string> $vatCodes) Get company data for multiple VAT codes
+ * @method static bool isValidVatCode(string $vatCode) Check a VAT code's format and checksum (no ANAF call)
  *
  * @see AnafDetailsClient
  */

@@ -14,8 +14,8 @@ use DOMNode;
  * Compares two UBL documents as element trees.
  *
  * The XML declaration, namespace prefixes and declarations, whitespace-only text,
- * anything outside the root element and trailing decimal zeroes in the UBL amount,
- * quantity and percent elements may differ; CDATA counts as text. Any other difference,
+ * anything outside the root element and trailing decimal zeroes in the elements the SDK
+ * builder writes (NUMERIC_ELEMENTS) may differ; CDATA counts as text. Any other difference,
  * a DOCTYPE or entity declaration, unparseable XML, a comment or processing instruction
  * inside the root, or text mixed with child elements throws ArchiveMismatchException.
  */
@@ -99,7 +99,7 @@ final class UblDocumentComparator
             return true;
         }
 
-        return $this->leafText($a, $textA) === $this->leafText($b, $textB);
+        return $textA === $textB || $this->leafText($a, $textA) === $this->leafText($b, $textB);
     }
 
     /** The next element sibling from $node on, collecting text and refusing comments and processing instructions. */

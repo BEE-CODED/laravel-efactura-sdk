@@ -8,16 +8,20 @@ return [
     'invoice_number_must_contain_digit' => 'Invoice number must contain at least one numeric character (BR-RO-010)',
     'invoice_number_max_length' => 'Invoice number must not exceed 200 characters (BR-RO-L200)',
     'issue_date_required' => 'Issue date is required',
+    'issue_date_invalid' => 'The issue date (BT-2) ":date" is not a valid date',
+    'due_date_invalid' => 'The due date (BT-9) ":date" is not a valid date',
+    'tax_point_date_invalid' => 'The VAT point date (BT-7) ":date" is not a valid date',
     'at_least_one_line_required' => 'At least one invoice line is required',
-    'lines_max_count' => 'An invoice can have at most 999 lines (BR-RO-A999)',
     'currency_code_invalid' => 'The currency code must be three uppercase letters (ISO 4217, BR-CL-04)',
     'due_date_required_for_positive_payable' => 'An invoice with a positive amount due must have a due date (BR-CO-25)',
 
     // Input values
     'amount_invalid' => ':field must be a finite amount with at most :scale decimal places; a float may differ from that only by binary representation noise',
+    'element_blank' => 'The :element element would be filed blank, which ANAF rejects',
     'xml_text_invalid' => ':field contains invalid UTF-8 or a character XML cannot carry (control characters other than tab, line feed and carriage return, U+FFFE, U+FFFF)',
 
-    // Party (uses :role — Supplier/Customer/Delivery)
+    // Party (:Role from roles)
+    'roles' => ['Supplier' => 'supplier', 'Customer' => 'customer', 'Delivery' => 'delivery'],
     'party_registration_name_required' => ':Role registration name is required',
     'party_registration_name_max_length' => ':Role registration name must not exceed 200 characters (BR-RO-L200)',
     'party_registration_number_max_length' => ':Role registration number must not exceed 1000 characters (BR-RO-L1000)',
@@ -34,6 +38,8 @@ return [
     'line_item_name_required' => 'Line :lineNum: Item name is required',
     'line_item_name_max_length' => 'Line :lineNum: Item name must not exceed 100 characters (BR-RO-L100)',
     'line_item_description_max_length' => 'Line :lineNum: Item description must not exceed 200 characters (BR-RO-L200)',
+    'line_unit_code_invalid' => 'Line :lineNum: Unit code ":unitCode" is not a UN/ECE Recommendation 20/21 code (BR-CL-23)',
+    'line_prefixed' => 'Line :lineNum: :message',
     'line_quantity_cannot_be_zero' => 'Line :lineNum: Quantity cannot be zero',
     'line_unit_price_not_negative' => 'Line :lineNum: Unit price cannot be negative',
     'line_tax_percent_range' => 'Line :lineNum: Tax percent must be between 0 and 100',

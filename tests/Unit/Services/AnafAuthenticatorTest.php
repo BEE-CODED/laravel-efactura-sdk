@@ -12,7 +12,8 @@ use GuzzleHttp\Psr7\Request;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Facades\Http;
 
-function createAuthenticator(?HttpFactory $http = null): AnafAuthenticator
+/** @param  array<string, mixed>  $httpConfig  Merged into the 'http' config */
+function createAuthenticator(?HttpFactory $http = null, array $httpConfig = []): AnafAuthenticator
 {
     return new AnafAuthenticator(
         http: $http ?? Http::getFacadeRoot(),
@@ -30,6 +31,7 @@ function createAuthenticator(?HttpFactory $http = null): AnafAuthenticator
             ],
             'http' => [
                 'timeout' => 30,
+                ...$httpConfig,
             ],
         ]
     );
@@ -38,7 +40,7 @@ function createAuthenticator(?HttpFactory $http = null): AnafAuthenticator
 describe('AnafAuthenticator', function () {
     describe('constructor', function () {
         it('validates required OAuth config', function () {
-            new AnafAuthenticator(
+            (new AnafAuthenticator(
                 http: Http::getFacadeRoot(),
                 config: [
                     'oauth' => [
@@ -53,11 +55,11 @@ describe('AnafAuthenticator', function () {
                         ],
                     ],
                 ]
-            );
+            ))->getAuthorizationUrl();
         })->throws(AuthenticationException::class, 'Missing required OAuth configuration: client_id');
 
         it('validates authorize endpoint', function () {
-            new AnafAuthenticator(
+            (new AnafAuthenticator(
                 http: Http::getFacadeRoot(),
                 config: [
                     'oauth' => [
@@ -72,11 +74,11 @@ describe('AnafAuthenticator', function () {
                         ],
                     ],
                 ]
-            );
+            ))->getAuthorizationUrl();
         })->throws(AuthenticationException::class, 'Missing required OAuth authorize endpoint');
 
         it('validates token endpoint', function () {
-            new AnafAuthenticator(
+            (new AnafAuthenticator(
                 http: Http::getFacadeRoot(),
                 config: [
                     'oauth' => [
@@ -91,11 +93,25 @@ describe('AnafAuthenticator', function () {
                         ],
                     ],
                 ]
-            );
+            ))->getAuthorizationUrl();
         })->throws(AuthenticationException::class, 'Missing required OAuth token endpoint');
     });
 
     describe('missing configuration', function () {
+        it('resolves without OAuth configuration and refuses on first use', function () {
+            config()->set('efactura-sdk.oauth.client_id', '');
+            Http::fake();
+
+            $auth = app(AnafAuthenticatorInterface::class);
+
+            expect($auth->decodeState(base64_encode('{"a":1}')))->toBe(['a' => 1]);
+            foreach ([fn () => $auth->getAuthorizationUrl(), fn () => $auth->refreshAccessToken('r')] as $call) {
+                expect($call)->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe(0)
+                    ->and($e->getMessage())->toStartWith('Missing required OAuth configuration: client_id'));
+            }
+            Http::assertNothingSent();
+        });
+
         // Code 0, like a transport failure: a host that keys a "re-authorise" cooldown on
         // 400/401 must not block every company for a deployment mistake.
         it('is reported with code 0, not as a refused grant', function (string $key, ?string $value) {
@@ -104,7 +120,9 @@ describe('AnafAuthenticator', function () {
             data_set($config, $key, $value);
             config()->set('efactura-sdk', $config);
 
-            expect(fn () => app(AnafAuthenticatorInterface::class))
+            $auth = app(AnafAuthenticatorInterface::class);
+
+            expect(fn () => $auth->refreshAccessToken('r'))
                 ->toThrow(fn (AuthenticationException $e) => expect($e->getCode())->toBe(0));
         })->with([
             'client id' => ['oauth.client_id', null],
@@ -202,6 +220,12 @@ describe('AnafAuthenticator', function () {
             expect($tokens->accessToken)->toBe('new-access-token');
             expect($tokens->refreshToken)->toBe('new-refresh-token');
             expect($tokens->expiresIn)->toBe(3600);
+            Http::assertSent(fn ($r) => $r->url() === 'https://logincert.anaf.ro/anaf-oauth2/v1/token'
+                && $r->method() === 'POST'
+                && $r->hasHeader('Authorization', 'Basic '.base64_encode('test-client-id:test-client-secret'))
+                && $r->hasHeader('Accept', 'application/json')
+                && $r->isForm()
+                && $r->data() == ['grant_type' => 'authorization_code', 'code' => 'auth-code-123', 'redirect_uri' => 'https://example.com/callback', 'token_content_type' => 'jwt']);
         });
 
         it('throws exception on HTTP error', function () {
@@ -260,6 +284,12 @@ describe('AnafAuthenticator', function () {
 
             expect($tokens->accessToken)->toBe('refreshed-access-token');
             expect($tokens->refreshToken)->toBe('new-refresh-token');
+            Http::assertSent(fn ($r) => $r->url() === 'https://logincert.anaf.ro/anaf-oauth2/v1/token'
+                && $r->method() === 'POST'
+                && $r->hasHeader('Authorization', 'Basic '.base64_encode('test-client-id:test-client-secret'))
+                && $r->hasHeader('Accept', 'application/json')
+                && $r->isForm()
+                && $r->data() == ['grant_type' => 'refresh_token', 'refresh_token' => 'old-refresh-token', 'token_content_type' => 'jwt']);
         });
 
         it('reads a BOM-prefixed token answer', function () {
@@ -296,6 +326,68 @@ describe('AnafAuthenticator', function () {
             'connection failure' => [fn ($request) => Create::rejectionFor(new ConnectException('cURL error 28: Operation timed out', new Request('POST', $request->url()))), 0],
             'OAuth server error (503)' => [fn () => Http::response(null, 503), 503],
             'invalid_grant (400)' => [fn () => Http::response(['error' => 'invalid_grant'], 400), 400],
+        ]);
+
+        it('sends the refresh once more when the first attempt never left', function () {
+            $calls = 0;
+            Http::fake(['*' => function ($request) use (&$calls) {
+                return ++$calls === 1
+                    ? Create::rejectionFor(new ConnectException('cURL error 6: Could not resolve host: logincert.anaf.ro', new Request('POST', $request->url())))
+                    : Http::response(['access_token' => 'a2', 'refresh_token' => 'r2', 'expires_in' => 3600]);
+            }]);
+
+            expect(createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('old')->accessToken)->toBe('a2');
+            Http::assertSentCount(2);
+        });
+
+        it('sends an unsent refresh at most twice', function () {
+            Http::fake(['*' => fn ($request) => Create::rejectionFor(new ConnectException('cURL error 6: Could not resolve host: logincert.anaf.ro', new Request('POST', $request->url())))]);
+
+            expect(fn () => createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('old'))
+                ->toThrow(AuthenticationException::class);
+            Http::assertSentCount(2);
+        });
+
+        it('does not resend an unsent refresh when retry_times is 1', function () {
+            Http::fake(['*' => fn ($request) => Create::rejectionFor(new ConnectException('cURL error 6: Could not resolve host: logincert.anaf.ro', new Request('POST', $request->url())))]);
+
+            expect(fn () => createAuthenticator(Http::getFacadeRoot(), ['retry_times' => 1])->refreshAccessToken('old'))
+                ->toThrow(AuthenticationException::class);
+            Http::assertSentCount(1);
+        });
+
+        it('never resends a refresh that may have been delivered', function (Closure $answer) {
+            Http::fake(['*' => $answer]);
+
+            expect(fn () => createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('old'))
+                ->toThrow(AuthenticationException::class);
+            Http::assertSentCount(1);
+        })->with([
+            'read timeout (28)' => [fn ($request) => Create::rejectionFor(new ConnectException('cURL error 28: Operation timed out', new Request('POST', $request->url())))],
+            'OAuth server error (503)' => [fn () => Http::response(null, 503)],
+        ]);
+
+        it('keeps the refresh token out of the exception trace', function (Closure $answer) {
+            Http::fake(['*' => $answer]);
+            $old = ini_set('zend.exception_ignore_args', '0');
+
+            try {
+                createAuthenticator(Http::getFacadeRoot())->refreshAccessToken('secret-refresh-token');
+                $this->fail('Expected AuthenticationException');
+            } catch (AuthenticationException $e) {
+                // Only this exception's own trace: a chained ConnectionException's Laravel frames hold the form data.
+                $found = false;
+                $trace = $e->getTrace();
+                array_walk_recursive($trace, function (mixed $value) use (&$found) {
+                    $found = $found || $value === 'secret-refresh-token';
+                });
+                expect($found)->toBeFalse();
+            } finally {
+                ini_set('zend.exception_ignore_args', (string) $old);
+            }
+        })->with([
+            'refused grant' => [fn () => Http::response(['error' => 'invalid_grant'], 400)],
+            'read timeout (28)' => [fn ($request) => Create::rejectionFor(new ConnectException('cURL error 28: Operation timed out', new Request('POST', $request->url())))],
         ]);
     });
 
@@ -420,6 +512,18 @@ describe('AnafAuthenticator', function () {
                 expect($e->getMessage())->toContain('Operatiune esuata');
             }
         });
+
+        it('skips a blank or boolean error field', function (array $body, string $message) {
+            Http::fake(['*' => Http::response($body, 400)]);
+
+            expect(fn () => createAuthenticator(Http::getFacadeRoot())->exchangeCodeForToken('code'))
+                ->toThrow(fn (AuthenticationException $e) => expect($e->getMessage())->toBe($message)
+                    ->and($e->getCode())->toBe(400));
+        })->with([
+            'blank error' => [['error' => '', 'eroare' => 'Cod de autorizare invalid'], 'Token exchange failed: Cod de autorizare invalid'],
+            'false error' => [['error' => false, 'mesaj' => 'Operatiune esuata'], 'Token exchange failed: Operatiune esuata'],
+            'blank description' => [['error' => 'invalid_grant', 'error_description' => ' '], 'Token exchange failed: invalid_grant'],
+        ]);
 
         it('falls back to HTTP status code', function () {
             Http::fake([

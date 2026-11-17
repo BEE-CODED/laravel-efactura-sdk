@@ -133,7 +133,7 @@ describe('S9 BR-CO-25 due date for a positive amount due', function () {
 
     it('refuses a blank due date where BR-CO-25 does not apply, never filing today', function (array $overrides, string $dueDate) {
         expect(fn () => rbXml(rbInvoice(['dueDate' => $dueDate, ...$overrides])))
-            ->toThrow(InvalidArgumentException::class, 'Invalid due date format');
+            ->toThrow(ValidationException::class, 'BT-9');
     })->with([
         'credit note' => [['invoiceTypeCode' => InvoiceTypeCode::CreditNote]],
         'zero payable' => [['lines' => [rbLine(['unitPrice' => 0, 'taxAmount' => 0])]]],
@@ -145,6 +145,23 @@ describe('S9 BR-CO-25 due date for a positive amount due', function () {
         'credit note' => [['invoiceTypeCode' => InvoiceTypeCode::CreditNote]],
         'zero payable' => [['lines' => [rbLine(['unitPrice' => 0, 'taxAmount' => 0])]]],
         'negative payable' => [['lines' => [rbLine(['quantity' => -1, 'taxAmount' => -19])]]],
+    ]);
+});
+
+describe('H header dates are real dates', function () {
+    it('refuses an unparseable issue date as a translated error', function () {
+        expect(fn () => rbXml(rbInvoice(['issueDate' => 'not a date'])))->toThrow(ValidationException::class, 'BT-2');
+    });
+
+    it('refuses a date that names no calendar day or clock time instead of filing the next one', function (Closure $overrides, string $key) {
+        expect(fn () => rbXml(rbInvoice($overrides())))->toThrow(ValidationException::class, $key);
+    })->with([
+        'issue date' => [fn () => ['issueDate' => '2024-02-30'], 'BT-2'],
+        'due date' => [fn () => ['dueDate' => '2024-04-31'], 'BT-9'],
+        'tax point date' => [fn () => ['taxPointDate' => '2024-02-30'], 'BT-7'],
+        'tax point time 24:00' => [fn () => ['taxPointDate' => '2024-01-01 24:00:00'], 'BT-7'],
+        'delivery date' => [fn () => ['delivery' => new DeliveryData('2023-02-29')], 'BT-72'],
+        'preceding invoice date' => [fn () => ['precedingInvoices' => [new PrecedingInvoiceData('F-1', '2024-02-30')]], 'BT-26'],
     ]);
 });
 
@@ -185,6 +202,12 @@ describe('S10/S11 Bucharest rewriting only for RO, and only with a sector', func
         'sector in city' => [['city' => 'Sector 2', 'county' => 'B'], 'SECTOR2'],
         'sector in county' => [['city' => 'Bucuresti', 'county' => 'Sector 6'], 'SECTOR6'],
     ]);
+
+    it('checks the city a Bucharest address files, not the one given', function (string $city) {
+        $xml = rbXml(rbInvoice(['customer' => rbParty(['companyId' => 'RO87654321', 'address' => rbAddress(['county' => 'Bucuresti', 'bucharestSector' => 3, 'city' => $city])])]));
+
+        expect(rbAll($xml, '//cac:AccountingCustomerParty//cbc:CityName'))->toBe(['SECTOR3']);
+    })->with(['60 characters' => str_repeat('C', 60), 'empty' => '']);
 });
 
 describe('S12 BT-111 is zero without standard-rated lines', function () {
@@ -416,9 +439,8 @@ describe('X1 preceding invoices (BG-3)', function () {
         'blank issue date' => [fn () => ['precedingInvoices' => [new PrecedingInvoiceData('F-1', ' ')]], 'BT-26'],
     ]);
 
-    it('refuses more than 999 lines (BR-RO-A999) and files 999', function () {
-        expect(rbAll(rbXml(rbInvoice(['lines' => array_fill(0, 999, rbLine())])), '//cac:InvoiceLine'))->toHaveCount(999)
-            ->and(fn () => rbXml(rbInvoice(['lines' => array_fill(0, 1000, rbLine())])))->toThrow(ValidationException::class, 'BR-RO-A999');
+    it('files 1000 lines; ANAF removed BR-RO-A999 in schematron 1.0.8', function () {
+        expect(rbAll(rbXml(rbInvoice(['lines' => array_fill(0, 1000, rbLine())])), '//cac:InvoiceLine'))->toHaveCount(1000);
     });
 });
 
@@ -471,4 +493,53 @@ describe('X2 notes, VAT point date code and delivery', function () {
         'unparseable delivery date' => [fn () => ['delivery' => new DeliveryData('not a date')], 'BT-72'],
         'blank delivery date' => [fn () => ['delivery' => new DeliveryData('')], 'BT-72'],
     ]);
+});
+
+describe('J no element is filed blank', function () {
+    it('refuses an element it would file blank, naming it', function (Closure $invoice, string $message) {
+        expect(fn () => rbXml($invoice()))->toThrow(ValidationException::class, $message);
+    })->with([
+        'empty line id' => [fn () => rbInvoice(['lines' => [rbLine(['id' => ''])]]), 'The ID element would be filed blank'],
+        'blank line id' => [fn () => rbInvoice(['lines' => [rbLine(['id' => '  '])]]), 'The ID element would be filed blank'],
+        'customer id RO' => [fn () => rbInvoice(['customer' => rbParty(['registrationName' => 'Client SRL', 'companyId' => 'RO'])]), 'The CompanyID element would be filed blank'],
+        'supplier id ro' => [fn () => rbInvoice(['supplier' => rbParty(['companyId' => 'ro'])]), 'The CompanyID element would be filed blank'],
+    ]);
+
+    it('names the blank element in Romanian under the ro locale', function () {
+        app()->setLocale('ro');
+
+        expect(fn () => rbXml(rbInvoice(['lines' => [rbLine(['id' => ''])]])))->toThrow(ValidationException::class, 'Elementul ID ar fi transmis gol');
+    });
+
+    it('omits a whitespace-only description, postal zone or IBAN', function () {
+        expect(rbAll(rbXml(rbInvoice(['lines' => [rbLine(['description' => '  '])]])), '//cbc:Description'))->toBe([])
+            ->and(rbAll(rbXml(rbInvoice(['supplier' => rbParty(['address' => rbAddress(['postalZone' => '  '])])])), '//cac:AccountingSupplierParty//cbc:PostalZone'))->toBe([])
+            ->and(rbAll(rbXml(rbInvoice(['paymentIban' => '  '])), '//cac:PayeeFinancialAccount'))->toBe([]);
+    });
+
+    it('files a line id of 0', function () {
+        expect(rbAll(rbXml(rbInvoice(['lines' => [rbLine(['id' => 0])]])), '//cac:InvoiceLine/cbc:ID'))->toBe(['0']);
+    });
+
+    it('refuses a unit code that is not a UN/ECE code, naming the line', function (string $unitCode) {
+        expect(fn () => rbXml(rbInvoice(['lines' => [rbLine(), rbLine(['unitCode' => $unitCode])]])))->toThrow(ValidationException::class, 'Line 2:');
+    })->with(['lowercase' => 'h87', 'inner space' => 'H 87', 'four characters' => 'KGMX', 'blank' => '  ', 'empty' => '']);
+
+    it('files a UN/ECE unit code as given', function (string $unitCode, string $filed) {
+        expect(rbAll(rbXml(rbInvoice(['lines' => [rbLine(['unitCode' => $unitCode])]])), '//cbc:InvoicedQuantity/@unitCode'))->toBe([$filed]);
+    })->with(['H87' => ['H87', 'H87'], 'XPP' => ['XPP', 'XPP']]);
+});
+
+describe('messages name the line and the party', function () {
+    it('names the line of a VAT category error', function () {
+        expect(fn () => rbXml(rbInvoice(['lines' => [rbLine(), rbLine(['taxPercent' => 0, 'taxAmount' => 0, 'taxCategoryId' => TaxCategoryId::Standard])]])))
+            ->toThrow(ValidationException::class, 'Line 2: The explicit VAT category must agree');
+    });
+
+    it('names the party in Romanian under the ro locale', function () {
+        app()->setLocale('ro');
+
+        expect(fn () => rbXml(rbInvoice(['supplier' => rbParty(['registrationName' => ' '])])))->toThrow(ValidationException::class, 'Denumirea furnizorului este obligatorie')
+            ->and(fn () => rbXml(rbInvoice(['delivery' => new DeliveryData(address: rbAddress(['street' => ' ']))])))->toThrow(ValidationException::class, 'Adresa stradală a livrării este obligatorie');
+    });
 });

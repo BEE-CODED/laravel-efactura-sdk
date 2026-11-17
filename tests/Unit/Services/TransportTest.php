@@ -3,7 +3,9 @@
 declare(strict_types=1);
 
 use BeeCoded\EFacturaSdk\Contracts\AnafAuthenticatorInterface;
+use BeeCoded\EFacturaSdk\EFacturaServiceProvider;
 use BeeCoded\EFacturaSdk\Enums\DocumentStandardType;
+use BeeCoded\EFacturaSdk\Enums\UploadOutcomeKind;
 use BeeCoded\EFacturaSdk\Exceptions\ApiException;
 use BeeCoded\EFacturaSdk\Exceptions\AuthenticationException;
 use BeeCoded\EFacturaSdk\Exceptions\RequestNotSentException;
@@ -12,6 +14,7 @@ use BeeCoded\EFacturaSdk\Services\AnafAuthenticator;
 use BeeCoded\EFacturaSdk\Services\ApiClients\AnafDetailsClient;
 use BeeCoded\EFacturaSdk\Services\ApiClients\EFacturaClient;
 use BeeCoded\EFacturaSdk\Services\RateLimiter;
+use BeeCoded\EFacturaSdk\Support\UploadOutcome;
 use Carbon\Carbon;
 use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
@@ -137,6 +140,26 @@ describe('a failure before the request left this machine', function () {
         'connect-phase timeout (28)' => [28, 'Connection timed out after 10001 milliseconds', $connectPhase],
     ]);
 
+    it('keeps retrying when a retry setting is blank or negative', function (mixed $retryTimes, mixed $retryDelay, bool $atBoot, int $sent) {
+        config()->set('efactura-sdk.http.retry_times', $retryTimes);
+        config()->set('efactura-sdk.http.retry_delay', $retryDelay);
+        if ($atBoot) {
+            $limiter = app(RateLimiter::class);
+            (new EFacturaServiceProvider(app()))->register();
+            // register() rebinds the singletons: put the mocks back.
+            app()->instance(RateLimiter::class, $limiter);
+            app()->instance(AnafAuthenticatorInterface::class, Mockery::mock(AnafAuthenticatorInterface::class));
+        }
+        Http::fake(['*' => curlRejection(6, 'Could not resolve host: api.anaf.ro', ['request_size' => 0])]);
+
+        expect(fn () => transportClient()->uploadDocument('<Invoice/>'))->toThrow(RequestNotSentException::class);
+        Http::assertSentCount($sent);
+    })->with([
+        'blank retry_times at boot' => ['', 0, true, 3],
+        "retry_times '0' at boot" => ['0', 0, true, 1],
+        'negative retry_delay at runtime' => [3, -1, false, 3],
+    ]);
+
     it('is a RequestNotSentException for a read too', function () use ($connectPhase) {
         Http::fake(['*' => curlRejection(28, 'Connection timed out after 10001 milliseconds', $connectPhase)]);
 
@@ -189,6 +212,38 @@ describe('an error answer after the retries', function () {
         'status (call), retried' => [fn (EFacturaClient $c) => $c->getStatusMessage('12345'), 503, 502, 3],
         'upload (callRaw), sent once' => [fn (EFacturaClient $c) => $c->uploadDocument('<Invoice/>'), 503, 502, 1],
         'validate (callRaw to a URL)' => [fn (EFacturaClient $c) => $c->validateXml('<Invoice/>', DocumentStandardType::FACT1), 404, 404, 1],
+    ]);
+});
+
+describe('the access token in an exception trace', function () {
+    it('keeps the bearer token out of the trace of an API failure', function (Closure $call, Closure $answer) {
+        Http::fake(['*' => $answer]);
+        $old = ini_set('zend.exception_ignore_args', '0');
+
+        try {
+            $client = new EFacturaClient(
+                vatNumber: '12345678',
+                accessToken: 'secret-access-token',
+                refreshToken: 'refresh',
+                expiresAt: Carbon::now()->addHour(),
+            );
+            $call($client);
+            $this->fail('Expected ApiException');
+        } catch (ApiException $e) {
+            // Only this exception's own trace: a chained exception's Laravel frames hold the headers.
+            $found = false;
+            $trace = $e->getTrace();
+            array_walk_recursive($trace, function (mixed $value) use (&$found) {
+                $found = $found || (is_string($value) && str_contains($value, 'secret-access-token'));
+            });
+            expect($found)->toBeFalse();
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $old);
+        }
+    })->with([
+        'status (call), 503' => [fn (EFacturaClient $c) => $c->getStatusMessage('12345'), fn () => Http::response(['eroare' => 'x'], 503)],
+        'upload (callRaw), 400' => [fn (EFacturaClient $c) => $c->uploadDocument('<Invoice/>'), fn () => Http::response(['eroare' => 'x'], 400)],
+        'upload (callRaw), read timeout' => [fn (EFacturaClient $c) => $c->uploadDocument('<Invoice/>'), fn ($request) => Create::rejectionFor(new ConnectException('cURL error 28: Operation timed out', new Request('POST', $request->url())))],
     ]);
 });
 
@@ -270,17 +325,34 @@ describe('the ANAF service endpoints', function () {
         'blank signature' => ['<Invoice/>', ''],
     ]);
 
-    it('refuses a request body without a content type instead of guessing its encoding', function () {
+    it('refuses a body without a content type through call() at once, unsent and not retried', function () {
         Http::fake(['*' => Http::response('ok', 200)]);
         $client = new class extends AnafDetailsClient
         {
             public function send(): void
             {
-                $this->request('', ['cui' => 1], 'post');
+                $this->call('', 'post', ['cui' => 1]);
             }
         };
 
-        expect(fn () => $client->send())->toThrow(LogicException::class);
+        expect(fn () => $client->send())->toThrow(LogicException::class, 'A request body needs a content type');
         Http::assertNothingSent();
+    });
+
+    it('does not follow a redirect on an upload', function () {
+        Http::fake([
+            'api.anaf.ro/*' => Http::response('', 302, ['Location' => 'https://elsewhere.invalid/upload']),
+            'elsewhere.invalid/*' => curlRejection(6, 'Could not resolve host: elsewhere.invalid', ['request_size' => 0]),
+        ]);
+
+        try {
+            transportClient()->uploadDocument('<Invoice/>');
+            $this->fail('The upload should have failed.');
+        } catch (ApiException $e) {
+            expect($e)->not->toBeInstanceOf(RequestNotSentException::class)
+                ->and($e->statusCode)->toBe(302)
+                ->and(UploadOutcome::fromThrowable($e)->kind)->toBe(UploadOutcomeKind::Uncertain);
+        }
+        Http::assertSentCount(1);
     });
 });

@@ -434,6 +434,8 @@ class AddressSanitizer
 
         // Replace diacritics
         $normalized = self::normalizeDiacritics($normalized);
+        // Decomposed (NFD) input: drop combining marks (s + U+0326 is ș, a + U+0306 is ă).
+        $normalized = (string) preg_replace('/\p{Mn}+/u', '', $normalized);
 
         // Normalize separators (replace multiple spaces with single space)
         $normalized = (string) preg_replace('/\s+/', ' ', $normalized);

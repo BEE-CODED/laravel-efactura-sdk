@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace BeeCoded\EFacturaSdk\Data\Invoice;
 
+use BeeCoded\EFacturaSdk\Support\DateHelper;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
 use Spatie\LaravelData\Data;
@@ -31,7 +32,7 @@ class PrecedingInvoiceData extends Data
     /**
      * Return the issue date as a copy, or null if omitted.
      *
-     * @throws \InvalidArgumentException If the date string cannot be parsed
+     * @throws \InvalidArgumentException If the date string is blank, unparseable or impossible (2024-02-30, 24:00)
      */
     public function getIssueDateAsCarbon(): ?Carbon
     {
@@ -40,11 +41,7 @@ class PrecedingInvoiceData extends Data
         }
 
         try {
-            if (trim($this->issueDate) === '') {
-                throw new \InvalidArgumentException('A preceding invoice issue date cannot be empty.');
-            }
-
-            return Carbon::parse($this->issueDate);
+            return DateHelper::parse($this->issueDate);
         } catch (\Exception $e) {
             throw new \InvalidArgumentException("Invalid preceding invoice issue date format: {$this->issueDate}", 0, $e);
         }

@@ -52,42 +52,51 @@ final class VatNumberValidator
     ];
 
     /**
+     * The canonical form of a CUI or CNP: its bare digits, or null when the shape is wrong.
+     *
+     * Whitespace anywhere and one leading RO prefix (any case) are ignored. A CUI is 2-10
+     * digits without a leading zero; a CNP is 13 digits starting with 1-9, or ANAF's zero
+     * CNP. Only the shape is checked here, not the control digit: see isValid().
+     *
+     * @param  string|int  $vatCode  The VAT code to read
+     * @return string|null The bare digits, or null when the shape is wrong
+     */
+    public static function canonical(string|int $vatCode): ?string
+    {
+        $vatCode = strtoupper(preg_replace('/\s+/', '', (string) $vatCode) ?? '');
+
+        if (str_starts_with($vatCode, self::RO_PREFIX)) {
+            $vatCode = substr($vatCode, strlen(self::RO_PREFIX));
+        }
+
+        return preg_match('/\A(?:[1-9][0-9]{1,9}|[1-9][0-9]{12}|0{13})\z/', $vatCode) === 1 ? $vatCode : null;
+    }
+
+    /**
      * Check if a VAT code is valid (format and checksum).
      *
-     * This validates:
-     * - CNP: 13 digits with valid checksum (Romanian personal identification number)
-     * - CUI/CIF: Optional RO prefix followed by 2-10 digits with valid checksum
+     * This validates the canonical() form:
+     * - CNP: 13 digits with valid checksum and date (Romanian personal identification number),
+     *   with or without the RO prefix
+     * - CUI/CIF: 2-10 digits without a leading zero, with a valid control digit
      *
      * @param  string  $vatCode  The VAT code to validate
      * @return bool True if the format and checksum are valid
      */
     public static function isValid(string $vatCode): bool
     {
-        $vatCode = trim($vatCode);
+        $canonical = self::canonical($vatCode);
 
-        if ($vatCode === '') {
+        if ($canonical === null) {
             return false;
         }
 
-        // If it's 13 digits, it must be validated as a CNP (not as CUI)
         // CNPs are valid VAT identifiers for individual entrepreneurs (PFA)
-        if (preg_match('/^\d{13}$/', $vatCode)) {
-            return CnpValidator::isValid($vatCode);
-        }
-
-        // Check CUI format: optional RO prefix followed by 2-10 digits
-        if (! preg_match('/^(RO)?(\d{2,10})$/i', $vatCode, $matches)) {
-            return false;
-        }
-
-        // Extract numeric part for checksum validation
-        $numericPart = $matches[2];
-
-        return self::validateChecksum($numericPart);
+        return strlen($canonical) === 13 ? CnpValidator::isValid($canonical) : self::validateChecksum($canonical);
     }
 
     /**
-     * Validate only the format (without checksum).
+     * Validate only the format (without checksum): canonical() accepts it.
      *
      * Use this for lenient validation when you only need to check
      * if the VAT code has a valid format but not verify the checksum.
@@ -97,19 +106,7 @@ final class VatNumberValidator
      */
     public static function isValidFormat(string $vatCode): bool
     {
-        $vatCode = trim($vatCode);
-
-        if ($vatCode === '') {
-            return false;
-        }
-
-        // Check if it's a valid CNP format (13 digits - format only, no checksum)
-        if (CnpValidator::isValidFormat($vatCode)) {
-            return true;
-        }
-
-        // Check format: optional RO prefix followed by 2-10 digits
-        return (bool) preg_match('/^(RO)?\d{2,10}$/i', $vatCode);
+        return self::canonical($vatCode) !== null;
     }
 
     /**
@@ -163,15 +160,14 @@ final class VatNumberValidator
     }
 
     /**
-     * Normalize a VAT number by adding the RO prefix if missing.
+     * Normalize a VAT number: a CUI becomes "RO" + its canonical() digits, a CNP its bare digits.
      *
-     * If the value is a valid CNP, it is returned unchanged.
-     * Otherwise, the RO prefix is added if not already present.
+     * The CUI control digit is not checked here (isValid() does that); a CNP must be a valid one.
      *
      * @param  string  $vatCode  The VAT code to normalize
-     * @return string The normalized VAT code with RO prefix
+     * @return string The CUI with the RO prefix, or the bare CNP
      *
-     * @throws InvalidArgumentException If the VAT code is empty or has invalid format
+     * @throws InvalidArgumentException If the VAT code is empty, has an invalid format or is an invalid CNP
      */
     public static function normalize(string $vatCode): string
     {
@@ -181,33 +177,17 @@ final class VatNumberValidator
             throw new InvalidArgumentException('Company VAT number is missing.');
         }
 
-        // Validate format before normalizing to prevent creating invalid outputs
-        if (! self::isValidFormat($vatCode)) {
-            throw new InvalidArgumentException(
-                "Invalid VAT number format: {$vatCode}. Expected CNP (13 digits) or CUI (2-10 digits with optional RO prefix)."
-            );
-        }
+        $canonical = self::canonical($vatCode) ?? throw new InvalidArgumentException(
+            "Invalid VAT number format: {$vatCode}. Expected CNP (13 digits) or CUI (2-10 digits without a leading zero, optional RO prefix)."
+        );
 
-        // If it's a valid CNP, return it unchanged
-        if (CnpValidator::isValid($vatCode)) {
-            return $vatCode;
-        }
-
-        // If it's 13 digits but not a valid CNP, reject it
-        // (valid CNP format but invalid checksum/date)
-        if (CnpValidator::isValidFormat($vatCode)) {
-            throw new InvalidArgumentException(
+        if (strlen($canonical) === 13) {
+            return CnpValidator::isValid($canonical) ? $canonical : throw new InvalidArgumentException(
                 "Invalid CNP: {$vatCode}. The 13-digit number has an invalid checksum or date."
             );
         }
 
-        // Add RO prefix if not already present
-        if (stripos($vatCode, self::RO_PREFIX) === 0) {
-            // Normalize case to uppercase RO
-            return self::RO_PREFIX.substr($vatCode, 2);
-        }
-
-        return self::RO_PREFIX.$vatCode;
+        return self::RO_PREFIX.$canonical;
     }
 
     /**
@@ -290,7 +270,10 @@ final class VatNumberValidator
     }
 
     /**
-     * Remove the RO prefix from a VAT number.
+     * Remove the RO prefix (any case) and the whitespace around what remains.
+     *
+     * The rest is not checked or canonicalised: "RO 123" gives "123", "RO1 23" gives "1 23".
+     * Use canonical() for a validated CUI.
      *
      * @param  string  $vatCode  The VAT code to strip
      * @return string The VAT code without the RO prefix
@@ -305,7 +288,6 @@ final class VatNumberValidator
             throw new InvalidArgumentException('Company VAT number is missing.');
         }
 
-        // Remove RO prefix case-insensitively
-        return preg_replace('/^ro/i', '', $vatCode) ?? $vatCode;
+        return trim(preg_replace('/^ro/i', '', $vatCode) ?? $vatCode);
     }
 }

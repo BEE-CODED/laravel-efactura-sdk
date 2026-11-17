@@ -20,7 +20,36 @@ describe('withCountryPrefix', function () {
     ]);
 });
 
+describe('canonical', function () {
+    it('reads a CUI or CNP into its bare digits, or null when the shape is wrong', function (string|int $input, ?string $expected) {
+        expect(VatNumberValidator::canonical($input))->toBe($expected);
+    })->with([
+        'spaces and prefix' => ['RO 1234 5678', '12345678'],
+        'padded lowercase prefix' => [' ro12345678 ', '12345678'],
+        'an int' => [18547290, '18547290'],
+        'a CNP' => ['1900101123457', '1900101123457'],
+        'the zero CNP' => ['0000000000000', '0000000000000'],
+        'a leading zero' => ['0123', null],
+        'prefix only' => ['RO', null],
+        'blank' => [' ', null],
+        'eleven digits' => ['12345678901', null],
+        'a zero-led 13 digits' => ['0000000000012', null],
+        'a negative int' => ['-5', null],
+    ]);
+});
+
 describe('isValid', function () {
+    it('refuses a leading zero and reads spaces and a prefixed CNP', function (string $input, bool $expected) {
+        expect(VatNumberValidator::isValid($input))->toBe($expected);
+    })->with([
+        'two zeros' => ['00', false],
+        'prefixed zeros' => ['RO0000000000', false],
+        'a leading zero' => ['014399840', false],
+        'spaced' => ['RO 1439 9840', true],
+        'prefixed CNP' => ['RO1900101123457', true],
+        'the zero CNP' => ['0000000000000', true],
+    ]);
+
     it('validates CUI with correct checksum', function () {
         // Known valid Romanian CUIs
         expect(VatNumberValidator::isValid('18547290'))->toBeTrue();
@@ -53,9 +82,8 @@ describe('isValid', function () {
     });
 
     it('validates valid CNP as VAT code', function () {
-        // Valid CNP: 1850101123456 (would need proper checksum, using mock)
-        // CNP starting with 1 = male born 1900-1999
         // Testing that isValid delegates to CnpValidator for 13-digit numbers
+        expect(VatNumberValidator::isValid('1900101123457'))->toBeTrue();
         expect(VatNumberValidator::isValid('0000000000000'))->toBeTrue(); // ANAF special case
     });
 
@@ -63,7 +91,7 @@ describe('isValid', function () {
         // 13-digit numbers are treated as CNPs - if CNP validation fails, isValid returns false
         // This ensures the fix where we check CNP validity for 13-digit numbers works
         expect(VatNumberValidator::isValid('1234567890123'))->toBeFalse(); // Invalid CNP checksum
-        expect(VatNumberValidator::isValid('9999999999999'))->toBeFalse(); // Invalid CNP (invalid century code 9)
+        expect(VatNumberValidator::isValid('9999999999999'))->toBeFalse(); // Invalid CNP (invalid month 99)
     });
 
     it('does not treat 13-digit number as 10-digit CUI with RO prefix', function () {
@@ -91,6 +119,8 @@ describe('isValidFormat', function () {
     });
 
     it('returns false for invalid formats', function () {
+        expect(VatNumberValidator::isValidFormat('0012345678'))->toBeFalse();
+        expect(VatNumberValidator::isValidFormat('0123456789012'))->toBeFalse();
         expect(VatNumberValidator::isValidFormat(''))->toBeFalse();
         expect(VatNumberValidator::isValidFormat('1'))->toBeFalse();
         expect(VatNumberValidator::isValidFormat('ABC'))->toBeFalse();
@@ -113,6 +143,15 @@ describe('normalize', function () {
     it('keeps CNP unchanged (no RO prefix)', function () {
         expect(VatNumberValidator::normalize('0000000000000'))->toBe('0000000000000');
     });
+
+    it('returns a prefixed CNP bare and drops spaces from a CUI', function () {
+        expect(VatNumberValidator::normalize('RO1900101123457'))->toBe('1900101123457');
+        expect(VatNumberValidator::normalize(' ro 1439 9840 '))->toBe('RO14399840');
+    });
+
+    it('throws exception for a leading zero', function () {
+        VatNumberValidator::normalize('014399840');
+    })->throws(InvalidArgumentException::class, 'Invalid VAT number format');
 
     it('throws exception for empty string', function () {
         VatNumberValidator::normalize('');
@@ -146,7 +185,7 @@ describe('normalize', function () {
 
     it('throws exception for 13 digits with invalid date in CNP', function () {
         // 13 digits starting with valid sex digit but invalid month (99)
-        VatNumberValidator::normalize('1999913123456');
+        VatNumberValidator::normalize('1999913123459');
     })->throws(InvalidArgumentException::class, 'Invalid CNP');
 });
 
@@ -157,6 +196,11 @@ describe('stripPrefix', function () {
 
     it('removes lowercase ro prefix', function () {
         expect(VatNumberValidator::stripPrefix('ro12345678'))->toBe('12345678');
+    });
+
+    it('removes a prefix followed by spaces', function () {
+        expect(VatNumberValidator::stripPrefix('RO 14399840'))->toBe('14399840');
+        expect(VatNumberValidator::stripPrefix(' ro 14399840 '))->toBe('14399840');
     });
 
     it('returns as-is if no prefix', function () {

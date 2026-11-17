@@ -7,17 +7,15 @@ namespace BeeCoded\EFacturaSdk\Tests\Support;
 use Illuminate\Support\Facades\Facade;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
-use ReflectionClass;
 
 /**
  * Extracts the symbols our documentation claims exist, so DocsDriftTest can
  * check each one against PHP reality.
  *
- * Why this exists: the MCP suite asserts documentation *contains* a string
- * (`expect(apiReferenceContent["EFacturaClient"]).toContain("fromTokens")`).
- * That is circular — the docs are both the subject and the oracle, so a doc
- * naming a deleted method stays green forever. Only a check against the source
- * can fail for the right reason.
+ * Why this exists: a test that asserts documentation *contains* a string is
+ * circular. The docs are both the subject and the oracle, so a doc naming a
+ * deleted method stays green forever. Only a check against the source can fail
+ * for the right reason.
  *
  * Scope is deliberately limited to forms whose meaning is unambiguous. Excluded
  * on purpose:
@@ -26,36 +24,44 @@ use ReflectionClass;
  *    many hits are legitimately not ours: Carbon (`->addDays()`), Mockery, and
  *    the reader's own example code (`$this->persistTokens(...)`).
  *  - Bare class names in prose. `ApiException` and `EFacturaClient` appear
- *    hundreds of times inside @method docblocks and type columns; matching prose
- *    produces noise, not signal.
- *  - MCP topic keys. `InvoiceAddressData` and `CompanyAddressData` are tool
- *    aliases, not PHP classes — each topic carries a `**Namespace:**` line naming
- *    the real class, which is what we read instead.
+ *    hundreds of times in examples and tables; matching prose produces noise,
+ *    not signal.
  */
 final class DocumentedSymbols
 {
+    /** Regex for this package's namespace prefix, with its trailing backslash. */
+    private const OWN_NAMESPACE = 'BeeCoded\\\\EFacturaSdk\\\\(?:\w+\\\\)*';
+
     /**
-     * Symbols the docs name precisely BECAUSE they do not exist.
+     * Symbols that 4.0 removed. CHANGELOG.md names them to tell users they are
+     * gone, so a miss there is expected. Anywhere else a miss is still a miss.
      *
-     * The migration guide warns that a v2 facade alias pointed at a class which
-     * never existed, and marks it `// ✗ class never existed`. Asserting it exists
-     * would invert the guard and demand we create it.
-     *
-     * These are asserted ABSENT instead: if one is ever introduced, docs telling
-     * users it never existed become a lie, and this fails.
-     *
-     * @var list<string>
+     * Entries are flat strings per kind: 'Fqcn::method', 'Fqcn', 'Fqcn::CONST',
+     * a config path relative to efactura-sdk ('rate_limits.enabled') and an env
+     * var ('EFACTURA_X'). Add an entry in the same change that removes the symbol.
      */
-    private const DOCUMENTED_AS_ABSENT = [
-        'BeeCoded\\EFacturaSdk\\Facades\\EFactura',
+    private const DOCUMENTED_AS_REMOVED = [
+        'method' => [
+            'BeeCoded\\EFacturaSdk\\Services\\ApiClients\\RateLimitStore::clear',
+            'BeeCoded\\EFacturaSdk\\Data\\Invoice\\InvoiceLineData::getRawLineTotal',
+        ],
+        'class' => [],
+        'constant' => [],
+        'config' => [],
+        'env' => [],
     ];
 
     /**
-     * @return list<string>
+     * @return array<string, list<string>> kind => symbols
      */
-    public static function documentedAsAbsent(): array
+    public static function documentedAsRemoved(): array
     {
-        return self::DOCUMENTED_AS_ABSENT;
+        return self::DOCUMENTED_AS_REMOVED;
+    }
+
+    public static function isDocumentedAsRemoved(string $label, string $kind, string $symbol): bool
+    {
+        return $label === 'CHANGELOG.md' && in_array($symbol, self::DOCUMENTED_AS_REMOVED[$kind], true);
     }
 
     public static function packageRoot(): string
@@ -71,31 +77,11 @@ final class DocumentedSymbols
     public static function sources(): array
     {
         $root = self::packageRoot();
-        $sources = ['README.md' => (string) file_get_contents($root.'/README.md')];
 
-        foreach (glob($root.'/mcp/src/content/*.ts') ?: [] as $path) {
-            // The MCP content files are TypeScript template literals holding
-            // markdown, so every backslash and backtick arrives escaped:
-            // `BeeCoded\\EFacturaSdk\\Client` on disk is one backslash in the
-            // rendered doc. Undo the escaping first — that also removes the
-            // trailing `\` of an escaped closing backtick, which would otherwise
-            // glue itself onto the symbol name.
-            $label = 'mcp/src/content/'.basename($path);
-            $sources[$label] = self::unescapeTemplateLiteral((string) file_get_contents($path));
-        }
-
-        return $sources;
-    }
-
-    /**
-     * Resolve TypeScript template-literal escapes to the characters they denote.
-     *
-     * Processes left to right, so `\\` collapses to `\` and \` collapses to a
-     * backtick without either interfering with the other.
-     */
-    public static function unescapeTemplateLiteral(string $text): string
-    {
-        return (string) preg_replace('/\\\\(.)/s', '$1', $text);
+        return [
+            'README.md' => (string) file_get_contents($root.'/README.md'),
+            'CHANGELOG.md' => (string) file_get_contents($root.'/CHANGELOG.md'),
+        ];
     }
 
     /**
@@ -113,7 +99,6 @@ final class DocumentedSymbols
             // A trailing backslash means we matched a namespace written as
             // `BeeCoded\EFacturaSdk\Data\` — normalise it away.
             $names = array_map(fn (string $n): string => rtrim($n, '\\'), $matches[0]);
-            $names = array_filter($names, fn (string $n): bool => ! in_array($n, self::DOCUMENTED_AS_ABSENT, true));
 
             $found[$label] = array_values(array_unique($names));
         }
@@ -216,25 +201,24 @@ final class DocumentedSymbols
         $found = [];
 
         foreach (self::sources() as $label => $text) {
-            preg_match_all('/\b([A-Z][A-Za-z0-9_]*)::([a-zA-Z_][A-Za-z0-9_]*)\s*\(/', $text, $matches, PREG_SET_ORDER);
-
-            $enums = self::enumsByShortName();
+            // Our own namespace-qualified names are checked by their full name. The
+            // lookbehind skips other qualified names such as
+            // `Illuminate\Support\Facades\RateLimiter::clear()`, which are not ours.
+            preg_match_all('/(?:\b('.self::OWN_NAMESPACE.')|(?<![\\\\\w]))([A-Z][A-Za-z0-9_]*)::([a-zA-Z_][A-Za-z0-9_]*)\s*\(/', $text, $matches, PREG_SET_ORDER);
 
             $refs = [];
-            foreach ($matches as [, $short, $method]) {
-                if (! isset($known[$short])) {
-                    continue;
-                }
+            foreach ($matches as [, $namespace, $short, $method]) {
+                $class = $namespace !== '' ? $namespace.$short : ($known[$short] ?? null);
 
                 // An enum case followed by a parenthetical is not a method call.
-                if (isset($enums[$short]) && self::looksLikeEnumCase($method)) {
+                if ($class === null || (enum_exists($class) && self::looksLikeEnumCase($method))) {
                     continue;
                 }
 
-                $refs[$short.'::'.$method] = [
-                    'class' => $known[$short],
+                $refs[$class.'::'.$method] = [
+                    'class' => $class,
                     'method' => $method,
-                    'ref' => $short.'::'.$method.'()',
+                    'ref' => $namespace.$short.'::'.$method.'()',
                 ];
             }
 
@@ -323,6 +307,38 @@ final class DocumentedSymbols
     }
 
     /**
+     * Class constant references (`Class::NAME`) on classes that are not enums.
+     *
+     * Only unambiguous short names are kept, and the lookbehind skips
+     * namespace-qualified third-party names, as for static methods; our own
+     * qualified names are checked by their full name.
+     *
+     * @return array<string, list<array{class: string, constant: string, ref: string}>>
+     */
+    public static function constantReferences(): array
+    {
+        $known = array_diff_key(self::unambiguousShortNames(), self::enumsByShortName());
+        $found = [];
+
+        foreach (self::sources() as $label => $text) {
+            preg_match_all('/(?:\b('.self::OWN_NAMESPACE.')|(?<![\\\\\w]))([A-Z][A-Za-z0-9_]*)::([A-Z][A-Z0-9_]+)\b/', $text, $matches, PREG_SET_ORDER);
+
+            $refs = [];
+            foreach ($matches as [$whole, $namespace, $short, $constant]) {
+                $class = $namespace !== '' ? $namespace.$short : ($known[$short] ?? null);
+
+                if ($class !== null && ! enum_exists($class)) {
+                    $refs[$whole] = ['class' => $class, 'constant' => $constant, 'ref' => $whole];
+                }
+            }
+
+            $found[$label] = array_values($refs);
+        }
+
+        return $found;
+    }
+
+    /**
      * Is this member name an enum case rather than a static method?
      *
      * Convention decides it: cases are PascalCase (`ExecutionStatus::Success`),
@@ -355,29 +371,26 @@ final class DocumentedSymbols
     /**
      * Config paths the docs claim, relative to config/efactura-sdk.php.
      *
-     * Two forms are in use and both are handled:
-     *  - Backticked markdown headings in config-reference.ts, written relative
-     *    with no prefix: "### `oauth.client_id`". Only that file is scanned this
-     *    way, since a heading elsewhere is not a config key.
-     *  - Prefixed dotted paths in prose: "efactura-sdk.rate_limits.enabled".
-     *    Anchored to real top-level groups so that `efactura-sdk.php` and
-     *    `efactura-sdk.log` — filenames, not keys — do not masquerade as paths.
+     * Prefixed dotted paths in prose: "efactura-sdk.rate_limits.enabled".
+     * Anchored to real top-level groups so that `efactura-sdk.php` and
+     * `efactura-sdk.log`, filenames rather than keys, do not masquerade as
+     * paths. Removed config groups join the alternation, so CHANGELOG.md can
+     * name them.
      *
      * @return array<string, list<string>> label => dotted path
      */
     public static function configPaths(): array
     {
-        $groups = array_keys(self::realConfig());
+        $removedGroups = array_map(
+            fn (string $path): string => explode('.', $path)[0],
+            self::DOCUMENTED_AS_REMOVED['config'],
+        );
+        $groups = array_values(array_unique([...array_keys(self::realConfig()), ...$removedGroups]));
         $groupAlternation = implode('|', array_map('preg_quote', $groups));
         $found = [];
 
         foreach (self::sources() as $label => $text) {
             $paths = [];
-
-            if ($label === 'mcp/src/content/config-reference.ts') {
-                preg_match_all('/^#{1,4}\s+`([a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*)`/m', $text, $m);
-                $paths = array_merge($paths, $m[1]);
-            }
 
             if ($groupAlternation !== '') {
                 preg_match_all("/\befactura-sdk\.(({$groupAlternation})(?:\.[a-z0-9_]+)*)\b/", $text, $m);
@@ -426,85 +439,5 @@ final class DocumentedSymbols
         preg_match_all("/env\(\s*['\"](EFACTURA_[A-Z0-9_]+)['\"]/", (string) file_get_contents($path), $m);
 
         return array_values(array_unique($m[1]));
-    }
-
-    /**
-     * DTO members documented in the "Constructor Parameters" tables of
-     * dto-structures.ts, attributed to the class each topic names.
-     *
-     * Topics are keyed by MCP alias (InvoiceAddressData), not by class, so the
-     * owning class is read from the topic's own `**Namespace:**` line.
-     *
-     * @return list<array{class: string, member: string, ref: string}>
-     */
-    public static function dtoMembers(): array
-    {
-        $text = self::sources()['mcp/src/content/dto-structures.ts'] ?? '';
-        if ($text === '') {
-            return [];
-        }
-
-        // Both "**Namespace:**" and the alias topics' "**Full namespace:**" mark
-        // the start of a block; everything up to the next one belongs to it.
-        preg_match_all(
-            '/\*\*(?:Full namespace|Namespace):\*\*\s+`([A-Za-z0-9_\\\\]+)`/',
-            $text,
-            $matches,
-            PREG_OFFSET_CAPTURE
-        );
-
-        $members = [];
-        $blocks = $matches[1];
-
-        foreach ($blocks as $i => [$fqcn, $offset]) {
-            $end = $blocks[$i + 1][1] ?? strlen($text);
-            $block = substr($text, $offset, $end - $offset);
-
-            // Table rows only: "| `$invoiceNumber` | `string` | yes | ...".
-            // Anchoring to the row start keeps prose mentions of `$lines` out.
-            preg_match_all('/^\|\s*`\$([A-Za-z_][A-Za-z0-9_]*)`/m', $block, $rows);
-
-            foreach (array_unique($rows[1]) as $member) {
-                $members[] = [
-                    'class' => $fqcn,
-                    'member' => $member,
-                    'ref' => substr((string) strrchr($fqcn, '\\'), 1).'::$'.$member,
-                ];
-            }
-        }
-
-        return $members;
-    }
-
-    /**
-     * Does $name exist on $fqcn as a property or a constructor parameter?
-     *
-     * The documented tables are headed "Constructor Parameters", and not every
-     * parameter becomes a property — OAuthTokensData takes $expiresIn purely to
-     * derive $expiresAt. Checking both is what the docs actually claim.
-     */
-    public static function memberExists(string $fqcn, string $name): bool
-    {
-        if (! class_exists($fqcn)) {
-            return false;
-        }
-
-        if (property_exists($fqcn, $name)) {
-            return true;
-        }
-
-        $constructor = (new ReflectionClass($fqcn))->getConstructor();
-
-        if ($constructor === null) {
-            return false;
-        }
-
-        foreach ($constructor->getParameters() as $parameter) {
-            if ($parameter->getName() === $name) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

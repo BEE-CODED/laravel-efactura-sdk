@@ -30,22 +30,22 @@ describe('isValid', function () {
 
     it('returns false for invalid sex digit (0)', function () {
         // First digit 0 is not valid (must be 1-9)
-        expect(CnpValidator::isValid('0123456789012'))->toBeFalse();
+        expect(CnpValidator::isValid('0900101123455'))->toBeFalse();
     });
 
     it('returns false for invalid month (13)', function () {
         // 1 (sex) + 90 (year) + 13 (invalid month) + 01 (day) + rest
-        expect(CnpValidator::isValid('1901301123457'))->toBeFalse();
+        expect(CnpValidator::isValid('1901301123455'))->toBeFalse();
     });
 
     it('returns false for invalid day (32)', function () {
         // 1 (sex) + 90 (year) + 01 (month) + 32 (invalid day) + rest
-        expect(CnpValidator::isValid('1900132123457'))->toBeFalse();
+        expect(CnpValidator::isValid('1900132123456'))->toBeFalse();
     });
 
     it('returns false for invalid February 30', function () {
         // 1 (sex) + 90 (year) + 02 (month) + 30 (invalid day) + rest
-        expect(CnpValidator::isValid('1900230123457'))->toBeFalse();
+        expect(CnpValidator::isValid('1900230123454'))->toBeFalse();
     });
 
     it('validates CNP with correct checksum for male born 1990', function () {
@@ -140,7 +140,7 @@ describe('isValid', function () {
 
     it('returns false for foreign resident invalid date (Feb 30)', function () {
         // Feb 30 is invalid in both 1900s and 2000s
-        expect(CnpValidator::isValid('7900230123450'))->toBeFalse();
+        expect(CnpValidator::isValid('7900230123455'))->toBeFalse();
     });
 
     it('validates leap year February 29', function () {
@@ -154,6 +154,11 @@ describe('isValid', function () {
 
     it('returns false for non-leap year February 29', function () {
         // 1990 is NOT a leap year, so Feb 29 is invalid
-        expect(CnpValidator::isValid('1900229123450'))->toBeFalse();
+        expect(CnpValidator::isValid('1900229123453'))->toBeFalse();
+    });
+
+    it('returns false for a foreign resident non-leap February 29', function () {
+        // 29.02 exists in neither 1901 nor 2001
+        expect(CnpValidator::isValid('7010229123455'))->toBeFalse();
     });
 });
