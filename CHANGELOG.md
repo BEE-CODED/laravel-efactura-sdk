@@ -3,7 +3,7 @@
 This changelog starts with the changes since v3.1.1. To upgrade from 2.x, follow the v3.1.1 README
 first.
 
-## [4.0.0] - Unreleased
+## [4.0.0] - 2026-11-18
 
 ### Breaking (4.0): summary
 
@@ -369,7 +369,8 @@ Each of these used to produce XML that ANAF rejected, or filed a wrong figure. T
 - `BeeCoded\EFacturaSdk\Exceptions\RequestNotSentException extends ApiException` (`statusCode`
   500) is thrown, once the retries are spent, for a transport failure that provably happened before
   the request reached ANAF: cURL errno 5, 6, 7 or 35, or errno 28 when the handler context shows the
-  connect phase never finished (`pretransfer_time` 0 and `request_size` 0), and only when no
+  connect phase never finished (`pretransfer_time` 0 and `request_size` 0; on Guzzle 8, which
+  attaches no context, when Guzzle throws its `ConnectTimeoutException`), and only when no
   earlier attempt of the call may have reached ANAF. Every other transport failure stays a plain
   `ApiException(500)`: the request may have been delivered. (An upload is never retried after an
   attempt that may have been delivered, so this matters only for reads.)
@@ -1055,3 +1056,5 @@ for totals below about 1e13.
 If you accept fractional quantities, prices with more than 2 decimals or unrounded per-line VAT,
 compute your own totals with the same exact half-up rule (or the SDK's line/total helpers);
 otherwise your PDF and XML can differ by 0.01.
+
+[4.0.0]: https://github.com/BEE-CODED/laravel-efactura-sdk/compare/v3.1.1...v4.0.0

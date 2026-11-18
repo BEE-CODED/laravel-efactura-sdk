@@ -36,8 +36,8 @@ abstract class BaseApiClient implements HasLogger
      * request it never received.
      *
      * Deliberately EXCLUDES CURLE_OPERATION_TIMEDOUT (28) and CURLE_GOT_NOTHING
-     * (52). Guzzle reports both as a ConnectException (see CurlFactory's
-     * $connectionErrors map), but both can fire *after* the request body was
+     * (52). Guzzle 7 reports both as a ConnectException (Guzzle 8 as a timeout or
+     * network exception), but both can fire *after* the request body was
      * delivered and accepted -- a read timeout is exactly the case where ANAF
      * has the document and we simply never saw the reply. The exception class is
      * therefore not proof of anything; the errno is. A 28 counts as pre-send only
@@ -417,9 +417,12 @@ abstract class BaseApiClient implements HasLogger
      * Whether a transport failure provably happened before the request was sent.
      *
      * True for the PRE_SEND_CURL_ERRORS, and for a timeout (28) only when the
-     * handler context proves the connect phase never finished: no transfer had
-     * started (pretransfer_time 0) and no request bytes were issued (request_size
-     * 0). A timeout without that evidence may have delivered the request.
+     * connect phase provably never finished. On Guzzle 7 the handler context
+     * proves it: no transfer had started (pretransfer_time 0) and no request bytes
+     * were issued (request_size 0). Guzzle 8 attaches no context; it throws a
+     * ConnectTimeoutException only for a resolve, connect, proxy-tunnel or TLS
+     * handshake timeout, all before the first request byte. A timeout without that
+     * evidence may have delivered the request.
      *
      * @internal Also read by AnafAuthenticator for the token request.
      */
@@ -435,8 +438,13 @@ abstract class BaseApiClient implements HasLogger
             return false;
         }
 
-        // The timings live on Guzzle's exception, below Laravel's ConnectionException.
+        // The evidence lives on Guzzle's exception, below Laravel's ConnectionException.
         for ($current = $exception; $current !== null; $current = $current->getPrevious()) {
+            // A string, not ::class: Guzzle 7 has no such class.
+            if (is_a($current, 'GuzzleHttp\Exception\ConnectTimeoutException')) {
+                return true;
+            }
+
             /** @var mixed $context */
             $context = method_exists($current, 'getHandlerContext') ? $current->getHandlerContext() : null;
 
@@ -477,8 +485,8 @@ abstract class BaseApiClient implements HasLogger
      * ConnectionException, which has no getHandlerContext() -- and Laravel copies
      * Guzzle's "cURL error N: ..." message onto it verbatim, so the regex matches
      * and returns on the first iteration. getHandlerContext() only exists on the
-     * inner Guzzle ConnectException, which the loop would reach on iteration 2 and
-     * never does.
+     * inner Guzzle 7 ConnectException (Guzzle 8 removed it), which the loop would
+     * reach on iteration 2 and never does.
      *
      * The handler-context branch is kept deliberately: it is the more precise of the
      * two (a structured int, not a parse of a human-readable string), and it is the

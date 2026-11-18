@@ -17,6 +17,8 @@ use BeeCoded\EFacturaSdk\Services\RateLimiter;
 use BeeCoded\EFacturaSdk\Support\UploadOutcome;
 use Carbon\Carbon;
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Exception\ConnectTimeoutException;
+use GuzzleHttp\Exception\NetworkTimeoutException;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Psr7\Request;
@@ -108,7 +110,8 @@ describe('a failing log channel', function () {
  * Fail the request the way Guzzle's CurlFactory does, so Laravel's own
  * PendingRequest turns it into the ConnectionException a real failure produces.
  *
- * @param  array<string, mixed>  $info  curl_getinfo() fields of the failed handle
+ * @param  array<string, mixed>  $info  curl_getinfo() fields of the failed handle (Guzzle 7 only;
+ *                                      Guzzle 8 attaches none and picks the class instead)
  */
 function curlRejection(int $errno, string $error, array $info = []): Closure
 {
@@ -116,6 +119,15 @@ function curlRejection(int $errno, string $error, array $info = []): Closure
         $message = sprintf('cURL error %d: %s (see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for %s', $errno, $error, $request->url());
         $psr = new Request($request->method(), $request->url());
         $context = ['errno' => $errno, 'error' => $error] + $info;
+
+        if (class_exists(ConnectTimeoutException::class)) {
+            // Guzzle 8: a timeout is a connect timeout only for its connect-phase error texts.
+            return Create::rejectionFor(match (true) {
+                $errno === 28 && str_contains($error, 'Connection timed out') => new ConnectTimeoutException($message, $psr),
+                $errno === 28 => new NetworkTimeoutException($message, $psr),
+                default => new ConnectException($message, $psr),
+            });
+        }
 
         return Create::rejectionFor($errno === 5
             ? new RequestException($message, $psr, null, null, $context)

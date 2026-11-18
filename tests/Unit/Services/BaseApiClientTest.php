@@ -272,3 +272,18 @@ describe('BaseApiClient', function () {
         });
     });
 });
+
+describe('wasNotSent on Guzzle 8', function () {
+    // Laravel wraps a response-less Guzzle failure as ConnectionException($message, 0, $guzzle).
+    $wrapped = fn (string $class, string $message) => new ConnectionException($message, 0, new $class($message, new Request('POST', 'https://api.anaf.ro/')));
+
+    it('counts a connect timeout as not sent and any other timeout as possibly sent', function () use ($wrapped) {
+        expect(BaseApiClient::wasNotSent($wrapped('GuzzleHttp\Exception\ConnectTimeoutException', 'cURL error 28: Connection timed out after 10001 milliseconds')))->toBeTrue()
+            ->and(BaseApiClient::wasNotSent($wrapped('GuzzleHttp\Exception\NetworkTimeoutException', 'cURL error 28: Operation timed out after 30001 milliseconds with 0 bytes received')))->toBeFalse();
+    });
+
+    it('needs a cURL timeout, not the class alone', function () use ($wrapped) {
+        // The stream handler can throw a ConnectTimeoutException without a cURL errno.
+        expect(BaseApiClient::wasNotSent($wrapped('GuzzleHttp\Exception\ConnectTimeoutException', 'Connection timed out')))->toBeFalse();
+    });
+})->skip(! class_exists('GuzzleHttp\Exception\ConnectTimeoutException'), 'Guzzle 7 has no ConnectTimeoutException');

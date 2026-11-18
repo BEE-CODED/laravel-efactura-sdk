@@ -26,8 +26,8 @@ final class Amount
      * — and only below 2^46 at scale 2 (2^33 at scale 6), where adjacent steps of 10^-scale stay
      * distinguishable in a double. It is then read from that rounded rendering.
      *
-     * @param  int  $scale  Decimals the field is filed with (2 for amounts and rates, 6 for
-     *                      quantities, unit prices and line tax)
+     * @param  non-negative-int  $scale  Decimals the field is filed with (2 for amounts and rates,
+     *                                   6 for quantities, unit prices and line tax)
      * @param  string  $field  Field name reported in the ValidationException
      *
      * @throws ValidationException If the value is not such an amount
