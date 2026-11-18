@@ -42,11 +42,12 @@ class RateLimitStore
     }
 
     /**
-     * Get remaining quota.
+     * Get remaining quota, never below 0.
      */
     public function getRemaining(string $key, int $limit): int
     {
-        return RateLimiter::remaining($this->buildKey($key), $limit);
+        // Early Laravel 12 releases return $limit - attempts unclamped, so a counter past the limit went negative.
+        return max(0, RateLimiter::remaining($this->buildKey($key), $limit));
     }
 
     /**
