@@ -21023,7 +21023,7 @@ function section(file, topic) {
   const hit = all.find((s) => s.slug === topic);
   return hit ? answer(hit.text) : answer(`Unknown topic "${topic}" in ${file}. Topics: ${all.map((s) => s.slug).join(", ")}`, true);
 }
-var server = new McpServer({ name: "efactura-sdk", version: "2.0.0" });
+var server = new McpServer({ name: "efactura-sdk", version: "4.0.1" });
 server.registerTool(
   "get-sdk-docs",
   {

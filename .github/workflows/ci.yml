@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,7 +17,7 @@ jobs:
   tests:
     # composer.json allows illuminate ^12|^13 but only one is ever installed
     # locally, so the matrix is the only thing that checks the range we advertise.
-    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / ${{ matrix.dependency-version }}
+    name: PHP ${{ matrix.php }} / Laravel ${{ matrix.laravel }} / ${{ matrix.dependency-version }}${{ matrix.brick && format(' / brick/math {0}', matrix.brick) || '' }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -31,6 +31,12 @@ jobs:
             testbench: '10.*'
           - laravel: '13.*'
             testbench: '11.*'
+          # brick/math: Laravel 12 prefer-lowest gets 0.14.4 and Laravel 13 on PHP 8.5 gets 1.x;
+          # this row pins the one release line in between that nothing else installs.
+          - php: '8.4'
+            laravel: '13.*'
+            dependency-version: prefer-stable
+            brick: '0.20.*'
         exclude:
           # Laravel 13 is tested prefer-stable only: its prefer-lowest cannot resolve test
           # deps (pest 3.0 / phpunit 11) that predate it. Real 13.x installs run current
@@ -58,14 +64,26 @@ jobs:
           # one. Unblock them for CI only (never shipped).
           composer config --global policy.advisories.block false
           composer require "illuminate/support:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
-          composer update --${{ matrix.dependency-version }} --prefer-dist --no-interaction
+          # --with pins brick/math for this run only; composer.json keeps the published range.
+          composer update --${{ matrix.dependency-version }} --prefer-dist --no-interaction ${{ matrix.brick && format('--with "brick/math:{0}"', matrix.brick) || '' }}
 
       - name: Tests
         run: vendor/bin/pest
 
   static-analysis:
-    name: PHPStan (level 8)
+    # Analysed on both framework majors, as the tests are: a framework call that exists
+    # on only one major fails the run of the other.
+    name: PHPStan (level 8) / Laravel ${{ matrix.laravel }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        laravel: ['12.*', '13.*']
+        include:
+          - laravel: '12.*'
+            testbench: '10.*'
+          - laravel: '13.*'
+            testbench: '11.*'
     steps:
       - uses: actions/checkout@v5
       - uses: shivammathur/setup-php@v2
@@ -73,7 +91,10 @@ jobs:
           php-version: '8.4'
           extensions: dom, curl, libxml, mbstring, zip, simplexml
           coverage: none
-      - run: composer update --prefer-dist --no-interaction
+      - name: Install dependencies
+        run: |
+          composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
+          composer update --prefer-dist --no-interaction
       # No baseline, no ignores — a suppression is how the message-sync bug
       # stayed hidden. Keep this honest.
       - run: vendor/bin/phpstan analyse --no-progress

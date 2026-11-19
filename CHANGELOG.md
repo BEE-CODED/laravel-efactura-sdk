@@ -3,6 +3,33 @@
 This changelog starts with the changes since v3.1.1. To upgrade from 2.x, follow the v3.1.1 README
 first.
 
+## [4.0.1] - 2026-11-19
+
+### Changed: brick/math 0.20 and 1.x are allowed
+
+- `brick/math` is now `^0.14.4 || ^0.15 || ^0.16 || ^0.17 || ^0.18 || ^0.19 || ^0.20 || ^1.0`.
+  A new Laravel 13 application installs brick/math 1.x. With 4.0.1, `composer require
+  bee-coded/laravel-efactura-sdk` installs in that application as it is, without `-W`
+  (`--with-all-dependencies`) and without downgrading brick/math.
+- The SDK code is unchanged. The full test suite passes on brick/math 0.14.4, 0.20 and 1.0.
+
+### Changed: the Carbon range matches Laravel 12 and 13
+
+- `nesbot/carbon` is now `^3.8.4`, which is what Laravel 12 and 13 already require. The old
+  `^2.72.2` alternative could never be installed next to them, so no application is affected.
+
+### Changed: release archives leave out maintainer files
+
+- The downloaded package no longer contains `CLAUDE.md`, `mcp/src/`, `mcp/tests/`,
+  `mcp/package-lock.json`, `mcp/tsconfig.json` or `mcp/tsup.config.ts`.
+- The MCP documentation server still ships: `mcp/dist/index.js` and `mcp/package.json`, with the
+  `README.md`, `CHANGELOG.md` and `config/` it reads.
+
+### Fixed: the MCP server reports its version
+
+- The MCP documentation server reports version 4.0.1, the package release. It reported 2.0.0, and
+  `mcp/package.json` said 1.0.0.
+
 ## [4.0.0] - 2026-11-18
 
 ### Breaking (4.0): summary
@@ -1057,4 +1084,5 @@ If you accept fractional quantities, prices with more than 2 decimals or unround
 compute your own totals with the same exact half-up rule (or the SDK's line/total helpers);
 otherwise your PDF and XML can differ by 0.01.
 
+[4.0.1]: https://github.com/BEE-CODED/laravel-efactura-sdk/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/BEE-CODED/laravel-efactura-sdk/compare/v3.1.1...v4.0.0

@@ -15,8 +15,8 @@ A Laravel package for integrating with Romania's ANAF e-Factura (electronic invo
 ## Requirements
 
 - PHP 8.4+ with the `dom` and `zip` extensions
-- Laravel 12 (laravel/framework 12.27.1 or later) or Laravel 13, with brick/math 0.14.4–0.19
-  (see [CHANGELOG.md](CHANGELOG.md))
+- Laravel 12 (laravel/framework 12.27.1 or later) or Laravel 13, with brick/math 0.14.4 up to 0.20,
+  or 1.x (see [CHANGELOG.md](CHANGELOG.md))
 - Valid ANAF OAuth credentials
 
 ## Installation
@@ -36,7 +36,9 @@ php artisan vendor:publish --tag=efactura-sdk-config
 - 3.x→4.0: work through `## [4.0.0]` in [CHANGELOG.md](CHANGELOG.md), which ships with the
   package, starting with "Breaking (4.0): summary". Some breaks throw (amounts with more decimals
   than filed, a positive invoice without a due date, new interface methods and subclass
-  signatures). Others change results quietly.
+  signatures). Others change results quietly. Install 4.0.1 or later: it also accepts brick/math
+  0.20 and 1.x, so the 4.0.0 notes about refusing those versions no longer apply.
+- 4.0.0→4.0.1: no code changes (see `## [4.0.1]`).
 - From 2.x: follow the v3.1.1 README first.
 
 ## Configuration

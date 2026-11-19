@@ -57,7 +57,7 @@ function section(file: string, topic: string) {
     : answer(`Unknown topic "${topic}" in ${file}. Topics: ${all.map((s) => s.slug).join(", ")}`, true);
 }
 
-const server = new McpServer({ name: "efactura-sdk", version: "2.0.0" });
+const server = new McpServer({ name: "efactura-sdk", version: "4.0.1" });
 
 server.registerTool(
   "get-sdk-docs",

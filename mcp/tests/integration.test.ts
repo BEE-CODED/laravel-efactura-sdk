@@ -66,8 +66,10 @@ describe("MCP server", () => {
       protocolVersion: "2025-03-26",
       capabilities: {},
       clientInfo: { name: "test", version: "1.0.0" },
-    })) as { result: { serverInfo: { name: string } } };
+    })) as { result: { serverInfo: { name: string; version: string } } };
     expect(init.result.serverInfo.name).toBe("efactura-sdk");
+    // The server reports the release it ships with, the same number as mcp/package.json.
+    expect(init.result.serverInfo.version).toBe(JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")).version);
     client.notify("notifications/initialized");
   });
 
